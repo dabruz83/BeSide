@@ -1,53 +1,271 @@
-import { useEffect } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigate } from "react-router-dom";
 import axios from "axios";
+import { Toaster } from "@/components/ui/sonner";
+
+// Pages
+import { LandingPage } from "@/pages/LandingPage";
+import { LoginPage } from "@/pages/LoginPage";
+import { RegisterPage } from "@/pages/RegisterPage";
+import { DashboardPage } from "@/pages/DashboardPage";
+import { JobsPage } from "@/pages/JobsPage";
+import { FinancePage } from "@/pages/FinancePage";
+import { MarketingPage } from "@/pages/MarketingPage";
+import { OnboardingPage } from "@/pages/OnboardingPage";
+import { ProfilePage } from "@/pages/ProfilePage";
+import { SubscriptionPage } from "@/pages/SubscriptionPage";
+import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
+
+// Components
+import { Layout } from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-const API = `${BACKEND_URL}/api`;
+export const API = `${BACKEND_URL}/api`;
 
-const Home = () => {
-  const helloWorldApi = async () => {
+// Auth Context
+import { createContext, useContext } from "react";
+
+const AuthContext = createContext(null);
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+};
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const checkAuth = useCallback(async () => {
     try {
-      const response = await axios.get(`${API}/`);
-      console.log(response.data.message);
-    } catch (e) {
-      console.error(e, `errored out requesting / api`);
+      const response = await axios.get(`${API}/auth/me`, {
+        withCredentials: true
+      });
+      setUser(response.data);
+    } catch (error) {
+      setUser(null);
+    } finally {
+      setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    helloWorldApi();
   }, []);
 
+  useEffect(() => {
+    // CRITICAL: If returning from OAuth callback, skip the /me check.
+    // AuthCallback will exchange the session_id and establish the session first.
+    if (window.location.hash?.includes('session_id=')) {
+      setLoading(false);
+      return;
+    }
+    checkAuth();
+  }, [checkAuth]);
+
+  const login = (userData) => {
+    setUser(userData);
+  };
+
+  const logout = async () => {
+    try {
+      await axios.post(`${API}/auth/logout`, {}, { withCredentials: true });
+    } catch (error) {
+      console.error("Logout error:", error);
+    }
+    setUser(null);
+  };
+
   return (
-    <div>
-      <header className="App-header">
-        <a
-          className="App-link"
-          href="https://emergent.sh"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <img src="https://avatars.githubusercontent.com/in/1201222?s=120&u=2686cf91179bbafbc7a71bfbc43004cf9ae1acea&v=4" />
-        </a>
-        <p className="mt-5">Building something incredible ~!</p>
-      </header>
+    <AuthContext.Provider value={{ user, loading, login, logout, checkAuth }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+// Auth Callback Component
+const AuthCallback = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { login } = useAuth();
+  const hasProcessed = useRef(false);
+
+  useEffect(() => {
+    if (hasProcessed.current) return;
+    hasProcessed.current = true;
+
+    const processCallback = async () => {
+      const hash = location.hash;
+      const sessionId = hash.split('session_id=')[1]?.split('&')[0];
+
+      if (!sessionId) {
+        navigate('/login', { replace: true });
+        return;
+      }
+
+      try {
+        const response = await axios.post(
+          `${API}/auth/session`,
+          { session_id: sessionId },
+          { withCredentials: true }
+        );
+        login(response.data.user);
+        navigate('/dashboard', { replace: true, state: { user: response.data.user } });
+      } catch (error) {
+        console.error("Auth callback error:", error);
+        navigate('/login', { replace: true });
+      }
+    };
+
+    processCallback();
+  }, [location, navigate, login]);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-background">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+        <p className="text-muted-foreground">Autenticazione in corso...</p>
+      </div>
     </div>
+  );
+};
+
+// Protected Route Component
+const ProtectedRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
+          <p className="text-muted-foreground">Caricamento...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />;
+  }
+
+  return children;
+};
+
+// App Router Component
+const AppRouter = () => {
+  const location = useLocation();
+
+  // Check URL fragment for session_id synchronously during render
+  if (location.hash?.includes('session_id=')) {
+    return <AuthCallback />;
+  }
+
+  return (
+    <Routes>
+      {/* Public Routes */}
+      <Route path="/" element={<LandingPage />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/onboarding/client/:token" element={<ClientOnboardingPage />} />
+      
+      {/* Protected Routes */}
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <DashboardPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/jobs"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <JobsPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/finance"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <FinancePage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/marketing"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <MarketingPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/onboarding"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <OnboardingPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/profile"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <ProfilePage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/subscription"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <SubscriptionPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/subscription/success"
+        element={
+          <ProtectedRoute>
+            <Layout>
+              <SubscriptionPage />
+            </Layout>
+          </ProtectedRoute>
+        }
+      />
+      
+      {/* Catch all - redirect to dashboard if logged in, otherwise landing */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 };
 
 function App() {
   return (
-    <div className="App">
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Home />}>
-            <Route index element={<Home />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
-    </div>
+    <BrowserRouter>
+      <AuthProvider>
+        <AppRouter />
+        <Toaster position="top-right" richColors />
+      </AuthProvider>
+    </BrowserRouter>
   );
 }
 
