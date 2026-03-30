@@ -15,9 +15,10 @@ import {
   TrendingUp,
   AlertTriangle,
   PiggyBank,
-  FileText
+  FileText,
+  Info
 } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('it-IT', {
@@ -28,9 +29,9 @@ const formatCurrency = (amount) => {
 };
 
 const TAX_REGIMES = [
-  { value: "forfettario_5", label: "Forfettario 5%" },
-  { value: "forfettario_15", label: "Forfettario 15%" },
-  { value: "ordinario", label: "Regime Ordinario" }
+  { value: "forfettario_5", label: "Forfettario 5%", description: "Nuove attività (primi 5 anni)" },
+  { value: "forfettario_15", label: "Forfettario 15%", description: "Attività consolidate" },
+  { value: "ordinario", label: "Regime Ordinario", description: "Con IVA e IRPEF progressiva" }
 ];
 
 export const FinancePage = () => {
@@ -43,6 +44,7 @@ export const FinancePage = () => {
   // Calculator state
   const [calcRevenue, setCalcRevenue] = useState("");
   const [calcRegime, setCalcRegime] = useState(user?.tax_regime || "forfettario_15");
+  const [calcPeriod, setCalcPeriod] = useState("monthly");
   const [calcResult, setCalcResult] = useState(null);
   
   // Accrual form state
@@ -53,12 +55,18 @@ export const FinancePage = () => {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (user?.tax_regime) {
+      setCalcRegime(user.tax_regime);
+    }
+  }, [user]);
+
   const fetchData = async () => {
     try {
       const [accrualsRes, forecastRes, deadlinesRes] = await Promise.all([
-        axios.get(`${API}/tax/accruals`, { withCredentials: true }),
-        axios.get(`${API}/tax/forecast`, { withCredentials: true }),
-        axios.get(`${API}/tax/deadlines`, { withCredentials: true })
+        axios.get(`${API}/tax/accruals`),
+        axios.get(`${API}/tax/forecast`),
+        axios.get(`${API}/tax/deadlines`)
       ]);
       setAccruals(accrualsRes.data);
       setForecast(forecastRes.data);
@@ -78,9 +86,10 @@ export const FinancePage = () => {
     
     try {
       const response = await axios.post(`${API}/tax/calculate`, {
-        monthly_revenue: parseFloat(calcRevenue),
-        tax_regime: calcRegime
-      }, { withCredentials: true });
+        revenue: parseFloat(calcRevenue),
+        tax_regime: calcRegime,
+        period: calcPeriod
+      });
       setCalcResult(response.data);
     } catch (error) {
       toast.error("Errore nel calcolo");
@@ -97,7 +106,7 @@ export const FinancePage = () => {
       await axios.post(`${API}/tax/accruals`, {
         month: accrualMonth,
         revenue: parseFloat(accrualRevenue)
-      }, { withCredentials: true });
+      });
       toast.success("Accantonamento salvato!");
       setAccrualRevenue("");
       fetchData();
@@ -107,10 +116,23 @@ export const FinancePage = () => {
   };
 
   const forecastChartData = forecast?.forecast?.map((item) => ({
-    month: item.month.slice(5), // MM format
+    month: item.month.slice(5),
     accantonamento: item.total_accrual,
     netto: item.net_income
   })) || [];
+
+  const getRegimeDescription = (regime) => {
+    switch (regime) {
+      case "forfettario_5":
+        return "IRPEF sostitutiva 5% + INPS 26.07% sul 78% del fatturato. Esente IVA.";
+      case "forfettario_15":
+        return "IRPEF sostitutiva 15% + INPS 26.07% sul 78% del fatturato. Esente IVA.";
+      case "ordinario":
+        return "IRPEF progressiva (23-43%) + INPS 26.07% + IVA 22% sul fatturato.";
+      default:
+        return "";
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -149,14 +171,29 @@ export const FinancePage = () => {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="space-y-2">
-                  <Label htmlFor="calc_revenue">Fatturato Mensile (€)</Label>
+                  <Label>Periodo di Calcolo</Label>
+                  <Select value={calcPeriod} onValueChange={setCalcPeriod}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="monthly">Mensile</SelectItem>
+                      <SelectItem value="yearly">Annuale</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="calc_revenue">
+                    Fatturato {calcPeriod === "monthly" ? "Mensile" : "Annuale"} (€)
+                  </Label>
                   <Input
                     id="calc_revenue"
                     type="number"
                     step="0.01"
                     value={calcRevenue}
                     onChange={(e) => setCalcRevenue(e.target.value)}
-                    placeholder="5000"
+                    placeholder={calcPeriod === "monthly" ? "5000" : "60000"}
                     data-testid="calc-revenue-input"
                   />
                 </div>
@@ -170,11 +207,24 @@ export const FinancePage = () => {
                     <SelectContent>
                       {TAX_REGIMES.map((regime) => (
                         <SelectItem key={regime.value} value={regime.value}>
-                          {regime.label}
+                          <div>
+                            <div>{regime.label}</div>
+                            <div className="text-xs text-muted-foreground">{regime.description}</div>
+                          </div>
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+
+                {/* Regime Info */}
+                <div className="p-3 bg-muted/50 rounded-lg">
+                  <div className="flex items-start gap-2">
+                    <Info className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+                    <p className="text-xs text-muted-foreground">
+                      {getRegimeDescription(calcRegime)}
+                    </p>
+                  </div>
                 </div>
                 
                 <Button onClick={handleCalculate} className="w-full" data-testid="calc-submit-btn">
@@ -195,31 +245,77 @@ export const FinancePage = () => {
                 {calcResult ? (
                   <div className="space-y-4">
                     <div className="flex justify-between items-center py-2 border-b border-border">
-                      <span className="text-muted-foreground">Fatturato</span>
-                      <span className="font-semibold">{formatCurrency(calcResult.monthly_revenue)}</span>
+                      <span className="text-muted-foreground">
+                        Fatturato {calcResult.period === "monthly" ? "Mensile" : "Annuale"}
+                      </span>
+                      <span className="font-semibold">{formatCurrency(calcResult.revenue)}</span>
                     </div>
+                    
                     <div className="flex justify-between items-center py-2 border-b border-border">
-                      <span className="text-muted-foreground">IRPEF</span>
+                      <div>
+                        <span className="text-muted-foreground">IRPEF</span>
+                        <p className="text-xs text-muted-foreground">
+                          {calcRegime.includes("forfettario") ? "Imposta sostitutiva" : "Progressiva"}
+                        </p>
+                      </div>
                       <span className="font-semibold text-destructive">- {formatCurrency(calcResult.irpef_amount)}</span>
                     </div>
+                    
                     <div className="flex justify-between items-center py-2 border-b border-border">
-                      <span className="text-muted-foreground">INPS (24%)</span>
+                      <div>
+                        <span className="text-muted-foreground">INPS</span>
+                        <p className="text-xs text-muted-foreground">Gestione Separata 26.07%</p>
+                      </div>
                       <span className="font-semibold text-destructive">- {formatCurrency(calcResult.inps_amount)}</span>
                     </div>
+                    
                     {calcResult.iva_amount > 0 && (
                       <div className="flex justify-between items-center py-2 border-b border-border">
-                        <span className="text-muted-foreground">IVA (22%)</span>
+                        <div>
+                          <span className="text-muted-foreground">IVA</span>
+                          <p className="text-xs text-muted-foreground">22% da versare</p>
+                        </div>
                         <span className="font-semibold text-destructive">- {formatCurrency(calcResult.iva_amount)}</span>
                       </div>
                     )}
-                    <div className="flex justify-between items-center py-2 bg-destructive/10 px-3 rounded-lg">
+                    
+                    <div className="flex justify-between items-center py-3 bg-destructive/10 px-3 rounded-lg">
                       <span className="font-semibold">Totale da Accantonare</span>
                       <span className="font-bold text-lg text-destructive">{formatCurrency(calcResult.total_accrual)}</span>
                     </div>
-                    <div className="flex justify-between items-center py-2 bg-success/10 px-3 rounded-lg">
+                    
+                    <div className="flex justify-between items-center py-3 bg-success/10 px-3 rounded-lg">
                       <span className="font-semibold">Netto Disponibile</span>
                       <span className="font-bold text-lg text-success">{formatCurrency(calcResult.net_income)}</span>
                     </div>
+
+                    {/* Yearly Projection for monthly calculations */}
+                    {calcResult.period === "monthly" && calcResult.yearly_projection && (
+                      <div className="mt-4 p-4 bg-muted/30 rounded-lg">
+                        <h4 className="font-semibold mb-3 flex items-center gap-2">
+                          <TrendingUp className="w-4 h-4 text-secondary" />
+                          Proiezione Annuale
+                        </h4>
+                        <div className="grid grid-cols-2 gap-4 text-sm">
+                          <div>
+                            <p className="text-muted-foreground">Fatturato</p>
+                            <p className="font-semibold">{formatCurrency(calcResult.revenue * 12)}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Tasse Annuali</p>
+                            <p className="font-semibold text-destructive">{formatCurrency(calcResult.yearly_projection.total_accrual)}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Netto Annuale</p>
+                            <p className="font-semibold text-success">{formatCurrency(calcResult.yearly_projection.net_income)}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">% Tasse/Fatturato</p>
+                            <p className="font-semibold">{((calcResult.yearly_projection.total_accrual / (calcResult.revenue * 12)) * 100).toFixed(1)}%</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="text-center py-8 text-muted-foreground">
@@ -253,6 +349,7 @@ export const FinancePage = () => {
                       formatter={(value) => formatCurrency(value)}
                       contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb' }}
                     />
+                    <Legend />
                     <Line 
                       type="monotone" 
                       dataKey="netto" 
@@ -309,6 +406,10 @@ export const FinancePage = () => {
                     data-testid="accrual-revenue-input"
                   />
                 </div>
+
+                <p className="text-xs text-muted-foreground">
+                  Il calcolo userà il regime fiscale dal tuo profilo: {TAX_REGIMES.find(r => r.value === user?.tax_regime)?.label || "Forfettario 15%"}
+                </p>
                 
                 <Button onClick={handleSaveAccrual} className="w-full" data-testid="accrual-submit-btn">
                   Salva e Calcola Accantonamento
@@ -404,13 +505,16 @@ export const FinancePage = () => {
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 <AlertTriangle className="w-5 h-5 text-warning" />
-                Scadenze Fiscali Italiane
+                Scadenze Fiscali - {TAX_REGIMES.find(r => r.value === user?.tax_regime)?.label || "Forfettario"}
               </CardTitle>
+              <p className="text-sm text-muted-foreground">
+                Scadenze basate sul tuo regime fiscale (Agenzia delle Entrate)
+              </p>
             </CardHeader>
             <CardContent>
               {deadlines.length === 0 ? (
                 <p className="text-center py-8 text-muted-foreground">
-                  Nessuna scadenza nei prossimi 90 giorni
+                  Nessuna scadenza nei prossimi 120 giorni
                 </p>
               ) : (
                 <div className="space-y-4">

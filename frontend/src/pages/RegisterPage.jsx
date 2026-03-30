@@ -70,11 +70,10 @@ export const RegisterPage = () => {
       // Auto login after registration
       const loginResponse = await axios.post(
         `${API}/auth/login`,
-        { email: formData.email, password: formData.password },
-        { withCredentials: true }
+        { email: formData.email, password: formData.password }
       );
       
-      login(loginResponse.data.user);
+      login(loginResponse.data.user, loginResponse.data.token);
       toast.success("Registrazione completata! Benvenuto in BESIDE");
       navigate("/dashboard");
     } catch (error) {

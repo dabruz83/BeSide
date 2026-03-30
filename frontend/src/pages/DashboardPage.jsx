@@ -12,11 +12,12 @@ import {
   CalendarDays,
   Plus,
   ArrowRight,
-  AlertTriangle
+  AlertTriangle,
+  Calculator,
+  MessageSquare
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-// Format currency in Italian style
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('it-IT', {
     style: 'currency',
@@ -25,7 +26,6 @@ const formatCurrency = (amount) => {
   }).format(amount);
 };
 
-// Format job type labels
 const JOB_TYPE_LABELS = {
   ppf_full: "PPF Completo",
   ppf_partial: "PPF Parziale",
@@ -35,7 +35,6 @@ const JOB_TYPE_LABELS = {
   upholstery: "Tappezzeria"
 };
 
-// Format lead source labels
 const LEAD_SOURCE_LABELS = {
   passaparola: "Passaparola",
   instagram: "Instagram",
@@ -59,9 +58,7 @@ export const DashboardPage = () => {
 
   const fetchMetrics = async () => {
     try {
-      const response = await axios.get(`${API}/dashboard/metrics`, {
-        withCredentials: true
-      });
+      const response = await axios.get(`${API}/dashboard/metrics`);
       setMetrics(response.data);
     } catch (error) {
       console.error("Error fetching metrics:", error);
@@ -121,13 +118,48 @@ export const DashboardPage = () => {
           </h1>
           <p className="text-muted-foreground">Ecco il riepilogo della tua attività</p>
         </div>
-        <Link to="/jobs">
-          <Button data-testid="add-job-btn">
-            <Plus className="w-4 h-4 mr-2" />
-            Nuovo Lavoro
-          </Button>
-        </Link>
       </div>
+
+      {/* Quick Actions - MOVED TO TOP */}
+      <Card className="stagger-item">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-lg">Azioni Rapide</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            <Link to="/jobs" className="w-full">
+              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2 hover:bg-primary hover:text-white transition-colors">
+                <Plus className="w-5 h-5" />
+                <span className="text-xs">Nuovo Lavoro</span>
+              </Button>
+            </Link>
+            <Link to="/jobs?mode=quote" className="w-full">
+              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2 hover:bg-secondary hover:text-white transition-colors">
+                <Wrench className="w-5 h-5" />
+                <span className="text-xs">Preventivo</span>
+              </Button>
+            </Link>
+            <Link to="/finance" className="w-full">
+              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2 hover:bg-primary hover:text-white transition-colors">
+                <Calculator className="w-5 h-5" />
+                <span className="text-xs">Calcola Tasse</span>
+              </Button>
+            </Link>
+            <Link to="/onboarding" className="w-full">
+              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2 hover:bg-primary hover:text-white transition-colors">
+                <Users className="w-5 h-5" />
+                <span className="text-xs">Nuovo Cliente</span>
+              </Button>
+            </Link>
+            <Link to="/marketing" className="w-full">
+              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2 hover:bg-primary hover:text-white transition-colors">
+                <TrendingUp className="w-5 h-5" />
+                <span className="text-xs">Marketing AI</span>
+              </Button>
+            </Link>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* Main KPI Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -290,41 +322,6 @@ export const DashboardPage = () => {
           </CardContent>
         </Card>
       </div>
-
-      {/* Quick Actions */}
-      <Card className="stagger-item">
-        <CardHeader>
-          <CardTitle className="text-lg">Azioni Rapide</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Link to="/jobs" className="w-full">
-              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2">
-                <Plus className="w-5 h-5" />
-                <span className="text-xs">Nuovo Lavoro</span>
-              </Button>
-            </Link>
-            <Link to="/finance" className="w-full">
-              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2">
-                <Euro className="w-5 h-5" />
-                <span className="text-xs">Calcola Tasse</span>
-              </Button>
-            </Link>
-            <Link to="/onboarding" className="w-full">
-              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2">
-                <Users className="w-5 h-5" />
-                <span className="text-xs">Nuovo Cliente</span>
-              </Button>
-            </Link>
-            <Link to="/marketing" className="w-full">
-              <Button variant="outline" className="w-full h-auto py-4 flex-col gap-2">
-                <TrendingUp className="w-5 h-5" />
-                <span className="text-xs">Vedi ROI</span>
-              </Button>
-            </Link>
-          </div>
-        </CardContent>
-      </Card>
     </div>
   );
 };

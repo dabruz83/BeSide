@@ -22,10 +22,9 @@ export const LoginPage = () => {
     try {
       const response = await axios.post(
         `${API}/auth/login`,
-        formData,
-        { withCredentials: true }
+        formData
       );
-      login(response.data.user);
+      login(response.data.user, response.data.token);
       toast.success("Accesso effettuato!");
       navigate("/dashboard");
     } catch (error) {

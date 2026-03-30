@@ -27,6 +27,10 @@ JWT_SECRET = os.environ.get('JWT_SECRET_KEY', 'beside-secret-key-2024')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
 
+# Admin credentials
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@beside.it')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'BesideAdmin2026!')
+
 # Create the main app
 app = FastAPI(title="BESIDE API", description="API per installatori auto wrap/PPF italiani")
 
@@ -37,10 +41,13 @@ api_router = APIRouter(prefix="/api")
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# ==================== MODELS ====================
+# ==================== CONSTANTS ====================
 
 # Tax Regimes
 TAX_REGIMES = ["forfettario_5", "forfettario_15", "ordinario"]
+
+# Business Types
+BUSINESS_TYPES = ["ditta_individuale", "forfettario", "societa_persone", "societa_capitali"]
 
 # Job Types
 JOB_TYPES = ["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint", "upholstery"]
@@ -61,6 +68,11 @@ ONBOARDING_STATUS = ["pending", "in_progress", "complete", "overdue"]
 # Default waste percentages
 DEFAULT_WASTE = {"ppf": 0.20, "vinyl": 0.12}
 
+# User Roles
+USER_ROLES = ["user", "admin", "super_admin"]
+
+# ==================== MODELS ====================
+
 # User Models
 class UserCreate(BaseModel):
     email: EmailStr
@@ -74,43 +86,54 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str
 
-class UserResponse(BaseModel):
-    user_id: str
-    email: str
-    business_name: str
-    team_size: int
-    services: List[str]
-    tax_regime: str
-    subscription_tier: str
-    subscription_status: str
-    created_at: str
-    name: Optional[str] = None
-    picture: Optional[str] = None
+class BusinessInfo(BaseModel):
+    business_type: Optional[str] = None  # ditta_individuale, forfettario, societa_persone, societa_capitali
+    partita_iva: Optional[str] = None
+    codice_fiscale: Optional[str] = None
+    indirizzo: Optional[str] = None
+    citta: Optional[str] = None
+    cap: Optional[str] = None
+    provincia: Optional[str] = None
+    sdi: Optional[str] = None
+    pec: Optional[str] = None
+    email: Optional[str] = None
+    telefono: Optional[str] = None
+    iban: Optional[str] = None
+    banca: Optional[str] = None
+    logo_url: Optional[str] = None
+    logo_width: Optional[int] = 150
+    intestazione_extra: Optional[str] = None
 
 class UserUpdate(BaseModel):
     business_name: Optional[str] = None
     team_size: Optional[int] = None
     services: Optional[List[str]] = None
     tax_regime: Optional[str] = None
+    business_info: Optional[BusinessInfo] = None
 
 # Job Models
 class JobCreate(BaseModel):
     client_name: str
+    client_email: Optional[str] = None
     job_type: str
     vehicle_type: str
+    vehicle_info: Optional[str] = None
     quote_amount: float
     hours_worked: float
     materials_cost: float
     waste_percentage: Optional[float] = None
     lead_source: Optional[str] = None
     notes: Optional[str] = None
+    is_quote: bool = False  # True = preventivo, False = lavoro completato
 
 class JobResponse(BaseModel):
     job_id: str
     user_id: str
     client_name: str
+    client_email: Optional[str] = None
     job_type: str
     vehicle_type: str
+    vehicle_info: Optional[str] = None
     quote_amount: float
     hours_worked: float
     materials_cost: float
@@ -120,72 +143,47 @@ class JobResponse(BaseModel):
     hourly_rate: float
     lead_source: Optional[str] = None
     notes: Optional[str] = None
+    is_quote: bool
+    quote_status: Optional[str] = None  # pending, accepted, rejected
+    quote_link: Optional[str] = None
     completed_date: str
     created_at: str
 
+# Quote Models
+class QuoteAcceptance(BaseModel):
+    accepted: bool
+    client_signature: Optional[str] = None
+    notes: Optional[str] = None
+
 # Tax Models
 class TaxCalculationRequest(BaseModel):
-    monthly_revenue: float
+    revenue: float
     tax_regime: str
+    period: str = "monthly"  # monthly or yearly
 
 class TaxCalculationResponse(BaseModel):
-    monthly_revenue: float
+    revenue: float
     tax_regime: str
+    period: str
     irpef_amount: float
     inps_amount: float
     iva_amount: float
     total_accrual: float
     net_income: float
+    yearly_projection: Optional[Dict[str, float]] = None
 
 class TaxAccrualCreate(BaseModel):
     month: str  # YYYY-MM format
     revenue: float
 
-class TaxAccrualResponse(BaseModel):
-    accrual_id: str
-    user_id: str
-    month: str
-    revenue: float
-    irpef_amount: float
-    inps_amount: float
-    iva_amount: float
-    total_accrual: float
-    cumulative_balance: float
-    created_at: str
-
 # Client Onboarding Models
-class OnboardingChecklistItem(BaseModel):
-    item: str
-    completed: bool = False
-    uploaded_file: Optional[str] = None
-
 class OnboardingCreate(BaseModel):
     client_name: str
     client_email: EmailStr
     vehicle_info: Optional[str] = None
 
-class OnboardingResponse(BaseModel):
-    onboarding_id: str
-    user_id: str
-    client_name: str
-    client_email: str
-    vehicle_info: Optional[str] = None
-    status: str
-    checklist_items: List[Dict[str, Any]]
-    unique_link: str
-    created_at: str
-    completed_at: Optional[str] = None
-
 class OnboardingClientUpdate(BaseModel):
     checklist_items: List[Dict[str, Any]]
-
-# Lead Source Models
-class LeadSourceStats(BaseModel):
-    source: str
-    client_count: int
-    total_revenue: float
-    total_hours: float
-    roi: float
 
 # Marketing Effort Models
 class MarketingEffortCreate(BaseModel):
@@ -193,33 +191,27 @@ class MarketingEffortCreate(BaseModel):
     channel: str
     hours_invested: float
 
-class MarketingEffortResponse(BaseModel):
-    effort_id: str
-    user_id: str
-    month: str
-    channel: str
-    hours_invested: float
-    created_at: str
+# AI Content Generation Models
+class ContentGenerationRequest(BaseModel):
+    step: str  # bacino_utenza, trova_argomenti, pain_points, genera_idea, sviluppo_testo, sviluppo_video
+    context: Dict[str, Any] = {}
+    user_input: Optional[str] = None
 
 # Subscription Models
 class SubscriptionCheckoutRequest(BaseModel):
     tier: str
     origin_url: str
 
-class SubscriptionResponse(BaseModel):
-    checkout_url: str
-    session_id: str
+# Admin Models
+class AdminUserUpdate(BaseModel):
+    subscription_tier: Optional[str] = None
+    subscription_status: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
 
-# Dashboard Models
-class DashboardMetrics(BaseModel):
-    tax_reserve_balance: float
-    cash_flow_status: str  # green/yellow/red
-    most_profitable_job_type: Optional[str] = None
-    top_lead_source: Optional[str] = None
-    upcoming_tax_deadlines: List[Dict[str, Any]]
-    total_jobs_this_month: int
-    total_revenue_this_month: float
-    average_profit_margin: float
+class AdminChatMessage(BaseModel):
+    user_id: str
+    message: str
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -229,10 +221,11 @@ def hash_password(password: str) -> str:
 def verify_password(password: str, hashed: str) -> bool:
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
-def create_jwt_token(user_id: str, email: str) -> str:
+def create_jwt_token(user_id: str, email: str, role: str = "user") -> str:
     payload = {
         "user_id": user_id,
         "email": email,
+        "role": role,
         "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRATION_DAYS)
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -246,20 +239,22 @@ def decode_jwt_token(token: str) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail="Token non valido")
 
 async def get_current_user(request: Request) -> Dict[str, Any]:
-    # Check cookie first
-    session_token = request.cookies.get("session_token")
+    # Check Authorization header first
+    auth_header = request.headers.get("Authorization")
+    token = None
     
-    # Then check Authorization header
-    if not session_token:
-        auth_header = request.headers.get("Authorization")
-        if auth_header and auth_header.startswith("Bearer "):
-            session_token = auth_header[7:]
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
     
-    if not session_token:
+    # Then check cookie
+    if not token:
+        token = request.cookies.get("session_token")
+    
+    if not token:
         raise HTTPException(status_code=401, detail="Non autenticato")
     
     # Check if it's a session token (Google OAuth)
-    session = await db.user_sessions.find_one({"session_token": session_token}, {"_id": 0})
+    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
     if session:
         expires_at = session.get("expires_at")
         if isinstance(expires_at, str):
@@ -276,7 +271,7 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
     
     # Try JWT token
     try:
-        payload = decode_jwt_token(session_token)
+        payload = decode_jwt_token(token)
         user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
         if not user:
             raise HTTPException(status_code=401, detail="Utente non trovato")
@@ -286,35 +281,78 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
     except Exception:
         raise HTTPException(status_code=401, detail="Token non valido")
 
-def calculate_tax(revenue: float, tax_regime: str) -> Dict[str, float]:
-    """Calculate Italian taxes based on regime"""
-    irpef = 0.0
-    inps = revenue * 0.24  # 24% INPS always
-    iva = 0.0
+async def get_admin_user(request: Request) -> Dict[str, Any]:
+    """Get admin user - requires admin or super_admin role"""
+    user = await get_current_user(request)
+    if user.get("role") not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="Accesso negato - richiesti privilegi admin")
+    return user
+
+def calculate_tax(revenue: float, tax_regime: str, period: str = "monthly") -> Dict[str, Any]:
+    """Calculate Italian taxes based on regime - supports monthly and yearly"""
+    # If monthly, we calculate monthly values and provide yearly projection
+    yearly_revenue = revenue * 12 if period == "monthly" else revenue
+    monthly_revenue = revenue if period == "monthly" else revenue / 12
+    
+    irpef_yearly = 0.0
+    inps_yearly = 0.0
+    iva_yearly = 0.0
     
     if tax_regime == "forfettario_5":
-        irpef = revenue * 0.05
+        # Forfettario 5%: solo IRPEF sostitutiva 5%, INPS ridotto 24% sul 78% del fatturato
+        irpef_yearly = yearly_revenue * 0.78 * 0.05  # 5% sul 78% del reddito
+        inps_yearly = yearly_revenue * 0.78 * 0.2607  # 26.07% gestione separata sul 78%
+        iva_yearly = 0  # Esente IVA
     elif tax_regime == "forfettario_15":
-        irpef = revenue * 0.15
+        # Forfettario 15%: IRPEF sostitutiva 15%, INPS 24% sul 78% del fatturato
+        irpef_yearly = yearly_revenue * 0.78 * 0.15  # 15% sul 78% del reddito
+        inps_yearly = yearly_revenue * 0.78 * 0.2607  # 26.07% gestione separata
+        iva_yearly = 0  # Esente IVA
     elif tax_regime == "ordinario":
-        # Simplified progressive calculation
-        if revenue <= 15000:
-            irpef = revenue * 0.23
-        elif revenue <= 28000:
-            irpef = 15000 * 0.23 + (revenue - 15000) * 0.25
-        elif revenue <= 50000:
-            irpef = 15000 * 0.23 + 13000 * 0.25 + (revenue - 28000) * 0.35
+        # Regime ordinario: IRPEF progressiva + INPS + IVA
+        # Calcolo IRPEF progressivo (semplificato, senza deduzioni)
+        reddito_imponibile = yearly_revenue * 0.67  # Coefficiente redditività medio
+        if reddito_imponibile <= 15000:
+            irpef_yearly = reddito_imponibile * 0.23
+        elif reddito_imponibile <= 28000:
+            irpef_yearly = 15000 * 0.23 + (reddito_imponibile - 15000) * 0.25
+        elif reddito_imponibile <= 50000:
+            irpef_yearly = 15000 * 0.23 + 13000 * 0.25 + (reddito_imponibile - 28000) * 0.35
         else:
-            irpef = 15000 * 0.23 + 13000 * 0.25 + 22000 * 0.35 + (revenue - 50000) * 0.43
-        iva = revenue * 0.22  # 22% IVA
+            irpef_yearly = 15000 * 0.23 + 13000 * 0.25 + 22000 * 0.35 + (reddito_imponibile - 50000) * 0.43
+        
+        inps_yearly = reddito_imponibile * 0.2607
+        iva_yearly = yearly_revenue * 0.22  # IVA 22% da versare (semplificato)
     
-    total = irpef + inps + iva
+    # Convert to the requested period
+    if period == "monthly":
+        irpef = irpef_yearly / 12
+        inps = inps_yearly / 12
+        iva = iva_yearly / 12
+        total = irpef + inps + iva
+        net = monthly_revenue - total
+        yearly_projection = {
+            "irpef_amount": round(irpef_yearly, 2),
+            "inps_amount": round(inps_yearly, 2),
+            "iva_amount": round(iva_yearly, 2),
+            "total_accrual": round(irpef_yearly + inps_yearly + iva_yearly, 2),
+            "net_income": round(yearly_revenue - (irpef_yearly + inps_yearly + iva_yearly), 2)
+        }
+    else:
+        irpef = irpef_yearly
+        inps = inps_yearly
+        iva = iva_yearly
+        total = irpef + inps + iva
+        net = yearly_revenue - total
+        yearly_projection = None
+    
     return {
         "irpef_amount": round(irpef, 2),
         "inps_amount": round(inps, 2),
         "iva_amount": round(iva, 2),
         "total_accrual": round(total, 2),
-        "net_income": round(revenue - total, 2)
+        "net_income": round(net, 2),
+        "yearly_projection": yearly_projection
     }
 
 def calculate_job_profitability(quote: float, hours: float, materials: float, waste_pct: float) -> Dict[str, float]:
@@ -330,30 +368,52 @@ def calculate_job_profitability(quote: float, hours: float, materials: float, wa
         "hourly_rate": round(hourly_rate, 2)
     }
 
-def get_italian_tax_deadlines() -> List[Dict[str, Any]]:
-    """Get upcoming Italian tax deadlines"""
+def get_tax_deadlines_by_regime(tax_regime: str) -> List[Dict[str, Any]]:
+    """Get Italian tax deadlines based on tax regime"""
     today = datetime.now(timezone.utc)
     year = today.year
     next_year = year + 1
     
-    # Generate deadlines for current and next year
-    all_deadlines = [
-        {"date": f"16/03/{year}", "description": "Versamento IVA annuale"},
-        {"date": f"30/06/{year}", "description": "Saldo IRPEF anno precedente"},
-        {"date": f"30/06/{year}", "description": "Primo acconto IRPEF"},
-        {"date": f"16/09/{year}", "description": "Versamento INPS"},
-        {"date": f"30/11/{year}", "description": "Secondo acconto IRPEF"},
-        {"date": f"16/01/{next_year}", "description": "Versamento IVA trimestrale Q4"},
-        {"date": f"16/03/{next_year}", "description": "Versamento IVA annuale"},
-        {"date": f"30/06/{next_year}", "description": "Saldo IRPEF anno precedente"},
-    ]
+    # Common deadlines for all regimes
+    common_deadlines = []
+    
+    if tax_regime in ["forfettario_5", "forfettario_15"]:
+        # Forfettario: semplificazioni fiscali
+        all_deadlines = [
+            {"date": f"16/03/{year}", "description": "Versamento saldo IVA (se dovuto anno prec.)", "regime": "forfettario"},
+            {"date": f"30/06/{year}", "description": "Saldo imposta sostitutiva anno precedente + 1° acconto", "regime": "forfettario"},
+            {"date": f"16/06/{year}", "description": "Versamento 1° acconto INPS", "regime": "forfettario"},
+            {"date": f"30/09/{year}", "description": "Versamento 2° acconto INPS", "regime": "forfettario"},
+            {"date": f"30/11/{year}", "description": "Versamento 2° acconto imposta sostitutiva", "regime": "forfettario"},
+            {"date": f"16/11/{year}", "description": "Versamento 3° acconto INPS", "regime": "forfettario"},
+            {"date": f"28/02/{next_year}", "description": "Versamento saldo INPS anno precedente", "regime": "forfettario"},
+            {"date": f"30/06/{next_year}", "description": "Saldo imposta sostitutiva + 1° acconto", "regime": "forfettario"},
+        ]
+    else:
+        # Regime ordinario: più scadenze
+        all_deadlines = [
+            {"date": f"16/01/{year}", "description": "Versamento IVA dicembre (mensile) o 4° trim.", "regime": "ordinario"},
+            {"date": f"16/02/{year}", "description": "Versamento IVA gennaio (mensile)", "regime": "ordinario"},
+            {"date": f"16/03/{year}", "description": "Versamento IVA febbraio + saldo IVA annuale", "regime": "ordinario"},
+            {"date": f"16/04/{year}", "description": "Versamento IVA marzo o 1° trim.", "regime": "ordinario"},
+            {"date": f"16/05/{year}", "description": "Versamento IVA aprile (mensile)", "regime": "ordinario"},
+            {"date": f"30/06/{year}", "description": "Saldo IRPEF/IRES + 1° acconto + Saldo INPS", "regime": "ordinario"},
+            {"date": f"16/07/{year}", "description": "Versamento IVA giugno o 2° trim.", "regime": "ordinario"},
+            {"date": f"20/08/{year}", "description": "Versamento IVA luglio (con maggiorazione)", "regime": "ordinario"},
+            {"date": f"16/09/{year}", "description": "Versamento IVA agosto", "regime": "ordinario"},
+            {"date": f"16/10/{year}", "description": "Versamento IVA settembre o 3° trim.", "regime": "ordinario"},
+            {"date": f"16/11/{year}", "description": "Versamento IVA ottobre + 3° acconto INPS", "regime": "ordinario"},
+            {"date": f"30/11/{year}", "description": "Versamento 2° acconto IRPEF/IRES", "regime": "ordinario"},
+            {"date": f"27/12/{year}", "description": "Acconto IVA", "regime": "ordinario"},
+            {"date": f"16/01/{next_year}", "description": "Versamento IVA dicembre o 4° trim.", "regime": "ordinario"},
+        ]
     
     upcoming = []
     for deadline in all_deadlines:
         parts = deadline["date"].split("/")
         deadline_date = datetime(int(parts[2]), int(parts[1]), int(parts[0]), tzinfo=timezone.utc)
         days_until = (deadline_date - today).days
-        if days_until >= 0 and days_until <= 90:
+        if days_until >= 0 and days_until <= 120:
             upcoming.append({
                 "date": deadline["date"],
                 "description": deadline["description"],
@@ -361,11 +421,11 @@ def get_italian_tax_deadlines() -> List[Dict[str, Any]]:
                 "urgency": "red" if days_until <= 15 else "yellow" if days_until <= 30 else "green"
             })
     
-    return sorted(upcoming, key=lambda x: x["days_until"])[:5]
+    return sorted(upcoming, key=lambda x: x["days_until"])[:8]
 
 # ==================== AUTH ENDPOINTS ====================
 
-@api_router.post("/auth/register", response_model=UserResponse)
+@api_router.post("/auth/register")
 async def register(user_data: UserCreate):
     """Register a new user with email/password"""
     existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
@@ -383,24 +443,26 @@ async def register(user_data: UserCreate):
         "team_size": user_data.team_size,
         "services": user_data.services,
         "tax_regime": user_data.tax_regime,
+        "business_info": {},
         "subscription_tier": "essential",
         "subscription_status": "trial",
+        "role": "user",
+        "is_active": True,
+        "email_verified": False,
         "created_at": now
     }
     
     await db.users.insert_one(user_doc)
     
-    return UserResponse(
-        user_id=user_id,
-        email=user_data.email,
-        business_name=user_data.business_name,
-        team_size=user_data.team_size,
-        services=user_data.services,
-        tax_regime=user_data.tax_regime,
-        subscription_tier="essential",
-        subscription_status="trial",
-        created_at=now
-    )
+    # Send verification email (TODO: integrate SendGrid)
+    # await send_verification_email(user_data.email, user_id)
+    
+    return {
+        "user_id": user_id,
+        "email": user_data.email,
+        "business_name": user_data.business_name,
+        "message": "Registrazione completata. Controlla la tua email per verificare l'account."
+    }
 
 @api_router.post("/auth/login")
 async def login(user_data: UserLogin, response: Response):
@@ -409,7 +471,10 @@ async def login(user_data: UserLogin, response: Response):
     if not user or not verify_password(user_data.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Email o password non corretti")
     
-    token = create_jwt_token(user["user_id"], user["email"])
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=401, detail="Account disattivato")
+    
+    token = create_jwt_token(user["user_id"], user["email"], user.get("role", "user"))
     
     response.set_cookie(
         key="session_token",
@@ -430,8 +495,10 @@ async def login(user_data: UserLogin, response: Response):
             "team_size": user.get("team_size", 1),
             "services": user.get("services", []),
             "tax_regime": user.get("tax_regime", "forfettario_15"),
+            "business_info": user.get("business_info", {}),
             "subscription_tier": user.get("subscription_tier", "essential"),
             "subscription_status": user.get("subscription_status", "trial"),
+            "role": user.get("role", "user"),
             "name": user.get("name"),
             "picture": user.get("picture"),
             "created_at": user.get("created_at", "")
@@ -447,7 +514,6 @@ async def process_google_session(request: Request, response: Response):
     if not session_id:
         raise HTTPException(status_code=400, detail="session_id richiesto")
     
-    # REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     async with httpx.AsyncClient() as client_http:
         resp = await client_http.get(
             "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
@@ -464,18 +530,15 @@ async def process_google_session(request: Request, response: Response):
     picture = google_data.get("picture")
     session_token = google_data.get("session_token")
     
-    # Check if user exists
     user = await db.users.find_one({"email": email}, {"_id": 0})
     
     if user:
-        # Update existing user
         await db.users.update_one(
             {"email": email},
             {"$set": {"name": name, "picture": picture}}
         )
         user_id = user["user_id"]
     else:
-        # Create new user
         user_id = f"user_{uuid.uuid4().hex[:12]}"
         now = datetime.now(timezone.utc).isoformat()
         
@@ -488,14 +551,17 @@ async def process_google_session(request: Request, response: Response):
             "team_size": 1,
             "services": [],
             "tax_regime": "forfettario_15",
+            "business_info": {},
             "subscription_tier": "essential",
             "subscription_status": "trial",
+            "role": "user",
+            "is_active": True,
+            "email_verified": True,
             "created_at": now
         }
         await db.users.insert_one(user_doc)
         user = user_doc
     
-    # Store session
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({
         "user_id": user_id,
@@ -524,10 +590,13 @@ async def process_google_session(request: Request, response: Response):
             "team_size": user.get("team_size", 1),
             "services": user.get("services", []),
             "tax_regime": user.get("tax_regime", "forfettario_15"),
+            "business_info": user.get("business_info", {}),
             "subscription_tier": user.get("subscription_tier", "essential"),
             "subscription_status": user.get("subscription_status", "trial"),
+            "role": user.get("role", "user"),
             "created_at": user.get("created_at", "")
-        }
+        },
+        "session_token": session_token
     }
 
 @api_router.get("/auth/me")
@@ -542,15 +611,28 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
         "team_size": current_user.get("team_size", 1),
         "services": current_user.get("services", []),
         "tax_regime": current_user.get("tax_regime", "forfettario_15"),
+        "business_info": current_user.get("business_info", {}),
         "subscription_tier": current_user.get("subscription_tier", "essential"),
         "subscription_status": current_user.get("subscription_status", "trial"),
+        "role": current_user.get("role", "user"),
         "created_at": current_user.get("created_at", "")
     }
 
 @api_router.put("/auth/profile")
 async def update_profile(update_data: UserUpdate, current_user: Dict = Depends(get_current_user)):
     """Update user profile"""
-    update_fields = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    update_fields = {}
+    
+    if update_data.business_name is not None:
+        update_fields["business_name"] = update_data.business_name
+    if update_data.team_size is not None:
+        update_fields["team_size"] = update_data.team_size
+    if update_data.services is not None:
+        update_fields["services"] = update_data.services
+    if update_data.tax_regime is not None:
+        update_fields["tax_regime"] = update_data.tax_regime
+    if update_data.business_info is not None:
+        update_fields["business_info"] = update_data.business_info.model_dump()
     
     if update_fields:
         await db.users.update_one(
@@ -558,15 +640,21 @@ async def update_profile(update_data: UserUpdate, current_user: Dict = Depends(g
             {"$set": update_fields}
         )
     
-    updated_user = await db.users.find_one({"user_id": current_user["user_id"]}, {"_id": 0})
+    updated_user = await db.users.find_one({"user_id": current_user["user_id"]}, {"_id": 0, "password_hash": 0})
     return updated_user
 
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response):
     """Logout user"""
-    session_token = request.cookies.get("session_token")
-    if session_token:
-        await db.user_sessions.delete_one({"session_token": session_token})
+    auth_header = request.headers.get("Authorization")
+    token = None
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    if not token:
+        token = request.cookies.get("session_token")
+    
+    if token:
+        await db.user_sessions.delete_one({"session_token": token})
     
     response.delete_cookie(key="session_token", path="/")
     return {"message": "Logout effettuato"}
@@ -574,12 +662,11 @@ async def logout(request: Request, response: Response):
 # ==================== JOBS ENDPOINTS ====================
 
 @api_router.post("/jobs", response_model=JobResponse)
-async def create_job(job_data: JobCreate, current_user: Dict = Depends(get_current_user)):
-    """Create a new job"""
+async def create_job(job_data: JobCreate, request: Request, current_user: Dict = Depends(get_current_user)):
+    """Create a new job or quote"""
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     
-    # Determine waste percentage
     waste_pct = job_data.waste_percentage
     if waste_pct is None:
         if "ppf" in job_data.job_type:
@@ -587,7 +674,6 @@ async def create_job(job_data: JobCreate, current_user: Dict = Depends(get_curre
         else:
             waste_pct = DEFAULT_WASTE["vinyl"]
     
-    # Calculate profitability
     profit_data = calculate_job_profitability(
         job_data.quote_amount,
         job_data.hours_worked,
@@ -595,12 +681,26 @@ async def create_job(job_data: JobCreate, current_user: Dict = Depends(get_curre
         waste_pct
     )
     
+    # Generate quote link if it's a quote
+    quote_link = None
+    if job_data.is_quote:
+        quote_token = uuid.uuid4().hex
+        origin = request.headers.get("origin", "")
+        quote_link = f"{origin}/quote/{quote_token}"
+        await db.quote_tokens.insert_one({
+            "token": quote_token,
+            "job_id": job_id,
+            "created_at": now.isoformat()
+        })
+    
     job_doc = {
         "job_id": job_id,
         "user_id": current_user["user_id"],
         "client_name": job_data.client_name,
+        "client_email": job_data.client_email,
         "job_type": job_data.job_type,
         "vehicle_type": job_data.vehicle_type,
+        "vehicle_info": job_data.vehicle_info,
         "quote_amount": job_data.quote_amount,
         "hours_worked": job_data.hours_worked,
         "materials_cost": job_data.materials_cost,
@@ -610,14 +710,16 @@ async def create_job(job_data: JobCreate, current_user: Dict = Depends(get_curre
         "hourly_rate": profit_data["hourly_rate"],
         "lead_source": job_data.lead_source,
         "notes": job_data.notes,
+        "is_quote": job_data.is_quote,
+        "quote_status": "pending" if job_data.is_quote else None,
+        "quote_link": quote_link,
         "completed_date": now.isoformat(),
         "created_at": now.isoformat()
     }
     
     await db.jobs.insert_one(job_doc)
     
-    # Track lead source if provided
-    if job_data.lead_source:
+    if job_data.lead_source and not job_data.is_quote:
         await db.lead_sources.insert_one({
             "lead_id": f"lead_{uuid.uuid4().hex[:12]}",
             "user_id": current_user["user_id"],
@@ -635,6 +737,7 @@ async def get_jobs(
     skip: int = 0,
     job_type: Optional[str] = None,
     vehicle_type: Optional[str] = None,
+    is_quote: Optional[bool] = None,
     current_user: Dict = Depends(get_current_user)
 ):
     """Get all jobs for current user"""
@@ -643,6 +746,8 @@ async def get_jobs(
         query["job_type"] = job_type
     if vehicle_type:
         query["vehicle_type"] = vehicle_type
+    if is_quote is not None:
+        query["is_quote"] = is_quote
     
     jobs = await db.jobs.find(query, {"_id": 0}).sort("completed_date", -1).skip(skip).limit(limit).to_list(limit)
     return jobs
@@ -657,21 +762,92 @@ async def get_job(job_id: str, current_user: Dict = Depends(get_current_user)):
 
 @api_router.delete("/jobs/{job_id}")
 async def delete_job(job_id: str, current_user: Dict = Depends(get_current_user)):
-    """Delete a job (soft delete)"""
+    """Delete a job"""
     result = await db.jobs.delete_one({"job_id": job_id, "user_id": current_user["user_id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Lavoro non trovato")
     
-    # Also delete related lead source
     await db.lead_sources.delete_many({"job_id": job_id})
-    
     return {"message": "Lavoro eliminato"}
+
+# Public quote viewing and acceptance
+@api_router.get("/quote/{token}")
+async def get_public_quote(token: str):
+    """Public endpoint to view a quote"""
+    quote_token = await db.quote_tokens.find_one({"token": token}, {"_id": 0})
+    if not quote_token:
+        raise HTTPException(status_code=404, detail="Preventivo non trovato")
+    
+    job = await db.jobs.find_one({"job_id": quote_token["job_id"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Preventivo non trovato")
+    
+    # Get business info for the quote
+    user = await db.users.find_one({"user_id": job["user_id"]}, {"_id": 0, "password_hash": 0})
+    
+    # Return only client-visible fields
+    return {
+        "job_id": job["job_id"],
+        "client_name": job["client_name"],
+        "job_type": job["job_type"],
+        "vehicle_type": job["vehicle_type"],
+        "vehicle_info": job.get("vehicle_info"),
+        "quote_amount": job["quote_amount"],
+        "notes": job.get("notes"),
+        "quote_status": job.get("quote_status"),
+        "created_at": job["created_at"],
+        "business_name": user.get("business_name"),
+        "business_info": user.get("business_info", {})
+    }
+
+@api_router.post("/quote/{token}/accept")
+async def accept_quote(token: str, acceptance: QuoteAcceptance):
+    """Public endpoint to accept or reject a quote"""
+    quote_token = await db.quote_tokens.find_one({"token": token}, {"_id": 0})
+    if not quote_token:
+        raise HTTPException(status_code=404, detail="Preventivo non trovato")
+    
+    job = await db.jobs.find_one({"job_id": quote_token["job_id"]}, {"_id": 0})
+    if not job:
+        raise HTTPException(status_code=404, detail="Preventivo non trovato")
+    
+    if job.get("quote_status") != "pending":
+        raise HTTPException(status_code=400, detail="Preventivo già processato")
+    
+    new_status = "accepted" if acceptance.accepted else "rejected"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    update_fields = {
+        "quote_status": new_status,
+        "quote_accepted_at": now if acceptance.accepted else None,
+        "quote_rejected_at": now if not acceptance.accepted else None,
+        "client_signature": acceptance.client_signature,
+        "client_notes": acceptance.notes
+    }
+    
+    await db.jobs.update_one(
+        {"job_id": quote_token["job_id"]},
+        {"$set": update_fields}
+    )
+    
+    # If accepted, add to lead sources
+    if acceptance.accepted and job.get("lead_source"):
+        await db.lead_sources.insert_one({
+            "lead_id": f"lead_{uuid.uuid4().hex[:12]}",
+            "user_id": job["user_id"],
+            "job_id": job["job_id"],
+            "source": job["lead_source"],
+            "revenue": job["quote_amount"],
+            "created_at": now
+        })
+    
+    return {"message": "Preventivo aggiornato", "status": new_status}
 
 @api_router.get("/jobs/analytics/profitability")
 async def get_profitability_analytics(current_user: Dict = Depends(get_current_user)):
     """Get profitability analytics by job type and vehicle type"""
     pipeline_job_type = [
-        {"$match": {"user_id": current_user["user_id"]}},
+        {"$match": {"user_id": current_user["user_id"], "is_quote": {"$ne": True}}},
         {"$group": {
             "_id": "$job_type",
             "total_revenue": {"$sum": "$quote_amount"},
@@ -683,7 +859,7 @@ async def get_profitability_analytics(current_user: Dict = Depends(get_current_u
     ]
     
     pipeline_vehicle_type = [
-        {"$match": {"user_id": current_user["user_id"]}},
+        {"$match": {"user_id": current_user["user_id"], "is_quote": {"$ne": True}}},
         {"$group": {
             "_id": "$vehicle_type",
             "total_revenue": {"$sum": "$quote_amount"},
@@ -707,23 +883,23 @@ async def get_profitability_analytics(current_user: Dict = Depends(get_current_u
 @api_router.post("/tax/calculate", response_model=TaxCalculationResponse)
 async def calculate_taxes(request: TaxCalculationRequest):
     """Calculate taxes for given revenue and regime"""
-    tax_data = calculate_tax(request.monthly_revenue, request.tax_regime)
+    tax_data = calculate_tax(request.revenue, request.tax_regime, request.period)
     return TaxCalculationResponse(
-        monthly_revenue=request.monthly_revenue,
+        revenue=request.revenue,
         tax_regime=request.tax_regime,
+        period=request.period,
         **tax_data
     )
 
-@api_router.post("/tax/accruals", response_model=TaxAccrualResponse)
+@api_router.post("/tax/accruals")
 async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict = Depends(get_current_user)):
     """Create a tax accrual entry for a month"""
     accrual_id = f"accrual_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     
-    # Calculate taxes
-    tax_data = calculate_tax(accrual_data.revenue, current_user.get("tax_regime", "forfettario_15"))
+    tax_regime = current_user.get("tax_regime", "forfettario_15")
+    tax_data = calculate_tax(accrual_data.revenue, tax_regime, "monthly")
     
-    # Get cumulative balance
     prev_accruals = await db.tax_accruals.find(
         {"user_id": current_user["user_id"], "month": {"$lt": accrual_data.month}},
         {"_id": 0}
@@ -737,24 +913,25 @@ async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict 
         "user_id": current_user["user_id"],
         "month": accrual_data.month,
         "revenue": accrual_data.revenue,
+        "tax_regime": tax_regime,
         "irpef_amount": tax_data["irpef_amount"],
         "inps_amount": tax_data["inps_amount"],
         "iva_amount": tax_data["iva_amount"],
         "total_accrual": tax_data["total_accrual"],
         "cumulative_balance": round(cumulative_balance, 2),
+        "yearly_projection": tax_data.get("yearly_projection"),
         "created_at": now.isoformat()
     }
     
-    # Upsert to handle updates for same month
     await db.tax_accruals.update_one(
         {"user_id": current_user["user_id"], "month": accrual_data.month},
         {"$set": accrual_doc},
         upsert=True
     )
     
-    return TaxAccrualResponse(**accrual_doc)
+    return accrual_doc
 
-@api_router.get("/tax/accruals", response_model=List[TaxAccrualResponse])
+@api_router.get("/tax/accruals")
 async def get_tax_accruals(current_user: Dict = Depends(get_current_user)):
     """Get all tax accruals for current user"""
     accruals = await db.tax_accruals.find(
@@ -766,7 +943,6 @@ async def get_tax_accruals(current_user: Dict = Depends(get_current_user)):
 @api_router.get("/tax/forecast")
 async def get_tax_forecast(current_user: Dict = Depends(get_current_user)):
     """Get 6-month tax forecast based on recent revenue"""
-    # Get average monthly revenue from last 3 months
     three_months_ago = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m")
     
     recent_accruals = await db.tax_accruals.find(
@@ -775,7 +951,7 @@ async def get_tax_forecast(current_user: Dict = Depends(get_current_user)):
     ).to_list(100)
     
     if not recent_accruals:
-        avg_revenue = 5000  # Default estimate
+        avg_revenue = 5000
     else:
         avg_revenue = sum(a["revenue"] for a in recent_accruals) / len(recent_accruals)
     
@@ -786,19 +962,24 @@ async def get_tax_forecast(current_user: Dict = Depends(get_current_user)):
     for i in range(6):
         future_date = current_date + timedelta(days=30 * (i + 1))
         month_str = future_date.strftime("%Y-%m")
-        tax_data = calculate_tax(avg_revenue, tax_regime)
+        tax_data = calculate_tax(avg_revenue, tax_regime, "monthly")
         forecast.append({
             "month": month_str,
             "estimated_revenue": avg_revenue,
-            **tax_data
+            "irpef_amount": tax_data["irpef_amount"],
+            "inps_amount": tax_data["inps_amount"],
+            "iva_amount": tax_data["iva_amount"],
+            "total_accrual": tax_data["total_accrual"],
+            "net_income": tax_data["net_income"]
         })
     
     return {"forecast": forecast, "avg_monthly_revenue": avg_revenue}
 
 @api_router.get("/tax/deadlines")
-async def get_tax_deadlines():
-    """Get upcoming Italian tax deadlines"""
-    return {"deadlines": get_italian_tax_deadlines()}
+async def get_tax_deadlines(current_user: Dict = Depends(get_current_user)):
+    """Get upcoming Italian tax deadlines based on user's tax regime"""
+    tax_regime = current_user.get("tax_regime", "forfettario_15")
+    return {"deadlines": get_tax_deadlines_by_regime(tax_regime)}
 
 # ==================== CLIENT ONBOARDING ENDPOINTS ====================
 
@@ -811,7 +992,7 @@ DEFAULT_CHECKLIST = [
     {"item": "Policy revisioni firmata (max 2 incluse)", "completed": False, "uploaded_file": None}
 ]
 
-@api_router.post("/onboarding", response_model=OnboardingResponse)
+@api_router.post("/onboarding")
 async def create_onboarding(
     onboarding_data: OnboardingCreate,
     request: Request,
@@ -822,7 +1003,6 @@ async def create_onboarding(
     unique_link_token = uuid.uuid4().hex
     now = datetime.now(timezone.utc)
     
-    # Generate unique link using the request origin
     origin = request.headers.get("origin", "")
     unique_link = f"{origin}/onboarding/client/{unique_link_token}"
     
@@ -842,9 +1022,9 @@ async def create_onboarding(
     
     await db.onboardings.insert_one(onboarding_doc)
     
-    return OnboardingResponse(**{k: v for k, v in onboarding_doc.items() if k not in ["_id", "unique_link_token"]})
+    return {k: v for k, v in onboarding_doc.items() if k not in ["_id", "unique_link_token"]}
 
-@api_router.get("/onboarding", response_model=List[OnboardingResponse])
+@api_router.get("/onboarding")
 async def get_onboardings(
     status: Optional[str] = None,
     current_user: Dict = Depends(get_current_user)
@@ -857,7 +1037,7 @@ async def get_onboardings(
     onboardings = await db.onboardings.find(query, {"_id": 0, "unique_link_token": 0}).sort("created_at", -1).to_list(100)
     return onboardings
 
-@api_router.get("/onboarding/{onboarding_id}", response_model=OnboardingResponse)
+@api_router.get("/onboarding/{onboarding_id}")
 async def get_onboarding(onboarding_id: str, current_user: Dict = Depends(get_current_user)):
     """Get a specific onboarding"""
     onboarding = await db.onboardings.find_one(
@@ -868,7 +1048,6 @@ async def get_onboarding(onboarding_id: str, current_user: Dict = Depends(get_cu
         raise HTTPException(status_code=404, detail="Onboarding non trovato")
     return onboarding
 
-# Public endpoint for client to view and update their onboarding
 @api_router.get("/onboarding/client/{token}")
 async def get_client_onboarding(token: str):
     """Public endpoint for client to view their onboarding checklist"""
@@ -887,7 +1066,6 @@ async def update_client_onboarding(token: str, update_data: OnboardingClientUpda
     if not onboarding:
         raise HTTPException(status_code=404, detail="Link non valido o scaduto")
     
-    # Check if all items are completed
     all_completed = all(item.get("completed", False) for item in update_data.checklist_items)
     now = datetime.now(timezone.utc)
     
@@ -906,7 +1084,7 @@ async def update_client_onboarding(token: str, update_data: OnboardingClientUpda
     
     return {"message": "Checklist aggiornata", "status": update_fields["status"]}
 
-# ==================== LEAD SOURCE & MARKETING ENDPOINTS ====================
+# ==================== MARKETING ENDPOINTS ====================
 
 @api_router.get("/marketing/lead-sources")
 async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
@@ -923,25 +1101,22 @@ async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
     
     lead_stats = await db.lead_sources.aggregate(pipeline).to_list(100)
     
-    # Get marketing hours for ROI calculation
     marketing_efforts = await db.marketing_efforts.find(
         {"user_id": current_user["user_id"]},
         {"_id": 0}
     ).to_list(100)
     
-    # Calculate hours per channel
     hours_by_channel = {}
     for effort in marketing_efforts:
         channel = effort["channel"]
         hours_by_channel[channel] = hours_by_channel.get(channel, 0) + effort["hours_invested"]
     
-    # Combine with ROI
     results = []
     total_revenue = sum(s["total_revenue"] for s in lead_stats)
     
     for stat in lead_stats:
         source = stat["_id"]
-        hours = hours_by_channel.get(source, 1)  # Avoid division by zero
+        hours = hours_by_channel.get(source, 1)
         roi = stat["total_revenue"] / hours if hours > 0 else stat["total_revenue"]
         percentage = (stat["total_revenue"] / total_revenue * 100) if total_revenue > 0 else 0
         
@@ -954,7 +1129,6 @@ async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
             "percentage": round(percentage, 2)
         })
     
-    # Generate 80/20 insight
     insight = None
     if results:
         top_source = results[0]
@@ -963,7 +1137,7 @@ async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
     
     return {"lead_sources": results, "insight": insight}
 
-@api_router.post("/marketing/efforts", response_model=MarketingEffortResponse)
+@api_router.post("/marketing/efforts")
 async def create_marketing_effort(
     effort_data: MarketingEffortCreate,
     current_user: Dict = Depends(get_current_user)
@@ -982,9 +1156,9 @@ async def create_marketing_effort(
     }
     
     await db.marketing_efforts.insert_one(effort_doc)
-    return MarketingEffortResponse(**effort_doc)
+    return effort_doc
 
-@api_router.get("/marketing/efforts", response_model=List[MarketingEffortResponse])
+@api_router.get("/marketing/efforts")
 async def get_marketing_efforts(current_user: Dict = Depends(get_current_user)):
     """Get all marketing efforts"""
     efforts = await db.marketing_efforts.find(
@@ -993,17 +1167,156 @@ async def get_marketing_efforts(current_user: Dict = Depends(get_current_user)):
     ).sort("month", -1).to_list(100)
     return efforts
 
+# ==================== AI CONTENT GENERATION ====================
+
+@api_router.post("/marketing/ai/generate")
+async def generate_ai_content(
+    request_data: ContentGenerationRequest,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Generate marketing content using AI"""
+    from emergentintegrations.llm.chat import LlmChat, UserMessage
+    
+    api_key = os.environ.get("EMERGENT_LLM_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="API key non configurata")
+    
+    session_id = f"marketing_{current_user['user_id']}_{request_data.step}"
+    
+    prompts = {
+        "bacino_utenza": """Sei un esperto di marketing per installatori auto (PPF, wrap, oscuramento vetri) in Italia.
+Analizza il bacino di utenza per un installatore nella zona indicata. Considera:
+- Tipologia di clienti potenziali (privati, flotte aziendali, concessionarie)
+- Potere d'acquisto della zona
+- Concorrenza presente
+- Opportunità di mercato
+
+Zona/Città: {user_input}
+
+Fornisci un'analisi dettagliata in italiano.""",
+        
+        "trova_argomenti": """Sei un esperto di content marketing per il settore automotive.
+In base al contesto fornito, suggerisci 10 argomenti per contenuti social che un installatore PPF/Wrap può pubblicare.
+Per ogni argomento indica:
+- Titolo accattivante
+- Formato consigliato (post, reel, carosello, video)
+- Obiettivo (awareness, engagement, conversione)
+
+Contesto: {context}
+Input aggiuntivo: {user_input}
+
+Rispondi in italiano con un elenco strutturato.""",
+        
+        "pain_points": """Sei un esperto di marketing e psicologia del consumatore.
+Identifica i principali pain points (problemi/preoccupazioni) dei clienti di un installatore auto PPF/Wrap.
+Per ogni pain point indica:
+- Il problema
+- L'emozione associata
+- Come il servizio lo risolve
+- Possibile contenuto da creare
+
+Contesto: {context}
+Input: {user_input}
+
+Rispondi in italiano.""",
+        
+        "genera_idea": """Sei un creativo specializzato in contenuti per social media nel settore automotive.
+Genera un'idea dettagliata per un contenuto basandoti su:
+Contesto: {context}
+Argomento: {user_input}
+
+Fornisci:
+- Hook (gancio iniziale)
+- Struttura del contenuto
+- Call to action
+- Hashtag suggeriti
+
+Rispondi in italiano.""",
+        
+        "sviluppo_testo": """Sei un copywriter esperto di social media marketing per il settore automotive.
+Scrivi il testo completo per il contenuto richiesto:
+
+Contesto: {context}
+Idea: {user_input}
+
+Fornisci:
+- Testo completo pronto per la pubblicazione
+- Versione breve per Instagram
+- Versione per Facebook/LinkedIn
+- Caption alternativa
+
+Rispondi in italiano con tono professionale ma accessibile.""",
+        
+        "sviluppo_video": """Sei un video content strategist per il settore automotive.
+Crea uno script video completo per:
+
+Contesto: {context}
+Idea: {user_input}
+
+Fornisci:
+- Hook iniziale (primi 3 secondi)
+- Script parlato completo con timing
+- Indicazioni per le riprese
+- Musica/audio suggerito
+- Testo per sottotitoli
+- Durata consigliata
+
+Rispondi in italiano."""
+    }
+    
+    if request_data.step not in prompts:
+        raise HTTPException(status_code=400, detail="Step non valido")
+    
+    prompt_template = prompts[request_data.step]
+    context_str = str(request_data.context) if request_data.context else "Nessun contesto precedente"
+    user_input = request_data.user_input or "Nessun input specifico"
+    
+    final_prompt = prompt_template.format(context=context_str, user_input=user_input)
+    
+    try:
+        chat = LlmChat(
+            api_key=api_key,
+            session_id=session_id,
+            system_message="Sei un esperto di marketing digitale specializzato nel settore automotive italiano. Rispondi sempre in italiano in modo chiaro e professionale."
+        ).with_model("gemini", "gemini-3-flash-preview")
+        
+        user_message = UserMessage(text=final_prompt)
+        response = await chat.send_message(user_message)
+        
+        # Save to history
+        await db.ai_content_history.insert_one({
+            "history_id": f"ai_{uuid.uuid4().hex[:12]}",
+            "user_id": current_user["user_id"],
+            "step": request_data.step,
+            "context": request_data.context,
+            "user_input": request_data.user_input,
+            "response": response,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        return {"content": response, "step": request_data.step}
+    except Exception as e:
+        logger.error(f"AI generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Errore nella generazione: {str(e)}")
+
+@api_router.get("/marketing/ai/history")
+async def get_ai_content_history(current_user: Dict = Depends(get_current_user)):
+    """Get AI content generation history"""
+    history = await db.ai_content_history.find(
+        {"user_id": current_user["user_id"]},
+        {"_id": 0}
+    ).sort("created_at", -1).limit(50).to_list(50)
+    return history
+
 # ==================== DASHBOARD ENDPOINTS ====================
 
-@api_router.get("/dashboard/metrics", response_model=DashboardMetrics)
+@api_router.get("/dashboard/metrics")
 async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     """Get dashboard metrics for current user"""
     user_id = current_user["user_id"]
     now = datetime.now(timezone.utc)
-    current_month = now.strftime("%Y-%m")
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
-    # Tax reserve balance (cumulative)
     latest_accrual = await db.tax_accruals.find_one(
         {"user_id": user_id},
         {"_id": 0},
@@ -1011,9 +1324,8 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     )
     tax_reserve = latest_accrual["cumulative_balance"] if latest_accrual else 0
     
-    # Jobs this month
     jobs_this_month = await db.jobs.find(
-        {"user_id": user_id, "completed_date": {"$gte": month_start.isoformat()}},
+        {"user_id": user_id, "completed_date": {"$gte": month_start.isoformat()}, "is_quote": {"$ne": True}},
         {"_id": 0}
     ).to_list(1000)
     
@@ -1021,7 +1333,6 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     total_revenue = sum(j["quote_amount"] for j in jobs_this_month)
     avg_margin = sum(j["profit_margin"] for j in jobs_this_month) / total_jobs if total_jobs > 0 else 0
     
-    # Cash flow status
     if avg_margin >= 30:
         cash_flow_status = "green"
     elif avg_margin >= 15:
@@ -1029,16 +1340,14 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     else:
         cash_flow_status = "red"
     
-    # Most profitable job type
     profitability = await db.jobs.aggregate([
-        {"$match": {"user_id": user_id}},
+        {"$match": {"user_id": user_id, "is_quote": {"$ne": True}}},
         {"$group": {"_id": "$job_type", "avg_margin": {"$avg": "$profit_margin"}}},
         {"$sort": {"avg_margin": -1}},
         {"$limit": 1}
     ]).to_list(1)
     most_profitable = profitability[0]["_id"] if profitability else None
     
-    # Top lead source
     lead_stats = await db.lead_sources.aggregate([
         {"$match": {"user_id": user_id}},
         {"$group": {"_id": "$source", "total_revenue": {"$sum": "$revenue"}}},
@@ -1047,19 +1356,193 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     ]).to_list(1)
     top_lead = lead_stats[0]["_id"] if lead_stats else None
     
-    # Tax deadlines
-    deadlines = get_italian_tax_deadlines()
+    tax_regime = current_user.get("tax_regime", "forfettario_15")
+    deadlines = get_tax_deadlines_by_regime(tax_regime)
     
-    return DashboardMetrics(
-        tax_reserve_balance=round(tax_reserve, 2),
-        cash_flow_status=cash_flow_status,
-        most_profitable_job_type=most_profitable,
-        top_lead_source=top_lead,
-        upcoming_tax_deadlines=deadlines,
-        total_jobs_this_month=total_jobs,
-        total_revenue_this_month=round(total_revenue, 2),
-        average_profit_margin=round(avg_margin, 2)
+    return {
+        "tax_reserve_balance": round(tax_reserve, 2),
+        "cash_flow_status": cash_flow_status,
+        "most_profitable_job_type": most_profitable,
+        "top_lead_source": top_lead,
+        "upcoming_tax_deadlines": deadlines,
+        "total_jobs_this_month": total_jobs,
+        "total_revenue_this_month": round(total_revenue, 2),
+        "average_profit_margin": round(avg_margin, 2)
+    }
+
+# ==================== ADMIN ENDPOINTS ====================
+
+@api_router.post("/admin/login")
+async def admin_login(user_data: UserLogin, response: Response):
+    """Admin login endpoint"""
+    # Check if it's the super admin
+    if user_data.email == ADMIN_EMAIL and user_data.password == ADMIN_PASSWORD:
+        # Create or get admin user
+        admin_user = await db.users.find_one({"email": ADMIN_EMAIL}, {"_id": 0})
+        if not admin_user:
+            admin_user = {
+                "user_id": "admin_super",
+                "email": ADMIN_EMAIL,
+                "business_name": "BESIDE Admin",
+                "role": "super_admin",
+                "is_active": True,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }
+            await db.users.insert_one(admin_user)
+        
+        token = create_jwt_token(admin_user["user_id"], admin_user["email"], "super_admin")
+        return {"token": token, "user": admin_user}
+    
+    # Check regular admin users
+    user = await db.users.find_one({"email": user_data.email, "role": {"$in": ["admin", "super_admin"]}}, {"_id": 0})
+    if not user or not verify_password(user_data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    
+    token = create_jwt_token(user["user_id"], user["email"], user.get("role", "admin"))
+    return {"token": token, "user": user}
+
+@api_router.get("/admin/users")
+async def admin_get_users(
+    skip: int = 0,
+    limit: int = 50,
+    search: Optional[str] = None,
+    admin_user: Dict = Depends(get_admin_user)
+):
+    """Get all users (admin only)"""
+    query = {"role": {"$nin": ["super_admin"]}}
+    if search:
+        query["$or"] = [
+            {"email": {"$regex": search, "$options": "i"}},
+            {"business_name": {"$regex": search, "$options": "i"}}
+        ]
+    
+    users = await db.users.find(query, {"_id": 0, "password_hash": 0}).skip(skip).limit(limit).to_list(limit)
+    total = await db.users.count_documents(query)
+    
+    return {"users": users, "total": total}
+
+@api_router.get("/admin/users/{user_id}")
+async def admin_get_user(user_id: str, admin_user: Dict = Depends(get_admin_user)):
+    """Get a specific user (admin only)"""
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    return user
+
+@api_router.put("/admin/users/{user_id}")
+async def admin_update_user(user_id: str, update_data: AdminUserUpdate, admin_user: Dict = Depends(get_admin_user)):
+    """Update a user (admin only)"""
+    update_fields = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    
+    if update_fields:
+        await db.users.update_one({"user_id": user_id}, {"$set": update_fields})
+    
+    updated_user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
+    return updated_user
+
+@api_router.get("/admin/stats")
+async def admin_get_stats(admin_user: Dict = Depends(get_admin_user)):
+    """Get admin dashboard statistics"""
+    total_users = await db.users.count_documents({"role": {"$nin": ["super_admin", "admin"]}})
+    active_users = await db.users.count_documents({"is_active": True, "role": {"$nin": ["super_admin", "admin"]}})
+    trial_users = await db.users.count_documents({"subscription_status": "trial"})
+    paying_users = await db.users.count_documents({"subscription_status": "active"})
+    
+    total_jobs = await db.jobs.count_documents({})
+    total_revenue = 0
+    jobs = await db.jobs.find({"is_quote": {"$ne": True}}, {"quote_amount": 1}).to_list(10000)
+    total_revenue = sum(j.get("quote_amount", 0) for j in jobs)
+    
+    # Users by tier
+    users_by_tier = await db.users.aggregate([
+        {"$match": {"role": {"$nin": ["super_admin", "admin"]}}},
+        {"$group": {"_id": "$subscription_tier", "count": {"$sum": 1}}}
+    ]).to_list(10)
+    
+    return {
+        "total_users": total_users,
+        "active_users": active_users,
+        "trial_users": trial_users,
+        "paying_users": paying_users,
+        "total_jobs": total_jobs,
+        "total_revenue": total_revenue,
+        "users_by_tier": users_by_tier
+    }
+
+@api_router.get("/admin/payments")
+async def admin_get_payments(
+    skip: int = 0,
+    limit: int = 50,
+    admin_user: Dict = Depends(get_admin_user)
+):
+    """Get all payment transactions (admin only)"""
+    payments = await db.payment_transactions.find({}, {"_id": 0}).sort("created_at", -1).skip(skip).limit(limit).to_list(limit)
+    total = await db.payment_transactions.count_documents({})
+    return {"payments": payments, "total": total}
+
+# Admin Chat
+@api_router.post("/admin/chat/send")
+async def admin_send_chat(message_data: AdminChatMessage, admin_user: Dict = Depends(get_admin_user)):
+    """Send a chat message to a user (admin only)"""
+    message_id = f"msg_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    message_doc = {
+        "message_id": message_id,
+        "user_id": message_data.user_id,
+        "sender_type": "admin",
+        "sender_id": admin_user["user_id"],
+        "message": message_data.message,
+        "read": False,
+        "created_at": now
+    }
+    
+    await db.admin_chat.insert_one(message_doc)
+    return message_doc
+
+@api_router.get("/admin/chat/{user_id}")
+async def admin_get_chat(user_id: str, admin_user: Dict = Depends(get_admin_user)):
+    """Get chat history with a user (admin only)"""
+    messages = await db.admin_chat.find(
+        {"user_id": user_id},
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(100)
+    return messages
+
+@api_router.get("/chat/messages")
+async def get_user_chat_messages(current_user: Dict = Depends(get_current_user)):
+    """Get chat messages for current user"""
+    messages = await db.admin_chat.find(
+        {"user_id": current_user["user_id"]},
+        {"_id": 0}
+    ).sort("created_at", 1).to_list(100)
+    
+    # Mark as read
+    await db.admin_chat.update_many(
+        {"user_id": current_user["user_id"], "sender_type": "admin", "read": False},
+        {"$set": {"read": True}}
     )
+    
+    return messages
+
+@api_router.post("/chat/send")
+async def user_send_chat(message: str, current_user: Dict = Depends(get_current_user)):
+    """Send a chat message to admin"""
+    message_id = f"msg_{uuid.uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    
+    message_doc = {
+        "message_id": message_id,
+        "user_id": current_user["user_id"],
+        "sender_type": "user",
+        "sender_id": current_user["user_id"],
+        "message": message,
+        "read": False,
+        "created_at": now
+    }
+    
+    await db.admin_chat.insert_one(message_doc)
+    return message_doc
 
 # ==================== SUBSCRIPTION/STRIPE ENDPOINTS ====================
 
@@ -1102,7 +1585,6 @@ async def create_subscription_checkout(
     
     session = await stripe_checkout.create_checkout_session(checkout_request)
     
-    # Store payment transaction
     await db.payment_transactions.insert_one({
         "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
         "user_id": current_user["user_id"],
@@ -1126,7 +1608,6 @@ async def get_subscription_status(session_id: str, current_user: Dict = Depends(
     
     status = await stripe_checkout.get_checkout_status(session_id)
     
-    # Update transaction and user subscription if paid
     if status.payment_status == "paid":
         transaction = await db.payment_transactions.find_one(
             {"session_id": session_id, "payment_status": "pending"},
@@ -1151,7 +1632,7 @@ async def get_subscription_status(session_id: str, current_user: Dict = Depends(
     return {
         "status": status.status,
         "payment_status": status.payment_status,
-        "amount": status.amount_total / 100,  # Convert from cents
+        "amount": status.amount_total / 100,
         "currency": status.currency
     }
 
@@ -1202,27 +1683,26 @@ async def root():
 
 @api_router.get("/config/job-types")
 async def get_job_types():
-    """Get available job types"""
     return {"job_types": JOB_TYPES}
 
 @api_router.get("/config/vehicle-types")
 async def get_vehicle_types():
-    """Get available vehicle types"""
     return {"vehicle_types": VEHICLE_TYPES}
 
 @api_router.get("/config/lead-sources")
 async def get_lead_sources():
-    """Get available lead sources"""
     return {"lead_sources": LEAD_SOURCES}
 
 @api_router.get("/config/tax-regimes")
 async def get_tax_regimes():
-    """Get available tax regimes"""
     return {"tax_regimes": TAX_REGIMES}
+
+@api_router.get("/config/business-types")
+async def get_business_types():
+    return {"business_types": BUSINESS_TYPES}
 
 @api_router.get("/config/subscription-tiers")
 async def get_subscription_tiers():
-    """Get subscription tiers and prices"""
     return {
         "tiers": [
             {"id": "essential", "name": "Essential", "price": 97.00, "features": ["Tutte le funzionalità base", "Max 50 lavori/mese", "1 utente", "Supporto email"]},

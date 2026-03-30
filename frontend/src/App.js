@@ -16,12 +16,26 @@ import { OnboardingPage } from "@/pages/OnboardingPage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { SubscriptionPage } from "@/pages/SubscriptionPage";
 import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
+import { QuotePage } from "@/pages/QuotePage";
+import { AdminPage } from "@/pages/AdminPage";
 
 // Components
 import { Layout } from "@/components/Layout";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 export const API = `${BACKEND_URL}/api`;
+
+// Configure axios defaults
+axios.defaults.withCredentials = true;
+
+// Add axios interceptor for auth token
+axios.interceptors.request.use((config) => {
+  const token = localStorage.getItem('beside_token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
 
 // Auth Context
 import { createContext, useContext } from "react";
@@ -41,12 +55,17 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   const checkAuth = useCallback(async () => {
+    const token = localStorage.getItem('beside_token');
+    if (!token) {
+      setUser(null);
+      setLoading(false);
+      return;
+    }
     try {
-      const response = await axios.get(`${API}/auth/me`, {
-        withCredentials: true
-      });
+      const response = await axios.get(`${API}/auth/me`);
       setUser(response.data);
     } catch (error) {
+      localStorage.removeItem('beside_token');
       setUser(null);
     } finally {
       setLoading(false);
@@ -63,16 +82,20 @@ export const AuthProvider = ({ children }) => {
     checkAuth();
   }, [checkAuth]);
 
-  const login = (userData) => {
+  const login = (userData, token) => {
+    if (token) {
+      localStorage.setItem('beside_token', token);
+    }
     setUser(userData);
   };
 
   const logout = async () => {
     try {
-      await axios.post(`${API}/auth/logout`, {}, { withCredentials: true });
+      await axios.post(`${API}/auth/logout`, {});
     } catch (error) {
       console.error("Logout error:", error);
     }
+    localStorage.removeItem('beside_token');
     setUser(null);
   };
 
@@ -106,10 +129,13 @@ const AuthCallback = () => {
       try {
         const response = await axios.post(
           `${API}/auth/session`,
-          { session_id: sessionId },
-          { withCredentials: true }
+          { session_id: sessionId }
         );
-        login(response.data.user);
+        // Store session token in localStorage for OAuth users
+        if (response.data.session_token) {
+          localStorage.setItem('beside_token', response.data.session_token);
+        }
+        login(response.data.user, response.data.session_token);
         navigate('/dashboard', { replace: true, state: { user: response.data.user } });
       } catch (error) {
         console.error("Auth callback error:", error);
@@ -169,6 +195,8 @@ const AppRouter = () => {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
       <Route path="/onboarding/client/:token" element={<ClientOnboardingPage />} />
+      <Route path="/quote/:token" element={<QuotePage />} />
+      <Route path="/admin" element={<AdminPage />} />
       
       {/* Protected Routes */}
       <Route
