@@ -100,10 +100,11 @@ export const Layout = ({ children }) => {
         <Button
           variant="ghost"
           size="icon"
+          className="h-12 w-12"
           onClick={() => setSidebarOpen(!sidebarOpen)}
           data-testid="mobile-menu-btn"
         >
-          {sidebarOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          {sidebarOpen ? <X className="w-7 h-7" /> : <Menu className="w-7 h-7" />}
         </Button>
       </header>
 
@@ -117,7 +118,7 @@ export const Layout = ({ children }) => {
 
       {/* Mobile Sidebar */}
       <aside 
-        className={`md:hidden fixed top-14 left-0 bottom-16 w-64 bg-white border-r border-border z-50 transform transition-transform duration-200 ${
+        className={`md:hidden fixed top-14 left-0 bottom-[72px] w-64 bg-white border-r border-border z-50 transform transition-transform duration-200 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -139,11 +140,26 @@ export const Layout = ({ children }) => {
               <span>{item.label}</span>
             </NavLink>
           ))}
+          
+          {/* Logout button in mobile menu */}
+          <div className="pt-4 mt-4 border-t border-border">
+            <button
+              onClick={() => {
+                setSidebarOpen(false);
+                handleLogout();
+              }}
+              className="flex items-center gap-3 px-4 py-3 rounded-lg transition-colors text-red-600 hover:bg-red-50 w-full"
+              data-testid="mobile-logout-btn"
+            >
+              <LogOut className="w-5 h-5" />
+              <span>Esci</span>
+            </button>
+          </div>
         </nav>
       </aside>
 
-      {/* Mobile Bottom Navigation */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center h-16 z-40 pb-safe">
+      {/* Mobile Bottom Navigation - 15% larger */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center h-[72px] z-40 pb-safe">
         {navItems.slice(0, 5).map((item) => (
           <NavLink
             key={item.path}
@@ -152,14 +168,14 @@ export const Layout = ({ children }) => {
               `nav-item ${isActive ? "active" : ""}`
             }
           >
-            <item.icon className="w-5 h-5" />
-            <span className="text-xs">{item.label}</span>
+            <item.icon className="w-6 h-6" />
+            <span className="text-xs mt-1">{item.label}</span>
           </NavLink>
         ))}
       </nav>
 
       {/* Main Content */}
-      <main className="md:ml-64 pt-14 md:pt-0 pb-20 md:pb-8 min-h-screen">
+      <main className="md:ml-64 pt-14 md:pt-0 pb-24 md:pb-8 min-h-screen">
         <div className="p-4 md:p-8 max-w-7xl mx-auto animate-fade-in">
           {children}
         </div>
