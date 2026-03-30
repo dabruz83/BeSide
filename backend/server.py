@@ -564,8 +564,25 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks):
 @api_router.post("/auth/login")
 async def login(user_data: UserLogin, response: Response):
     """Login with email/password"""
+    # Check if trying to login as admin - redirect to admin login
+    if user_data.email == ADMIN_EMAIL:
+        raise HTTPException(
+            status_code=401, 
+            detail="Per accedere come admin, usa la pagina /admin"
+        )
+    
     user = await db.users.find_one({"email": user_data.email}, {"_id": 0})
-    if not user or not verify_password(user_data.password, user.get("password_hash", "")):
+    
+    if not user:
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    
+    # Safely check password - handle invalid hash
+    try:
+        password_valid = verify_password(user_data.password, user.get("password_hash", ""))
+    except (ValueError, Exception):
+        password_valid = False
+    
+    if not password_valid:
         raise HTTPException(status_code=401, detail="Email o password non corretti")
     
     if not user.get("is_active", True):

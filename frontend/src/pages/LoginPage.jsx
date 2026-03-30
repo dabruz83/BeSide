@@ -149,6 +149,13 @@ export const LoginPage = () => {
               Registrati
             </Link>
           </p>
+
+          <p className="text-center text-xs text-muted-foreground/70 mt-4">
+            Sei un amministratore?{" "}
+            <Link to="/admin" className="text-primary hover:underline">
+              Accedi qui
+            </Link>
+          </p>
         </div>
       </div>
 
