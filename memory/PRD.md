@@ -10,11 +10,6 @@
 ## Problem Statement
 Italian auto wrap/PPF installers are excellent technicians but struggle with business management. BESIDE provides a comprehensive dashboard combining financial tools, automation, and analytics to help them understand profitability, plan taxes, and manage clients.
 
-## User Personas
-1. **Solo Installer** - Single technician managing all aspects of business
-2. **Small Team Owner** - 2-5 person team needing coordination tools
-3. **Growing Business** - Expanding operations needing analytics
-
 ## Core Features (All Implemented)
 
 ### Authentication System
@@ -24,106 +19,62 @@ Italian auto wrap/PPF installers are excellent technicians but struggle with bus
 - Admin-specific login at /admin
 
 ### Dashboard
-- 5 Key Metrics:
-  - Tax reserve balance (€ accrued)
-  - Cash flow status (green/yellow/red)
-  - Most profitable job type
-  - Top performing lead source
-  - Upcoming Italian tax deadlines (with 60-30-15 day alerts)
-- Monthly statistics (jobs, revenue, margin)
-- Quick action buttons (Nuovo Lavoro, Preventivo, Calcola Tasse, Nuovo Cliente, Marketing AI)
+- 5 Key Metrics with Quick Actions
+- Monthly statistics
+- Tax deadlines alerts
 
 ### Tax Planning Calculator
-- Italian tax regime support:
-  - Forfettario 5%
-  - Forfettario 15%
-  - Regime Ordinario
-- Auto-calculates:
-  - IRPEF (income tax)
-  - INPS (26.07% social security)
-  - IVA (22% VAT for ordinario)
-- 6-month cash flow forecast
-- Monthly accrual tracking
-- Tax deadlines based on regime
+- Italian tax regime support (Forfettario 5%/15%, Ordinario)
+- Auto-calculates IRPEF, INPS, IVA
+- 6-month forecast
+- **CSV Export for Accountant** ✅ NEW
 
 ### Job Profitability Tracker
-- Job types: PPF Full/Partial, Wrap Decorative/Commercial, Tint, Upholstery
-- Vehicle types: Sedan, SUV, Van, Truck
-- Tracks: quote, hours, materials, waste %
-- Auto-calculates: net profit, margin %, hourly rate
-- Profitability charts by job type and vehicle type
+- Job types: PPF, Wrap, Tint, Upholstery
+- Profitability analytics
+- **CSV Export** ✅ NEW
 
 ### Quote Generator
-- Create quotes (is_quote=true) with public link
-- Public quote page at /quote/:token
-- Client can accept/reject with signature
-- Shows business info without internal metrics
-- Converts to job on acceptance
+- Public quote links (/quote/:token)
+- Client accept/reject with signature
 
 ### Client Onboarding System
-- Pre-work checklist (6 items)
-- Unique link generation for clients
-- Status tracking: pending/in_progress/complete/overdue
-- Public client-facing checklist page
+- Pre-work checklist
+- Public client-facing page
 
-### Lead Source Tracker
-- Sources: Passaparola, Instagram, Facebook, Google, Partnership, Fiere, Website
-- Revenue per source analysis
-- Hours invested tracking
-- ROI calculation (€/hour)
-- 80/20 insights auto-generated
-
-### Marketing AI Content Generator
-- Powered by Gemini 3 Flash via Emergent LLM Key
-- Steps: bacino_utenza, trova_argomenti, pain_points, genera_idea, sviluppo_testo, sviluppo_video
-- Italian automotive content specialized
-- Content history saved
+### Lead Source Tracker & Marketing
+- ROI calculation
+- **AI Content Generator (Gemini 3 Flash)** ✅
 
 ### Admin Panel (/admin)
-- Separate admin login (admin@beside.it)
-- User management (view, edit, activate/deactivate)
-- Subscription management (change tier/status)
+- User management
 - Payment history
-- Platform statistics (total users, paying users, revenue)
-- Admin chat with users
+- Platform statistics
+- Admin chat
 
-### Profile & Business Info
-- Business details: P.IVA, Codice Fiscale, Indirizzo, Città, CAP, Provincia
-- Invoice details: SDI, PEC, IBAN, Banca
-- Logo upload (URL + width)
-- Header customization for quotes
+### Email Notifications
+- **Registration notification to info@cameleon.design via SendGrid** ✅ NEW
 
-### Subscription System
-- 3 Tiers with Stripe integration:
-  - Essential: €97/month
-  - Professional: €197/month
-  - Elite: €397/month
-- 14-day free trial
-- Payment status polling
+### PWA Support
+- **Manifest.json configured** ✅ NEW
+- **Service Worker for offline caching** ✅ NEW
+- Installable on mobile devices
 
 ## Technical Architecture
 
 ### Backend (FastAPI)
-- `/api/auth/*` - Authentication endpoints
-- `/api/jobs/*` - Job CRUD and analytics
-- `/api/quote/:token` - Public quote access
-- `/api/tax/*` - Tax calculations and accruals
-- `/api/onboarding/*` - Client onboarding management
-- `/api/marketing/*` - Lead source, effort tracking, AI generation
-- `/api/dashboard/*` - Dashboard metrics
-- `/api/admin/*` - Admin panel endpoints
-- `/api/subscription/*` - Stripe checkout integration
-- `/api/webhook/stripe` - Payment webhooks
+- All `/api/*` endpoints
+- SendGrid email integration
+- CSV export endpoints
+- Gemini 3 Flash AI integration
 
-### Frontend (React)
-- Pages: Landing, Login, Register, Dashboard, Jobs, Finance, Marketing, Onboarding, Profile, Subscription, Quote (public), Admin
-- Components: Layout with responsive sidebar/bottom nav
-- UI: Shadcn/UI + Tailwind CSS
-- Charts: Recharts
-- Axios interceptor for JWT Bearer token
+### Frontend (React + PWA)
+- Shadcn/UI + Tailwind CSS
+- Axios with JWT interceptor
+- Service Worker for offline support
 
 ### Database (MongoDB)
-Collections: users, user_sessions, jobs, quote_tokens, tax_accruals, onboardings, lead_sources, marketing_efforts, ai_content_history, payment_transactions, admin_chat
+- All collections configured
 
 ## What's Been Implemented (March 30, 2026)
 - [x] Complete authentication (JWT + Google OAuth)
@@ -136,58 +87,52 @@ Collections: users, user_sessions, jobs, quote_tokens, tax_accruals, onboardings
 - [x] Marketing ROI calculator
 - [x] AI Content Generator (Gemini 3 Flash)
 - [x] Admin Panel with user management
-- [x] Expanded business info fields (P.IVA, SDI, PEC, etc.)
+- [x] Expanded business info fields
 - [x] Subscription tiers with Stripe
 - [x] 100% Italian UI
-- [x] Italian formatting (€1.234,56 / DD/MM/YYYY)
-- [x] Mobile-responsive design
-
-## Test Results (March 30, 2026)
-- Backend: 100% (22/22 tests passed)
-- Frontend: 100% (all pages functional)
-- Italian localization: Complete
+- [x] **CSV Export for jobs and taxes** ✅ NEW
+- [x] **SendGrid email notifications** ✅ NEW
+- [x] **PWA manifest and service worker** ✅ NEW
+- [x] **Admin login bug fix** ✅ FIXED
 
 ## Prioritized Backlog
 
 ### P0 (Critical) - COMPLETE
-- [x] User authentication
-- [x] Dashboard metrics
-- [x] Tax planning calculator
-- [x] Job profitability tracker
-- [x] Quote generator
-- [x] Admin panel
-- [x] AI marketing content
+All P0 features implemented
 
-### P1 (High)
-- [x] Client onboarding system
-- [x] Lead source tracking
-- [x] Subscription/payment
-- [ ] Email notifications (SendGrid configured, needs implementation for admin alerts on registration)
-- [ ] CSV export for accountant
+### P1 (High) - COMPLETE
+- [x] CSV export for accountant
+- [x] Email notifications (SendGrid)
 
 ### P2 (Medium)
-- [ ] PWA installable
+- [x] PWA installable
+- [ ] Apple Sign-In (Requires Apple Developer account €99/year and certificates setup)
+- [ ] Registro Imprese API (Requires OpenAPI.it subscription)
 - [ ] Offline mode
 - [ ] Bulk job import
-- [ ] Custom job types
-- [ ] Photo upload for jobs
-- [ ] Registro Imprese API integration (company lookup)
 
 ### P3 (Future)
-- [ ] Visual configurator
+- [ ] Custom job types
+- [ ] Photo upload for jobs
 - [ ] Team collaboration
 - [ ] Native mobile apps
-- [ ] API integrations (QuickBooks, Fatture in Cloud)
-- [ ] Dynamic tax deadlines from Agenzia delle Entrate
 
 ## API Keys & Integrations
 - **Stripe:** sk_test_emergent (configured)
 - **Emergent LLM Key:** Configured for Gemini 3 Flash
-- **SendGrid:** Placeholder in .env (needs real key for emails)
+- **SendGrid:** Placeholder in .env (SENDGRID_API_KEY required for production emails)
 
-## Next Action Items
-1. Implement SendGrid email notifications for registration alerts to info@cameleon.design
-2. Add CSV export functionality for accountant
-3. Configure PWA manifest and service worker
-4. Add photo upload to jobs and onboarding
-5. Research Registro Imprese API for company lookup feature
+## Notes on Apple Sign-In
+Apple Sign-In requires:
+1. Apple Developer account (€99/year)
+2. Service ID configuration in Apple Developer Portal
+3. Private key (.p8 file) for JWT client secret
+4. Complex JWT signing implementation
+
+Emergent platform currently supports only Google OAuth natively. Apple would require manual implementation.
+
+## Notes on Registro Imprese API
+Italian Business Register lookup requires:
+- OpenAPI.it subscription
+- API key for authentication
+- Implementation of company data fetch endpoint

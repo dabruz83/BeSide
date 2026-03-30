@@ -1,5 +1,5 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
+from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -13,6 +13,8 @@ from datetime import datetime, timezone, timedelta
 import bcrypt
 import jwt
 import httpx
+import csv
+import io
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -30,6 +32,11 @@ JWT_EXPIRATION_DAYS = 7
 # Admin credentials
 ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@beside.it')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'BesideAdmin2026!')
+
+# SendGrid Configuration
+SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '')
+SENDER_EMAIL = os.environ.get('SENDER_EMAIL', 'info@cameleon.design')
+ADMIN_NOTIFICATION_EMAIL = 'info@cameleon.design'
 
 # Create the main app
 app = FastAPI(title="BESIDE API", description="API per installatori auto wrap/PPF italiani")
@@ -423,17 +430,102 @@ def get_tax_deadlines_by_regime(tax_regime: str) -> List[Dict[str, Any]]:
     
     return sorted(upcoming, key=lambda x: x["days_until"])[:8]
 
+# ==================== EMAIL HELPER FUNCTIONS ====================
+
+async def send_email_sendgrid(to_email: str, subject: str, html_content: str):
+    """Send email via SendGrid API"""
+    if not SENDGRID_API_KEY:
+        logger.warning("SendGrid API key not configured, skipping email")
+        return False
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.sendgrid.com/v3/mail/send",
+                headers={
+                    "Authorization": f"Bearer {SENDGRID_API_KEY}",
+                    "Content-Type": "application/json"
+                },
+                json={
+                    "personalizations": [{"to": [{"email": to_email}]}],
+                    "from": {"email": SENDER_EMAIL, "name": "BESIDE"},
+                    "subject": subject,
+                    "content": [{"type": "text/html", "value": html_content}]
+                },
+                timeout=30.0
+            )
+            if response.status_code in [200, 202]:
+                logger.info(f"Email sent successfully to {to_email}")
+                return True
+            else:
+                logger.error(f"SendGrid error: {response.status_code} - {response.text}")
+                return False
+    except Exception as e:
+        logger.error(f"Failed to send email: {e}")
+        return False
+
+async def send_registration_notification(user_email: str, business_name: str, registration_date: str):
+    """Send notification email to admin when a new user registers"""
+    subject = f"🎉 Nuova registrazione BESIDE: {business_name}"
+    
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <style>
+            body {{ font-family: 'Barlow', Arial, sans-serif; color: #1e3a5f; }}
+            .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+            .header {{ background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%); color: white; padding: 20px; border-radius: 8px 8px 0 0; }}
+            .content {{ background: #f8fafc; padding: 20px; border-radius: 0 0 8px 8px; }}
+            .field {{ margin-bottom: 15px; }}
+            .label {{ font-weight: bold; color: #64748b; font-size: 12px; text-transform: uppercase; }}
+            .value {{ font-size: 16px; color: #1e3a5f; margin-top: 4px; }}
+            .footer {{ text-align: center; margin-top: 20px; color: #94a3b8; font-size: 12px; }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="header">
+                <h1 style="margin: 0;">Nuova Registrazione</h1>
+                <p style="margin: 5px 0 0;">Un nuovo installatore si è registrato su BESIDE</p>
+            </div>
+            <div class="content">
+                <div class="field">
+                    <div class="label">Nome Attività</div>
+                    <div class="value">{business_name}</div>
+                </div>
+                <div class="field">
+                    <div class="label">Email</div>
+                    <div class="value">{user_email}</div>
+                </div>
+                <div class="field">
+                    <div class="label">Data Registrazione</div>
+                    <div class="value">{registration_date}</div>
+                </div>
+            </div>
+            <div class="footer">
+                <p>BESIDE - Gestione Installatori PPF & Wrap</p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return await send_email_sendgrid(ADMIN_NOTIFICATION_EMAIL, subject, html_content)
+
 # ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register")
-async def register(user_data: UserCreate):
+async def register(user_data: UserCreate, background_tasks: BackgroundTasks):
     """Register a new user with email/password"""
     existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email già registrata")
     
     user_id = f"user_{uuid.uuid4().hex[:12]}"
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    now_formatted = now.strftime("%d/%m/%Y alle %H:%M")
     
     user_doc = {
         "user_id": user_id,
@@ -449,13 +541,18 @@ async def register(user_data: UserCreate):
         "role": "user",
         "is_active": True,
         "email_verified": False,
-        "created_at": now
+        "created_at": now_iso
     }
     
     await db.users.insert_one(user_doc)
     
-    # Send verification email (TODO: integrate SendGrid)
-    # await send_verification_email(user_data.email, user_id)
+    # Send notification email to admin in background
+    background_tasks.add_task(
+        send_registration_notification,
+        user_data.email,
+        user_data.business_name,
+        now_formatted
+    )
     
     return {
         "user_id": user_id,
@@ -980,6 +1077,174 @@ async def get_tax_deadlines(current_user: Dict = Depends(get_current_user)):
     """Get upcoming Italian tax deadlines based on user's tax regime"""
     tax_regime = current_user.get("tax_regime", "forfettario_15")
     return {"deadlines": get_tax_deadlines_by_regime(tax_regime)}
+
+# ==================== EXPORT CSV ENDPOINTS ====================
+
+JOB_TYPE_LABELS_IT = {
+    "ppf_full": "PPF Completo",
+    "ppf_partial": "PPF Parziale",
+    "wrap_decorative": "Wrap Decorativo",
+    "wrap_commercial": "Wrap Commerciale",
+    "tint": "Oscuramento Vetri",
+    "upholstery": "Tappezzeria"
+}
+
+VEHICLE_TYPE_LABELS_IT = {
+    "sedan": "Berlina",
+    "suv": "SUV",
+    "van": "Van",
+    "truck": "Camion"
+}
+
+@api_router.get("/export/jobs-csv")
+async def export_jobs_csv(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Export jobs as CSV for accountant"""
+    query = {"user_id": current_user["user_id"], "is_quote": {"$ne": True}}
+    
+    # Filter by date range if provided
+    if start_date or end_date:
+        date_filter = {}
+        if start_date:
+            date_filter["$gte"] = start_date
+        if end_date:
+            date_filter["$lte"] = end_date
+        if date_filter:
+            query["completed_date"] = date_filter
+    
+    jobs = await db.jobs.find(query, {"_id": 0}).sort("completed_date", -1).to_list(10000)
+    
+    # Create CSV in memory
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')  # Use semicolon for Italian Excel
+    
+    # Header row
+    writer.writerow([
+        "Data",
+        "Cliente",
+        "Tipo Lavoro",
+        "Veicolo",
+        "Info Veicolo",
+        "Importo (€)",
+        "Ore Lavorate",
+        "Costo Materiali (€)",
+        "Scarto (%)",
+        "Profitto Netto (€)",
+        "Margine (%)",
+        "Tariffa Oraria (€)",
+        "Fonte Lead",
+        "Note"
+    ])
+    
+    # Data rows
+    for job in jobs:
+        completed_date = job.get("completed_date", "")
+        if completed_date:
+            try:
+                dt = datetime.fromisoformat(completed_date.replace("Z", "+00:00"))
+                completed_date = dt.strftime("%d/%m/%Y")
+            except:
+                pass
+        
+        writer.writerow([
+            completed_date,
+            job.get("client_name", ""),
+            JOB_TYPE_LABELS_IT.get(job.get("job_type", ""), job.get("job_type", "")),
+            VEHICLE_TYPE_LABELS_IT.get(job.get("vehicle_type", ""), job.get("vehicle_type", "")),
+            job.get("vehicle_info", ""),
+            str(job.get("quote_amount", 0)).replace(".", ","),
+            str(job.get("hours_worked", 0)).replace(".", ","),
+            str(job.get("materials_cost", 0)).replace(".", ","),
+            str(round(job.get("waste_percentage", 0) * 100, 1)).replace(".", ","),
+            str(job.get("net_profit", 0)).replace(".", ","),
+            str(job.get("profit_margin", 0)).replace(".", ","),
+            str(job.get("hourly_rate", 0)).replace(".", ","),
+            job.get("lead_source", "").replace("_", " ").title(),
+            job.get("notes", "")
+        ])
+    
+    output.seek(0)
+    
+    # Generate filename with date range
+    filename = f"lavori_beside_{datetime.now().strftime('%Y%m%d')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "text/csv; charset=utf-8"
+        }
+    )
+
+@api_router.get("/export/tax-accruals-csv")
+async def export_tax_accruals_csv(
+    year: Optional[int] = None,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Export tax accruals as CSV for accountant"""
+    query = {"user_id": current_user["user_id"]}
+    
+    if year:
+        query["month"] = {"$regex": f"^{year}"}
+    
+    accruals = await db.tax_accruals.find(query, {"_id": 0}).sort("month", 1).to_list(1000)
+    
+    output = io.StringIO()
+    writer = csv.writer(output, delimiter=';')
+    
+    writer.writerow([
+        "Mese",
+        "Fatturato (€)",
+        "Regime Fiscale",
+        "IRPEF (€)",
+        "INPS (€)",
+        "IVA (€)",
+        "Totale Accantonamento (€)",
+        "Saldo Cumulativo (€)"
+    ])
+    
+    regime_labels = {
+        "forfettario_5": "Forfettario 5%",
+        "forfettario_15": "Forfettario 15%",
+        "ordinario": "Ordinario"
+    }
+    
+    for accrual in accruals:
+        month = accrual.get("month", "")
+        if month:
+            try:
+                parts = month.split("-")
+                month = f"{parts[1]}/{parts[0]}"  # Convert YYYY-MM to MM/YYYY
+            except:
+                pass
+        
+        writer.writerow([
+            month,
+            str(accrual.get("revenue", 0)).replace(".", ","),
+            regime_labels.get(accrual.get("tax_regime", ""), accrual.get("tax_regime", "")),
+            str(accrual.get("irpef_amount", 0)).replace(".", ","),
+            str(accrual.get("inps_amount", 0)).replace(".", ","),
+            str(accrual.get("iva_amount", 0)).replace(".", ","),
+            str(accrual.get("total_accrual", 0)).replace(".", ","),
+            str(accrual.get("cumulative_balance", 0)).replace(".", ",")
+        ])
+    
+    output.seek(0)
+    
+    filename = f"accantonamenti_tasse_{datetime.now().strftime('%Y%m%d')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename={filename}",
+            "Content-Type": "text/csv; charset=utf-8"
+        }
+    )
 
 # ==================== CLIENT ONBOARDING ENDPOINTS ====================
 

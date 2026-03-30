@@ -16,7 +16,8 @@ import {
   AlertTriangle,
   PiggyBank,
   FileText,
-  Info
+  Info,
+  Download
 } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
@@ -115,6 +116,42 @@ export const FinancePage = () => {
     }
   };
 
+  const handleExportJobsCSV = async () => {
+    try {
+      const response = await axios.get(`${API}/export/jobs-csv`, {
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `lavori_beside_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success("Export lavori completato!");
+    } catch (error) {
+      toast.error("Errore durante l'export");
+    }
+  };
+
+  const handleExportAccrualsCSV = async () => {
+    try {
+      const response = await axios.get(`${API}/export/tax-accruals-csv`, {
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', `accantonamenti_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success("Export accantonamenti completato!");
+    } catch (error) {
+      toast.error("Errore durante l'export");
+    }
+  };
+
   const forecastChartData = forecast?.forecast?.map((item) => ({
     month: item.month.slice(5),
     accantonamento: item.total_accrual,
@@ -136,10 +173,32 @@ export const FinancePage = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-heading-2 text-primary" data-testid="finance-title">Finanza</h1>
-        <p className="text-muted-foreground">Calcola le tasse e pianifica gli accantonamenti</p>
+      {/* Header with Export buttons */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-heading-2 text-primary" data-testid="finance-title">Finanza</h1>
+          <p className="text-muted-foreground">Calcola le tasse e pianifica gli accantonamenti</p>
+        </div>
+        <div className="flex gap-2">
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={handleExportJobsCSV}
+            data-testid="export-jobs-csv"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Export Lavori
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={handleExportAccrualsCSV}
+            data-testid="export-accruals-csv"
+          >
+            <Download className="w-4 h-4 mr-2" />
+            Export Tasse
+          </Button>
+        </div>
       </div>
 
       <Tabs defaultValue="calculator" className="space-y-6">

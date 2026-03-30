@@ -82,10 +82,10 @@ export const AdminPage = () => {
   }, []);
 
   useEffect(() => {
-    if (isLoggedIn) {
+    if (isLoggedIn && adminToken) {
       fetchData();
     }
-  }, [isLoggedIn]);
+  }, [isLoggedIn, adminToken]);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -97,12 +97,14 @@ export const AdminPage = () => {
         password: loginPassword
       });
       
-      localStorage.setItem("beside_admin_token", response.data.token);
-      setAdminToken(response.data.token);
+      const token = response.data.token;
+      localStorage.setItem("beside_admin_token", token);
+      setAdminToken(token);
       setIsLoggedIn(true);
       toast.success("Accesso admin effettuato");
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Credenziali non valide");
+      console.error("Admin login error:", error);
+      toast.error(error.response?.data?.detail || "Errore durante l'accesso");
     } finally {
       setLoginLoading(false);
     }
