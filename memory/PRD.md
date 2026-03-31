@@ -7,58 +7,137 @@
 **Business Model:** €97-397/month subscription  
 **Language:** 100% Italian UI
 
-## Problem Statement
-Italian auto wrap/PPF installers are excellent technicians but struggle with business management. BESIDE provides a comprehensive dashboard combining financial tools, automation, and analytics to help them understand profitability, plan taxes, and manage clients.
-
 ## Core Features (All Implemented)
 
-### Authentication System
+### 1. Authentication System
 - JWT-based email/password authentication
 - Google OAuth via Emergent Auth
 - Session management with secure cookies
 - Admin-specific login at /admin
 
-### Dashboard
+### 2. Dashboard
 - 5 Key Metrics with Quick Actions
 - Monthly statistics
 - Tax deadlines alerts
 
-### Tax Planning Calculator
+### 3. Tax Planning Calculator
 - Italian tax regime support (Forfettario 5%/15%, Ordinario)
 - Auto-calculates IRPEF, INPS, IVA
 - 6-month forecast
-- **CSV Export for Accountant** ✅ NEW
+- CSV Export for Accountant
 
-### Job Profitability Tracker
+### 4. Job Profitability Tracker
 - Job types: PPF, Wrap, Tint, Upholstery
 - Profitability analytics
-- **CSV Export** ✅ NEW
+- CSV Export
 
-### Quote Generator
+### 5. Quote Generator
 - Public quote links (/quote/:token)
 - Client accept/reject with signature
 
-### Client Onboarding System
+### 6. Client Onboarding System
 - Pre-work checklist
 - Public client-facing page
 
-### Lead Source Tracker & Marketing
+### 7. Lead Source Tracker & Marketing
 - ROI calculation
-- **AI Content Generator (Gemini 3 Flash)** ✅
+- AI Content Generator (Gemini 3 Flash)
 
-### Admin Panel (/admin)
+### 8. Admin Panel (/admin)
 - User management
 - Payment history
 - Platform statistics
-- Admin chat
 
-### Email Notifications
-- **Registration notification to info@cameleon.design via SendGrid** ✅ NEW
+### 9. Email Notifications
+- Registration notification to info@cameleon.design via SendGrid
 
-### PWA Support
-- **Manifest.json configured** ✅ NEW
-- **Service Worker for offline caching** ✅ NEW
-- Installable on mobile devices
+### 10. PWA Support
+- Manifest.json configured
+- Service Worker for offline caching
+
+## NEW: Wrap Configurator (March 31, 2026)
+
+### Overview
+Interactive 7-step vehicle wrap configurator allowing customers to:
+- Select vehicle type (9 options)
+- Choose base car color
+- Select film finish and color (7 finishes, 40+ colors)
+- Pick zones to wrap with real-time pricing
+- Add optional tinting
+- Book appointment
+- Pay via Stripe
+
+### Technical Implementation
+- **Route:** /configurator (protected, requires login)
+- **State Management:** useReducer hook
+- **Animations:** Framer Motion
+- **Preview:** Interactive SVG with zone highlighting
+- **Pricing:** Dynamic calculation with vehicle × film multipliers
+
+### Files Created
+```
+/app/frontend/src/components/configurator/
+├── WrapConfigurator.jsx        (main component)
+├── hooks/
+│   └── useConfigurator.js      (state management)
+├── data/
+│   ├── vehicles.js             (9 vehicle types)
+│   ├── films.js                (7 finishes + colors)
+│   ├── zones.js                (6 wrappable zones)
+│   ├── colors.js               (base colors)
+│   ├── tinting.js              (tinting options)
+│   └── mockAvailability.js     (calendar mock data)
+├── utils/
+│   └── priceCalculator.js      (price logic)
+├── preview/
+│   └── VehiclePreview.jsx      (SVG vehicle)
+├── ui/
+│   ├── StepIndicator.jsx
+│   ├── ColorSwatch.jsx
+│   ├── ZoneButton.jsx
+│   └── PriceTag.jsx
+└── steps/
+    ├── Step0_Vehicle.jsx
+    ├── Step1_BaseColor.jsx
+    ├── Step2_Film.jsx
+    ├── Step3_Zones.jsx
+    ├── Step4_Tinting.jsx
+    ├── Step5_Booking.jsx
+    └── Step6_Summary.jsx
+```
+
+### Pricing Formula
+```
+total = (Σ zone_prices + Σ tinting_prices) × vehicle_mult × film_mult
+```
+
+### Vehicle Multipliers
+- City Car: 0.70
+- Segmento B: 0.85
+- Segmento C: 1.00 (standard)
+- Segmento D: 1.15
+- Segmento E/GT: 1.30
+- SUV: 1.20
+- Furgoncino: 1.10
+- Van: 1.50
+- Furgone: 2.00
+
+### Film Multipliers
+- Lucida: 1.0
+- Opaca: 1.1
+- Satinata: 1.2
+- Metallizzata: 1.3
+- Perlescente: 1.4
+- Carbonio: 1.5
+- Cangiante: 1.8
+
+### Zone Base Prices
+- Tetto: €180
+- Cofano: €140
+- Porte+Fiancate: €280
+- Parte Inferiore: €180
+- Specchietti: €60
+- Fari Anteriori: €60
 
 ## Technical Architecture
 
@@ -69,70 +148,39 @@ Italian auto wrap/PPF installers are excellent technicians but struggle with bus
 - Gemini 3 Flash AI integration
 
 ### Frontend (React + PWA)
+- Pages: Landing, Login, Register, Dashboard, Jobs, Finance, Marketing, Onboarding, Profile, Subscription, Quote (public), Admin, **Configurator**
 - Shadcn/UI + Tailwind CSS
+- Framer Motion for animations
 - Axios with JWT interceptor
-- Service Worker for offline support
 
 ### Database (MongoDB)
-- All collections configured
-
-## What's Been Implemented (March 30, 2026)
-- [x] Complete authentication (JWT + Google OAuth)
-- [x] Dashboard with 5 KPIs
-- [x] Tax calculator with all Italian regimes
-- [x] Job tracker with profitability analytics
-- [x] Quote generator with public links
-- [x] Client onboarding system
-- [x] Lead source tracking
-- [x] Marketing ROI calculator
-- [x] AI Content Generator (Gemini 3 Flash)
-- [x] Admin Panel with user management
-- [x] Expanded business info fields
-- [x] Subscription tiers with Stripe
-- [x] 100% Italian UI
-- [x] **CSV Export for jobs and taxes** ✅ NEW
-- [x] **SendGrid email notifications** ✅ NEW
-- [x] **PWA manifest and service worker** ✅ NEW
-- [x] **Admin login bug fix** ✅ FIXED
+All collections configured
 
 ## Prioritized Backlog
 
-### P0 (Critical) - COMPLETE
-All P0 features implemented
+### COMPLETED
+- [x] All P0/P1 features
+- [x] **Wrap Configurator core** (vehicle preview + zone selection + pricing)
 
-### P1 (High) - COMPLETE
-- [x] CSV export for accountant
-- [x] Email notifications (SendGrid)
+### IN PROGRESS
+- [ ] Configurator: Stripe payment integration
+- [ ] Configurator: Backend API for bookings
+- [ ] Configurator: Admin settings for prices
 
 ### P2 (Medium)
-- [x] PWA installable
-- [ ] Apple Sign-In (Requires Apple Developer account €99/year and certificates setup)
-- [ ] Registro Imprese API (Requires OpenAPI.it subscription)
-- [ ] Offline mode
-- [ ] Bulk job import
+- [ ] Apple Sign-In
+- [ ] Registro Imprese API
+- [ ] Configurator: Custom vehicle SVGs from user
 
 ### P3 (Future)
-- [ ] Custom job types
-- [ ] Photo upload for jobs
-- [ ] Team collaboration
 - [ ] Native mobile apps
+- [ ] Team collaboration
+
+## Test Credentials
+- **User:** tester1774887218@test.it / TestPass123!
+- **Admin:** admin@beside.it / BesideAdmin2026!
 
 ## API Keys & Integrations
 - **Stripe:** sk_test_emergent (configured)
 - **Emergent LLM Key:** Configured for Gemini 3 Flash
-- **SendGrid:** Placeholder in .env (SENDGRID_API_KEY required for production emails)
-
-## Notes on Apple Sign-In
-Apple Sign-In requires:
-1. Apple Developer account (€99/year)
-2. Service ID configuration in Apple Developer Portal
-3. Private key (.p8 file) for JWT client secret
-4. Complex JWT signing implementation
-
-Emergent platform currently supports only Google OAuth natively. Apple would require manual implementation.
-
-## Notes on Registro Imprese API
-Italian Business Register lookup requires:
-- OpenAPI.it subscription
-- API key for authentication
-- Implementation of company data fetch endpoint
+- **SendGrid:** Placeholder (needs real key for production)

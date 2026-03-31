@@ -18,6 +18,7 @@ import { SubscriptionPage } from "@/pages/SubscriptionPage";
 import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
 import { QuotePage } from "@/pages/QuotePage";
 import { AdminPage } from "@/pages/AdminPage";
+import { ConfiguratorPage } from "@/pages/ConfiguratorPage";
 
 // Components
 import { Layout } from "@/components/Layout";
@@ -276,6 +277,16 @@ const AppRouter = () => {
             <Layout>
               <SubscriptionPage />
             </Layout>
+          </ProtectedRoute>
+        }
+      />
+      
+      {/* Configurator - Protected route */}
+      <Route
+        path="/configurator"
+        element={
+          <ProtectedRoute>
+            <ConfiguratorPage />
           </ProtectedRoute>
         }
       />

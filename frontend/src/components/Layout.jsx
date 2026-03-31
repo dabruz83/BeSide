@@ -9,7 +9,8 @@ import {
   ClipboardList,
   LogOut,
   Menu,
-  X
+  X,
+  Palette
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 const navItems = [
   { path: "/dashboard", label: "Bacheca", icon: LayoutDashboard },
   { path: "/jobs", label: "Lavori", icon: Wrench },
+  { path: "/configurator", label: "Configuratore", icon: Palette },
   { path: "/finance", label: "Finanza", icon: Euro },
   { path: "/marketing", label: "Marketing", icon: Megaphone },
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
