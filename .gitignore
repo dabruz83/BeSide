@@ -84,3 +84,7 @@ frontend/node_modules/.cache/default-development/8.pack
 frontend/node_modules/.cache/default-development/9.pack
 frontend/node_modules/.cache/default-development/0.pack
 frontend/node_modules/.cache/default-development/2.pack
+
+# Test credentials (security - do not commit)
+memory/test_credentials.md
+**/test_credentials.md

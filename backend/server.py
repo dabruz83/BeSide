@@ -1735,9 +1735,13 @@ async def admin_get_stats(admin_user: Dict = Depends(get_admin_user)):
     paying_users = await db.users.count_documents({"subscription_status": "active"})
     
     total_jobs = await db.jobs.count_documents({})
-    total_revenue = 0
-    jobs = await db.jobs.find({"is_quote": {"$ne": True}}, {"quote_amount": 1}).to_list(10000)
-    total_revenue = sum(j.get("quote_amount", 0) for j in jobs)
+    
+    # Use aggregation for revenue calculation (optimized)
+    revenue_result = await db.jobs.aggregate([
+        {"$match": {"is_quote": {"$ne": True}}},
+        {"$group": {"_id": None, "total_revenue": {"$sum": "$quote_amount"}}}
+    ]).to_list(1)
+    total_revenue = revenue_result[0]["total_revenue"] if revenue_result else 0
     
     # Users by tier
     users_by_tier = await db.users.aggregate([
