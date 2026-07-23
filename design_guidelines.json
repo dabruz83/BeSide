@@ -1,0 +1,196 @@
+{
+  "project_name": "BESIDE",
+  "design_philosophy": {
+    "identity": "The Digital Workshop Manager",
+    "core_concept": "Italian Craftsmanship meets German Engineering. Clean, industrial, reliable, yet stylish.",
+    "emotional_tone": "Professional, Trustworthy, Efficient, Masculine but refined.",
+    "anti_ai_rules": [
+      "NO generic 'SaaS Blue' gradients. Use the specific Deep Blue (#1E3A5F) as a flat, commanding color.",
+      "NO 'Inter' for headings. Use 'Barlow' or 'Oswald' to evoke the automotive industry.",
+      "NO boring tables for financial data. Use 'Receipt' style cards or 'Dashboard Dials'.",
+      "Avoid 'soft' rounded corners (20px+). Use tighter radii (4px-8px) for a mechanical, precision feel."
+    ]
+  },
+  "typography": {
+    "font_family": {
+      "heading": "Barlow, sans-serif",
+      "body": "Public Sans, sans-serif",
+      "mono": "JetBrains Mono, monospace"
+    },
+    "scaling": {
+      "h1": "text-3xl md:text-4xl font-bold uppercase tracking-tight",
+      "h2": "text-2xl md:text-3xl font-semibold tracking-tight",
+      "h3": "text-xl font-semibold",
+      "body": "text-base leading-relaxed",
+      "small": "text-sm font-medium text-muted-foreground",
+      "label": "text-xs font-bold uppercase tracking-wider text-muted-foreground"
+    },
+    "instructions": "Import 'Barlow' (weights 400, 500, 600, 700) and 'Public Sans' from Google Fonts in index.css."
+  },
+  "colors": {
+    "palette": {
+      "primary": {
+        "hex": "#1E3A5F",
+        "hsl": "214 52% 25%",
+        "usage": "Main navigation, primary buttons, active states, headers"
+      },
+      "secondary": {
+        "hex": "#2E86AB",
+        "hsl": "198 58% 43%",
+        "usage": "Accents, links, secondary actions, icons"
+      },
+      "background": {
+        "hex": "#F5F5F5",
+        "hsl": "0 0% 96%",
+        "usage": "App background (The 'Garage Floor')"
+      },
+      "surface": {
+        "hex": "#FFFFFF",
+        "hsl": "0 0% 100%",
+        "usage": "Cards, panels, modal backgrounds"
+      },
+      "success": {
+        "hex": "#1A7A4A",
+        "hsl": "150 65% 29%",
+        "usage": "Positive metrics (Profit), Completed status"
+      },
+      "warning": {
+        "hex": "#F39C12",
+        "hsl": "37 90% 51%",
+        "usage": "Tax deadlines approaching, Low stock"
+      },
+      "destructive": {
+        "hex": "#C0392B",
+        "hsl": "6 63% 46%",
+        "usage": "Overdue payments, Negative cash flow, Delete actions"
+      },
+      "text": {
+        "primary": "#0F172A",
+        "secondary": "#64748B",
+        "inverse": "#FFFFFF"
+      }
+    },
+    "css_variables": {
+      "--background": "0 0% 96%",
+      "--foreground": "214 52% 25%",
+      "--card": "0 0% 100%",
+      "--card-foreground": "214 52% 25%",
+      "--popover": "0 0% 100%",
+      "--popover-foreground": "214 52% 25%",
+      "--primary": "214 52% 25%",
+      "--primary-foreground": "0 0% 100%",
+      "--secondary": "198 58% 43%",
+      "--secondary-foreground": "0 0% 100%",
+      "--muted": "210 40% 96.1%",
+      "--muted-foreground": "215.4 16.3% 46.9%",
+      "--accent": "198 58% 43%",
+      "--accent-foreground": "0 0% 100%",
+      "--destructive": "6 63% 46%",
+      "--destructive-foreground": "0 0% 98%",
+      "--border": "214 32% 91%",
+      "--input": "214 32% 91%",
+      "--ring": "214 52% 25%",
+      "--radius": "0.375rem"
+    }
+  },
+  "layout": {
+    "structure": {
+      "mobile": "Bottom navigation bar (fixed). Top 'Action Bar' with page title and primary action. Content scrollable in between.",
+      "desktop": "Left sidebar (fixed, width 280px). Top header for search/profile. Main content area with max-width container."
+    },
+    "spacing": {
+      "container_padding": "p-4 md:p-8",
+      "card_padding": "p-5",
+      "section_gap": "gap-6",
+      "item_gap": "gap-3"
+    },
+    "grid_system": {
+      "dashboard": "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4",
+      "bento_hero": "col-span-full md:col-span-2 row-span-2",
+      "bento_standard": "col-span-1 row-span-1"
+    }
+  },
+  "components": {
+    "buttons": {
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 rounded-md font-medium px-4 py-2 shadow-sm transition-all active:scale-95",
+      "secondary": "bg-white border border-input hover:bg-accent hover:text-accent-foreground rounded-md font-medium px-4 py-2 transition-colors",
+      "danger": "bg-destructive text-destructive-foreground hover:bg-destructive/90 rounded-md font-medium px-4 py-2 shadow-sm"
+    },
+    "cards": {
+      "base": "bg-white rounded-lg border border-border/60 shadow-sm hover:shadow-md transition-shadow duration-200",
+      "metric": "p-6 flex flex-col justify-between h-full relative overflow-hidden",
+      "interactive": "cursor-pointer active:scale-[0.99] transition-transform"
+    },
+    "inputs": {
+      "default": "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+    },
+    "navigation": {
+      "bottom_nav": "fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center h-16 z-50 pb-safe",
+      "sidebar": "hidden md:flex flex-col w-64 bg-primary text-primary-foreground h-screen fixed left-0 top-0 border-r border-border/10"
+    }
+  },
+  "visual_enhancers": {
+    "textures": [
+      "Use a subtle 'noise' overlay on the sidebar to give it a matte finish.",
+      "Use a 'striped' pattern (repeating-linear-gradient) for tax deadline progress bars."
+    ],
+    "shadows": {
+      "card": "0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1)",
+      "dropdown": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+      "floating": "0 20px 25px -5px rgb(0 0 0 / 0.1), 0 8px 10px -6px rgb(0 0 0 / 0.1)"
+    },
+    "animations": {
+      "page_transition": "animate-in fade-in slide-in-from-bottom-4 duration-500",
+      "hover_lift": "hover:-translate-y-1 transition-transform duration-200",
+      "micro_interaction": "active:scale-95 transition-transform duration-100"
+    }
+  },
+  "iconography": {
+    "library": "lucide-react",
+    "style": "Stroke width 2px. Size 20px or 24px usually.",
+    "mapping": {
+      "dashboard": "LayoutDashboard",
+      "jobs": "Wrench",
+      "finance": "Euro",
+      "marketing": "Megaphone",
+      "profile": "UserCog",
+      "add": "Plus",
+      "calendar": "CalendarDays",
+      "check": "CheckCircle2",
+      "alert": "AlertTriangle"
+    }
+  },
+  "image_urls": {
+    "hero_backgrounds": [
+      "https://images.unsplash.com/photo-1674632917668-6237bad1347d?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MDV8MHwxfHNlYXJjaHwxfHxsdXh1cnklMjBjYXIlMjB3cmFwJTIwd29ya3Nob3AlMjBkZXRhaWx8ZW58MHx8fHwxNzcyNDc0NDQxfDA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1632823469850-2f77dd9c7f93?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MDV8MHwxfHNlYXJjaHwzfHxsdXh1cnklMjBjYXIlMjB3cmFwJTIwd29ya3Nob3AlMjBkZXRhaWx8ZW58MHx8fHwxNzcyNDc0NDQxfDA&ixlib=rb-4.1.0&q=85"
+    ],
+    "placeholders": {
+      "user_avatar": "https://api.dicebear.com/7.x/avataaars/svg?seed=Felix",
+      "car_thumbnail": "https://images.unsplash.com/photo-1761934658038-d0e6792378b1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA2MDV8MHwxfHNlYXJjaHw0fHxsdXh1cnklMjBjYXIlMjB3cmFwJTIwd29ya3Nob3AlMjBkZXRhaWx8ZW58MHx8fHwxNzcyNDc0NDQxfDA&ixlib=rb-4.1.0&q=85"
+    }
+  },
+  "instructions_to_main_agent": [
+    "1. UPDATE THE CSS VARIABLES in index.css FIRST using the values provided in 'colors.css_variables'. This sets the foundation.",
+    "2. INSTALL FONTS: Add the import for Barlow and Public Sans to index.css.",
+    "3. IMPLEMENT THE LAYOUT: Create the Layout component with Sidebar (Desktop) and BottomNav (Mobile).",
+    "4. BUILD DASHBOARD: Use the 'Bento' grid rules. Create 'MetricCard' components that use the specific icons and colors.",
+    "5. USE ITALIAN LANGUAGE: All UI text must be in Italian. (e.g., 'Dashboard' -> 'Bacheca', 'Jobs' -> 'Lavori', 'Settings' -> 'Impostazioni').",
+    "6. FORMAT CURRENCY: Use '€ 1.234,56' format.",
+    "7. MOBILE OPTIMIZATION: Ensure all click targets are at least 44px height. Add 'pb-20' to the main content container to avoid overlap with the bottom nav."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "- Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients",
+    "- Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "- Create depth through layered design elements with z-index hierarchy",
+    "- Use glass-morphism effects with backdrop filters (12-24px blur)",
+    "- You MUST NOT apply universal transition. Eg: 'transition: all'. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms",
+    "- You MUST NOT center align the app container, ie do not add '.App { text-align: center; }' in the css file. This disrupts the human natural reading flow of text",
+    "- Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style",
+    "- NEVER: use AI assistant Emoji characters like 🤖🧠💭💡 etc for icons.",
+    "- Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "- Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "- Components MUST use named exports",
+    "- Use 'sonner' for toasts located in /app/src/components/ui/sonner.tsx"
+  ]
+}
