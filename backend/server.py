@@ -92,6 +92,7 @@ logger = logging.getLogger(__name__)
 
 # Tax Regimes
 TAX_REGIMES = ["forfettario_5", "forfettario_15", "ordinario"]
+FINANCE_PERIODS = ["monthly", "yearly"]
 
 # Business Types
 BUSINESS_TYPES = ["ditta_individuale", "forfettario", "societa_persone", "societa_capitali"]
@@ -205,9 +206,11 @@ class QuoteAcceptance(BaseModel):
 
 # Tax Models
 class TaxCalculationRequest(BaseModel):
-    revenue: float
+    revenue: float = Field(ge=0)
     tax_regime: str
     period: str = "monthly"  # monthly or yearly
+    fixed_expenses: float = Field(default=0, ge=0)
+    variable_expenses: float = Field(default=0, ge=0)
 
 class TaxCalculationResponse(BaseModel):
     revenue: float
@@ -217,8 +220,19 @@ class TaxCalculationResponse(BaseModel):
     inps_amount: float
     iva_amount: float
     total_accrual: float
+    fixed_expenses: float
+    variable_expenses: float
+    operating_expenses: float
+    total_outflows: float
     net_income: float
     yearly_projection: Optional[Dict[str, float]] = None
+
+class FinanceSettingsUpdate(BaseModel):
+    revenue: float = Field(default=0, ge=0)
+    tax_regime: str = "forfettario_15"
+    period: str = "monthly"
+    fixed_expenses: float = Field(default=0, ge=0)
+    variable_expenses: float = Field(default=0, ge=0)
 
 class TaxAccrualCreate(BaseModel):
     month: str  # YYYY-MM format
@@ -336,11 +350,26 @@ async def get_admin_user(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=403, detail="Accesso negato - richiesti privilegi admin")
     return user
 
-def calculate_tax(revenue: float, tax_regime: str, period: str = "monthly") -> Dict[str, Any]:
-    """Calculate Italian taxes based on regime - supports monthly and yearly"""
+def calculate_tax(
+    revenue: float,
+    tax_regime: str,
+    period: str = "monthly",
+    fixed_expenses: float = 0,
+    variable_expenses: float = 0,
+) -> Dict[str, Any]:
+    """Calculate estimated Italian taxes and the resulting operating cash flow."""
+    if period not in FINANCE_PERIODS:
+        raise ValueError("Periodo di calcolo non valido")
+    if tax_regime not in TAX_REGIMES:
+        raise ValueError("Regime fiscale non valido")
+    if min(revenue, fixed_expenses, variable_expenses) < 0:
+        raise ValueError("Fatturato e spese non possono essere negativi")
+
     # If monthly, we calculate monthly values and provide yearly projection
     yearly_revenue = revenue * 12 if period == "monthly" else revenue
     monthly_revenue = revenue if period == "monthly" else revenue / 12
+    yearly_fixed_expenses = fixed_expenses * 12 if period == "monthly" else fixed_expenses
+    yearly_variable_expenses = variable_expenses * 12 if period == "monthly" else variable_expenses
     
     irpef_yearly = 0.0
     inps_yearly = 0.0
@@ -378,20 +407,39 @@ def calculate_tax(revenue: float, tax_regime: str, period: str = "monthly") -> D
         inps = inps_yearly / 12
         iva = iva_yearly / 12
         total = irpef + inps + iva
-        net = monthly_revenue - total
+        operating_expenses = fixed_expenses + variable_expenses
+        total_outflows = total + operating_expenses
+        net = monthly_revenue - total_outflows
         yearly_projection = {
             "irpef_amount": round(irpef_yearly, 2),
             "inps_amount": round(inps_yearly, 2),
             "iva_amount": round(iva_yearly, 2),
             "total_accrual": round(irpef_yearly + inps_yearly + iva_yearly, 2),
-            "net_income": round(yearly_revenue - (irpef_yearly + inps_yearly + iva_yearly), 2)
+            "fixed_expenses": round(yearly_fixed_expenses, 2),
+            "variable_expenses": round(yearly_variable_expenses, 2),
+            "operating_expenses": round(yearly_fixed_expenses + yearly_variable_expenses, 2),
+            "total_outflows": round(
+                irpef_yearly + inps_yearly + iva_yearly + yearly_fixed_expenses + yearly_variable_expenses,
+                2,
+            ),
+            "net_income": round(
+                yearly_revenue
+                - irpef_yearly
+                - inps_yearly
+                - iva_yearly
+                - yearly_fixed_expenses
+                - yearly_variable_expenses,
+                2,
+            )
         }
     else:
         irpef = irpef_yearly
         inps = inps_yearly
         iva = iva_yearly
         total = irpef + inps + iva
-        net = yearly_revenue - total
+        operating_expenses = fixed_expenses + variable_expenses
+        total_outflows = total + operating_expenses
+        net = yearly_revenue - total_outflows
         yearly_projection = None
     
     return {
@@ -399,8 +447,68 @@ def calculate_tax(revenue: float, tax_regime: str, period: str = "monthly") -> D
         "inps_amount": round(inps, 2),
         "iva_amount": round(iva, 2),
         "total_accrual": round(total, 2),
+        "fixed_expenses": round(fixed_expenses, 2),
+        "variable_expenses": round(variable_expenses, 2),
+        "operating_expenses": round(operating_expenses, 2),
+        "total_outflows": round(total_outflows, 2),
         "net_income": round(net, 2),
         "yearly_projection": yearly_projection
+    }
+
+def build_cash_flow_forecast(
+    revenue: float,
+    tax_regime: str,
+    period: str,
+    fixed_expenses: float,
+    variable_expenses: float,
+    months: int = 12,
+    start_date: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Build a monthly cash-flow forecast from the user's saved finance settings."""
+    if months < 1:
+        raise ValueError("Il numero di mesi deve essere positivo")
+
+    monthly_revenue = revenue if period == "monthly" else revenue / 12
+    monthly_fixed_expenses = fixed_expenses if period == "monthly" else fixed_expenses / 12
+    monthly_variable_expenses = variable_expenses if period == "monthly" else variable_expenses / 12
+    monthly_calculation = calculate_tax(
+        monthly_revenue,
+        tax_regime,
+        "monthly",
+        monthly_fixed_expenses,
+        monthly_variable_expenses,
+    )
+
+    base_date = start_date or datetime.now(timezone.utc)
+    monthly_outflows = monthly_calculation["total_outflows"]
+    monthly_net_cash_flow = monthly_calculation["net_income"]
+    forecast = []
+
+    for month_offset in range(1, months + 1):
+        month_index = base_date.year * 12 + (base_date.month - 1) + month_offset
+        forecast_year, zero_based_month = divmod(month_index, 12)
+        forecast_month = zero_based_month + 1
+        forecast.append({
+            "month": f"{forecast_year:04d}-{forecast_month:02d}",
+            "inflows": round(monthly_revenue, 2),
+            "fixed_expenses": round(monthly_fixed_expenses, 2),
+            "variable_expenses": round(monthly_variable_expenses, 2),
+            "taxes": monthly_calculation["total_accrual"],
+            "outflows": monthly_outflows,
+            "net_cash_flow": monthly_net_cash_flow,
+            "cumulative_cash_flow": round(monthly_net_cash_flow * month_offset, 2),
+        })
+
+    return {
+        "forecast": forecast,
+        "summary": {
+            "monthly_inflows": round(monthly_revenue, 2),
+            "monthly_outflows": monthly_outflows,
+            "monthly_net_cash_flow": monthly_net_cash_flow,
+            "annual_inflows": round(monthly_revenue * 12, 2),
+            "annual_outflows": round(monthly_outflows * 12, 2),
+            "annual_net_cash_flow": round(monthly_net_cash_flow * 12, 2),
+        },
     }
 
 def calculate_job_profitability(quote: float, hours: float, materials: float, waste_pct: float) -> Dict[str, float]:
@@ -1044,13 +1152,91 @@ async def get_profitability_analytics(current_user: Dict = Depends(get_current_u
 @api_router.post("/tax/calculate", response_model=TaxCalculationResponse)
 async def calculate_taxes(request: TaxCalculationRequest):
     """Calculate taxes for given revenue and regime"""
-    tax_data = calculate_tax(request.revenue, request.tax_regime, request.period)
+    try:
+        tax_data = calculate_tax(
+            request.revenue,
+            request.tax_regime,
+            request.period,
+            request.fixed_expenses,
+            request.variable_expenses,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     return TaxCalculationResponse(
         revenue=request.revenue,
         tax_regime=request.tax_regime,
         period=request.period,
         **tax_data
     )
+
+@api_router.get("/finance/settings")
+async def get_finance_settings(current_user: Dict = Depends(get_current_user)):
+    """Return the current user's persisted finance calculator settings."""
+    settings = await db.finance_settings.find_one(
+        {"user_id": current_user["user_id"]},
+        {"_id": 0, "user_id": 0},
+    )
+    if settings:
+        return settings
+
+    return {
+        "revenue": 0,
+        "tax_regime": current_user.get("tax_regime", "forfettario_15"),
+        "period": "monthly",
+        "fixed_expenses": 0,
+        "variable_expenses": 0,
+    }
+
+@api_router.put("/finance/settings")
+async def update_finance_settings(
+    settings_data: FinanceSettingsUpdate,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Persist finance calculator settings in MongoDB, scoped to the current user."""
+    if settings_data.period not in FINANCE_PERIODS:
+        raise HTTPException(status_code=400, detail="Periodo di calcolo non valido")
+    if settings_data.tax_regime not in TAX_REGIMES:
+        raise HTTPException(status_code=400, detail="Regime fiscale non valido")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    settings_doc = {
+        **settings_data.model_dump(),
+        "user_id": current_user["user_id"],
+        "updated_at": now_iso,
+    }
+    existing = await db.finance_settings.find_one(
+        {"user_id": current_user["user_id"]},
+        {"_id": 0, "created_at": 1},
+    )
+    settings_doc["created_at"] = existing.get("created_at", now_iso) if existing else now_iso
+
+    await db.finance_settings.update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": settings_doc},
+        upsert=True,
+    )
+    return {key: value for key, value in settings_doc.items() if key != "user_id"}
+
+@api_router.get("/finance/cash-flow")
+async def get_finance_cash_flow(current_user: Dict = Depends(get_current_user)):
+    """Return a 12-month cash-flow forecast based on persisted finance settings."""
+    settings = await db.finance_settings.find_one(
+        {"user_id": current_user["user_id"]},
+        {"_id": 0},
+    )
+    if not settings or settings.get("revenue", 0) <= 0:
+        return {"forecast": [], "summary": None}
+
+    try:
+        return build_cash_flow_forecast(
+            revenue=settings["revenue"],
+            tax_regime=settings["tax_regime"],
+            period=settings["period"],
+            fixed_expenses=settings.get("fixed_expenses", 0),
+            variable_expenses=settings.get("variable_expenses", 0),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
 
 @api_router.post("/tax/accruals")
 async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict = Depends(get_current_user)):

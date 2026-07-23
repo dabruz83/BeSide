@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth, API } from "@/App";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,7 +19,18 @@ import {
   Info,
   Download
 } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
+import {
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from "recharts";
 
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('it-IT', {
@@ -39,6 +50,7 @@ export const FinancePage = () => {
   const { user } = useAuth();
   const [accruals, setAccruals] = useState([]);
   const [forecast, setForecast] = useState(null);
+  const [cashFlow, setCashFlow] = useState(null);
   const [deadlines, setDeadlines] = useState([]);
   const [loading, setLoading] = useState(true);
   
@@ -46,54 +58,92 @@ export const FinancePage = () => {
   const [calcRevenue, setCalcRevenue] = useState("");
   const [calcRegime, setCalcRegime] = useState(user?.tax_regime || "forfettario_15");
   const [calcPeriod, setCalcPeriod] = useState("monthly");
+  const [calcFixedExpenses, setCalcFixedExpenses] = useState("");
+  const [calcVariableExpenses, setCalcVariableExpenses] = useState("");
   const [calcResult, setCalcResult] = useState(null);
+  const [isCalculating, setIsCalculating] = useState(false);
   
   // Accrual form state
   const [accrualMonth, setAccrualMonth] = useState(new Date().toISOString().slice(0, 7));
   const [accrualRevenue, setAccrualRevenue] = useState("");
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  useEffect(() => {
-    if (user?.tax_regime) {
-      setCalcRegime(user.tax_regime);
-    }
-  }, [user]);
-
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const [accrualsRes, forecastRes, deadlinesRes] = await Promise.all([
+      const [accrualsRes, forecastRes, deadlinesRes, settingsRes, cashFlowRes] = await Promise.all([
         axios.get(`${API}/tax/accruals`),
         axios.get(`${API}/tax/forecast`),
-        axios.get(`${API}/tax/deadlines`)
+        axios.get(`${API}/tax/deadlines`),
+        axios.get(`${API}/finance/settings`),
+        axios.get(`${API}/finance/cash-flow`)
       ]);
       setAccruals(accrualsRes.data);
       setForecast(forecastRes.data);
       setDeadlines(deadlinesRes.data.deadlines);
+      setCashFlow(cashFlowRes.data);
+
+      const settings = settingsRes.data;
+      setCalcRevenue(settings.revenue > 0 ? String(settings.revenue) : "");
+      setCalcRegime(settings.tax_regime || user?.tax_regime || "forfettario_15");
+      setCalcPeriod(settings.period || "monthly");
+      setCalcFixedExpenses(settings.fixed_expenses > 0 ? String(settings.fixed_expenses) : "");
+      setCalcVariableExpenses(settings.variable_expenses > 0 ? String(settings.variable_expenses) : "");
+
+      if (settings.revenue > 0) {
+        const calculationResponse = await axios.post(`${API}/tax/calculate`, {
+          revenue: settings.revenue,
+          tax_regime: settings.tax_regime,
+          period: settings.period,
+          fixed_expenses: settings.fixed_expenses || 0,
+          variable_expenses: settings.variable_expenses || 0
+        });
+        setCalcResult(calculationResponse.data);
+      }
     } catch (error) {
       console.error("Error fetching data:", error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.tax_regime]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
 
   const handleCalculate = async () => {
-    if (!calcRevenue || parseFloat(calcRevenue) <= 0) {
+    const revenue = parseFloat(calcRevenue);
+    const fixedExpenses = calcFixedExpenses === "" ? 0 : parseFloat(calcFixedExpenses);
+    const variableExpenses = calcVariableExpenses === "" ? 0 : parseFloat(calcVariableExpenses);
+
+    if (!Number.isFinite(revenue) || revenue <= 0) {
       toast.error("Inserisci un fatturato valido");
       return;
     }
+    if (!Number.isFinite(fixedExpenses) || fixedExpenses < 0 || !Number.isFinite(variableExpenses) || variableExpenses < 0) {
+      toast.error("Inserisci spese valide, uguali o superiori a zero");
+      return;
+    }
     
+    setIsCalculating(true);
     try {
-      const response = await axios.post(`${API}/tax/calculate`, {
-        revenue: parseFloat(calcRevenue),
+      const payload = {
+        revenue,
         tax_regime: calcRegime,
-        period: calcPeriod
-      });
-      setCalcResult(response.data);
+        period: calcPeriod,
+        fixed_expenses: fixedExpenses,
+        variable_expenses: variableExpenses
+      };
+      const [calculationResponse] = await Promise.all([
+        axios.post(`${API}/tax/calculate`, payload),
+        axios.put(`${API}/finance/settings`, payload)
+      ]);
+      const cashFlowResponse = await axios.get(`${API}/finance/cash-flow`);
+      setCalcResult(calculationResponse.data);
+      setCashFlow(cashFlowResponse.data);
+      toast.success("Calcolo aggiornato e dati salvati");
     } catch (error) {
-      toast.error("Errore nel calcolo");
+      toast.error("Errore nel calcolo o nel salvataggio");
+    } finally {
+      setIsCalculating(false);
     }
   };
 
@@ -157,6 +207,17 @@ export const FinancePage = () => {
     accantonamento: item.total_accrual,
     netto: item.net_income
   })) || [];
+
+  const cashFlowChartData = cashFlow?.forecast?.map((item) => {
+    const [year, month] = item.month.split("-").map(Number);
+    return {
+      ...item,
+      monthLabel: new Intl.DateTimeFormat("it-IT", {
+        month: "short",
+        year: "2-digit"
+      }).format(new Date(year, month - 1, 1))
+    };
+  }) || [];
 
   const getRegimeDescription = (regime) => {
     switch (regime) {
@@ -250,11 +311,46 @@ export const FinancePage = () => {
                     id="calc_revenue"
                     type="number"
                     step="0.01"
+                    min="0"
                     value={calcRevenue}
                     onChange={(e) => setCalcRevenue(e.target.value)}
                     placeholder={calcPeriod === "monthly" ? "5000" : "60000"}
                     data-testid="calc-revenue-input"
                   />
+                </div>
+
+                <div className="grid sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="calc_fixed_expenses">
+                      Spese Fisse {calcPeriod === "monthly" ? "Mensili" : "Annuali"} (€)
+                    </Label>
+                    <Input
+                      id="calc_fixed_expenses"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={calcFixedExpenses}
+                      onChange={(e) => setCalcFixedExpenses(e.target.value)}
+                      placeholder={calcPeriod === "monthly" ? "1500" : "18000"}
+                      data-testid="calc-fixed-expenses-input"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="calc_variable_expenses">
+                      Spese Variabili {calcPeriod === "monthly" ? "Mensili" : "Annuali"} (€)
+                    </Label>
+                    <Input
+                      id="calc_variable_expenses"
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={calcVariableExpenses}
+                      onChange={(e) => setCalcVariableExpenses(e.target.value)}
+                      placeholder={calcPeriod === "monthly" ? "1000" : "12000"}
+                      data-testid="calc-variable-expenses-input"
+                    />
+                  </div>
                 </div>
                 
                 <div className="space-y-2">
@@ -286,8 +382,17 @@ export const FinancePage = () => {
                   </div>
                 </div>
                 
-                <Button onClick={handleCalculate} className="w-full" data-testid="calc-submit-btn">
-                  Calcola
+                <p className="text-xs text-muted-foreground">
+                  I dati vengono salvati nel tuo account quando esegui il calcolo e restano disponibili quando torni in questa pagina.
+                </p>
+
+                <Button
+                  onClick={handleCalculate}
+                  className="w-full"
+                  disabled={isCalculating}
+                  data-testid="calc-submit-btn"
+                >
+                  {isCalculating ? "Salvataggio..." : "Salva e Calcola"}
                 </Button>
               </CardContent>
             </Card>
@@ -337,15 +442,32 @@ export const FinancePage = () => {
                         <span className="font-semibold text-destructive">- {formatCurrency(calcResult.iva_amount)}</span>
                       </div>
                     )}
+
+                    <div className="flex justify-between items-center py-2 border-b border-border">
+                      <span className="text-muted-foreground">Spese Fisse</span>
+                      <span className="font-semibold text-destructive">- {formatCurrency(calcResult.fixed_expenses)}</span>
+                    </div>
+
+                    <div className="flex justify-between items-center py-2 border-b border-border">
+                      <span className="text-muted-foreground">Spese Variabili</span>
+                      <span className="font-semibold text-destructive">- {formatCurrency(calcResult.variable_expenses)}</span>
+                    </div>
                     
                     <div className="flex justify-between items-center py-3 bg-destructive/10 px-3 rounded-lg">
                       <span className="font-semibold">Totale da Accantonare</span>
                       <span className="font-bold text-lg text-destructive">{formatCurrency(calcResult.total_accrual)}</span>
                     </div>
+
+                    <div className="flex justify-between items-center py-3 bg-muted/50 px-3 rounded-lg">
+                      <span className="font-semibold">Uscite Complessive</span>
+                      <span className="font-bold text-lg">{formatCurrency(calcResult.total_outflows)}</span>
+                    </div>
                     
-                    <div className="flex justify-between items-center py-3 bg-success/10 px-3 rounded-lg">
-                      <span className="font-semibold">Netto Disponibile</span>
-                      <span className="font-bold text-lg text-success">{formatCurrency(calcResult.net_income)}</span>
+                    <div className={`flex justify-between items-center py-3 px-3 rounded-lg ${calcResult.net_income >= 0 ? "bg-success/10" : "bg-destructive/10"}`}>
+                      <span className="font-semibold">Saldo di Cassa Disponibile</span>
+                      <span className={calcResult.net_income >= 0 ? "font-bold text-lg text-success" : "font-bold text-lg text-destructive"}>
+                        {formatCurrency(calcResult.net_income)}
+                      </span>
                     </div>
 
                     {/* Yearly Projection for monthly calculations */}
@@ -365,8 +487,14 @@ export const FinancePage = () => {
                             <p className="font-semibold text-destructive">{formatCurrency(calcResult.yearly_projection.total_accrual)}</p>
                           </div>
                           <div>
-                            <p className="text-muted-foreground">Netto Annuale</p>
-                            <p className="font-semibold text-success">{formatCurrency(calcResult.yearly_projection.net_income)}</p>
+                            <p className="text-muted-foreground">Spese Annuali</p>
+                            <p className="font-semibold text-destructive">{formatCurrency(calcResult.yearly_projection.operating_expenses)}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Saldo Annuale</p>
+                            <p className={calcResult.yearly_projection.net_income >= 0 ? "font-semibold text-success" : "font-semibold text-destructive"}>
+                              {formatCurrency(calcResult.yearly_projection.net_income)}
+                            </p>
                           </div>
                           <div>
                             <p className="text-muted-foreground">% Tasse/Fatturato</p>
@@ -385,6 +513,73 @@ export const FinancePage = () => {
               </CardContent>
             </Card>
           </div>
+
+          {/* Persisted Cash Flow Forecast */}
+          {cashFlowChartData.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-lg flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-secondary" />
+                  Previsione Cash Flow - 12 Mesi
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Entrate, uscite e saldo cumulativo calcolati sui valori salvati sopra.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-6">
+                {cashFlow.summary && (
+                  <div className="grid sm:grid-cols-3 gap-3">
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs text-muted-foreground">Entrate Medie Mensili</p>
+                      <p className="font-semibold text-success">{formatCurrency(cashFlow.summary.monthly_inflows)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs text-muted-foreground">Uscite Medie Mensili</p>
+                      <p className="font-semibold text-destructive">{formatCurrency(cashFlow.summary.monthly_outflows)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-xs text-muted-foreground">Saldo Medio Mensile</p>
+                      <p className={cashFlow.summary.monthly_net_cash_flow >= 0 ? "font-semibold text-success" : "font-semibold text-destructive"}>
+                        {formatCurrency(cashFlow.summary.monthly_net_cash_flow)}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <ResponsiveContainer width="100%" height={320}>
+                  <ComposedChart data={cashFlowChartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="monthLabel" />
+                    <YAxis yAxisId="amounts" tickFormatter={(value) => `${Math.round(value / 1000)}k`} />
+                    <YAxis
+                      yAxisId="cumulative"
+                      orientation="right"
+                      tickFormatter={(value) => `${Math.round(value / 1000)}k`}
+                    />
+                    <Tooltip
+                      formatter={(value) => formatCurrency(value)}
+                      contentStyle={{ borderRadius: "8px", border: "1px solid #e5e7eb" }}
+                    />
+                    <Legend />
+                    <Bar yAxisId="amounts" dataKey="inflows" fill="#1A7A4A" name="Entrate" radius={[4, 4, 0, 0]} />
+                    <Bar yAxisId="amounts" dataKey="outflows" fill="#C0392B" name="Uscite" radius={[4, 4, 0, 0]} />
+                    <Line
+                      yAxisId="cumulative"
+                      type="monotone"
+                      dataKey="cumulative_cash_flow"
+                      stroke="#1e3a5f"
+                      strokeWidth={3}
+                      dot={false}
+                      name="Saldo Cumulativo"
+                    />
+                  </ComposedChart>
+                </ResponsiveContainer>
+                <p className="text-xs text-muted-foreground">
+                  Stima orientativa basata su valori costanti. Le imposte sono una previsione semplificata e non sostituiscono il commercialista.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Forecast Chart */}
           {forecast && forecastChartData.length > 0 && (
