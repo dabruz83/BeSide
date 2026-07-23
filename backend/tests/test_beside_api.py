@@ -42,8 +42,33 @@ class TestAuthentication:
         assert "token" in data
         assert "user" in data
         assert data["user"]["email"] == TEST_USER_EMAIL
-        print(f"✓ Login successful for {TEST_USER_EMAIL}")
+        assert "first_name" in data["user"], "first_name field missing in user object"
+        print(f"✓ Login successful for {TEST_USER_EMAIL}, first_name='{data['user'].get('first_name')}'")
         return data["token"]
+
+    def test_register_with_first_name(self):
+        """Test user registration accepts first_name field"""
+        unique_email = f"test_reg_{uuid.uuid4().hex[:8]}@test.it"
+        payload = {
+            "email": unique_email,
+            "password": "TestPass123!",
+            "first_name": "Marco",
+            "business_name": "TEST_Register_Business",
+            "team_size": 1,
+            "services": ["ppf"],
+            "tax_regime": "forfettario_15"
+        }
+        response = requests.post(f"{BASE_URL}/api/auth/register", json=payload)
+        assert response.status_code in [200, 201], f"Register failed: {response.text}"
+
+        # Verify first_name is returned via login
+        login_resp = requests.post(f"{BASE_URL}/api/auth/login", json={
+            "email": unique_email, "password": "TestPass123!"
+        })
+        assert login_resp.status_code == 200
+        user = login_resp.json()["user"]
+        assert user.get("first_name") == "Marco", f"first_name mismatch: {user.get('first_name')}"
+        print(f"✓ Registered {unique_email} with first_name='Marco'")
     
     def test_login_invalid_credentials(self):
         """Test login with invalid credentials returns 401"""
@@ -451,8 +476,11 @@ class TestAdmin:
         assert "trial_users" in data
         assert "paying_users" in data
         assert "total_jobs" in data
+        assert "total_revenue" in data
+        assert isinstance(data["total_revenue"], (int, float))
+        assert data["total_revenue"] >= 0
         
-        print(f"✓ Admin stats: {data['total_users']} users, {data['total_jobs']} jobs")
+        print(f"✓ Admin stats: {data['total_users']} users, {data['total_jobs']} jobs, revenue=€{data['total_revenue']:.2f}")
 
 
 class TestProfile:
