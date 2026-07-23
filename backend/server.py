@@ -93,6 +93,8 @@ logger = logging.getLogger(__name__)
 # Tax Regimes
 TAX_REGIMES = ["forfettario_5", "forfettario_15", "ordinario"]
 FINANCE_PERIODS = ["monthly", "yearly"]
+CASH_PLAN_DATA_TYPES = ["actual", "forecast"]
+CASH_PLAN_FORECAST_METHODS = ["manual", "average_3", "average_6", "copy_previous"]
 
 # Business Types
 BUSINESS_TYPES = ["ditta_individuale", "forfettario", "societa_persone", "societa_capitali"]
@@ -233,6 +235,26 @@ class FinanceSettingsUpdate(BaseModel):
     period: str = "monthly"
     fixed_expenses: float = Field(default=0, ge=0)
     variable_expenses: float = Field(default=0, ge=0)
+
+class CashPlanSettingsUpdate(BaseModel):
+    opening_balance: float = 0
+
+class CashPlanMonthCreate(BaseModel):
+    month: str
+    data_type: str = "actual"
+    revenue: float = Field(default=0, ge=0)
+    fixed_expenses: float = Field(default=0, ge=0)
+    variable_expenses: float = Field(default=0, ge=0)
+    other_expenses: float = Field(default=0, ge=0)
+    taxes_paid: float = Field(default=0, ge=0)
+    notes: str = Field(default="", max_length=1000)
+
+class CashPlanMonthUpdate(CashPlanMonthCreate):
+    pass
+
+class CashPlanForecastRequest(BaseModel):
+    method: str
+    months: int = Field(default=6, ge=1, le=24)
 
 class TaxAccrualCreate(BaseModel):
     month: str  # YYYY-MM format
@@ -510,6 +532,214 @@ def build_cash_flow_forecast(
             "annual_net_cash_flow": round(monthly_net_cash_flow * 12, 2),
         },
     }
+
+def validate_cash_plan_month(month: str) -> int:
+    """Validate the YYYY-MM cash-plan key and return its year."""
+    try:
+        parsed_month = datetime.strptime(month, "%Y-%m")
+    except (TypeError, ValueError) as error:
+        raise ValueError("Il mese deve avere il formato YYYY-MM") from error
+    if parsed_month.strftime("%Y-%m") != month:
+        raise ValueError("Il mese deve avere il formato YYYY-MM")
+    return parsed_month.year
+
+def add_months_to_cash_plan(month: str, offset: int = 1) -> str:
+    """Move a YYYY-MM key by an exact number of calendar months."""
+    year = validate_cash_plan_month(month)
+    month_number = int(month[5:7])
+    month_index = year * 12 + month_number - 1 + offset
+    target_year, zero_based_month = divmod(month_index, 12)
+    return f"{target_year:04d}-{zero_based_month + 1:02d}"
+
+def calculate_cash_plan_records(
+    records: List[Dict[str, Any]],
+    opening_balance: float,
+) -> List[Dict[str, Any]]:
+    """Calculate the bank and reserved-tax chain for chronological monthly records."""
+    running_bank_balance = float(opening_balance)
+    running_tax_reserve = 0.0
+    calculated_records = []
+
+    for original_record in sorted(records, key=lambda record: record["month"]):
+        record = dict(original_record)
+        revenue = float(record.get("revenue", 0))
+        fixed_expenses = float(record.get("fixed_expenses", 0))
+        variable_expenses = float(record.get("variable_expenses", 0))
+        other_expenses = float(record.get("other_expenses", 0))
+        taxes_paid = float(record.get("taxes_paid", 0))
+        tax_regime = record.get("tax_regime", "forfettario_15")
+
+        recommended_tax_reserve = calculate_tax(
+            revenue,
+            tax_regime,
+            "monthly",
+        )["total_accrual"]
+        operating_expenses = fixed_expenses + variable_expenses + other_expenses
+        real_outflows = operating_expenses + taxes_paid
+        real_cash_flow = revenue - real_outflows
+        closing_balance = running_bank_balance + real_cash_flow
+        running_tax_reserve = max(
+            0.0,
+            running_tax_reserve + recommended_tax_reserve - taxes_paid,
+        )
+        available_liquidity = closing_balance - running_tax_reserve
+
+        record.update({
+            "opening_balance": round(running_bank_balance, 2),
+            "operating_expenses": round(operating_expenses, 2),
+            "real_outflows": round(real_outflows, 2),
+            "real_cash_flow": round(real_cash_flow, 2),
+            "recommended_tax_reserve": round(recommended_tax_reserve, 2),
+            "reserved_tax_balance": round(running_tax_reserve, 2),
+            "closing_balance": round(closing_balance, 2),
+            "available_liquidity": round(available_liquidity, 2),
+        })
+        calculated_records.append(record)
+        running_bank_balance = closing_balance
+
+    return calculated_records
+
+def build_cash_plan_summary(
+    records: List[Dict[str, Any]],
+    opening_balance: float,
+    current_month: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create the four cash-plan KPIs plus the first gentle liquidity warning."""
+    calculated_records = calculate_cash_plan_records(records, opening_balance)
+    latest_record = calculated_records[-1] if calculated_records else None
+    actual_records = [record for record in calculated_records if record.get("data_type") == "actual"]
+    recent_revenues = [record["revenue"] for record in actual_records[-3:] if record["revenue"] > 0]
+    average_revenue = sum(recent_revenues) / len(recent_revenues) if recent_revenues else 0
+    critical_threshold = round(max(1000.0, average_revenue * 0.10), 2)
+    reference_month = current_month or datetime.now(timezone.utc).strftime("%Y-%m")
+
+    next_payment = next((
+        {
+            "month": record["month"],
+            "amount": record["taxes_paid"],
+        }
+        for record in calculated_records
+        if record.get("data_type") == "forecast"
+        and record["month"] >= reference_month
+        and record.get("taxes_paid", 0) > 0
+    ), None)
+
+    liquidity_warning = next((
+        {
+            "month": record["month"],
+            "available_liquidity": record["available_liquidity"],
+            "shortfall": round(
+                abs(record["available_liquidity"])
+                if record["available_liquidity"] < 0
+                else critical_threshold - record["available_liquidity"],
+                2,
+            ),
+            "critical_threshold": critical_threshold,
+        }
+        for record in calculated_records
+        if record.get("data_type") == "forecast"
+        and record["available_liquidity"] < critical_threshold
+    ), None)
+
+    return {
+        "estimated_bank_balance": latest_record["closing_balance"] if latest_record else round(opening_balance, 2),
+        "tax_reserve_to_keep": latest_record["reserved_tax_balance"] if latest_record else 0,
+        "available_liquidity": latest_record["available_liquidity"] if latest_record else round(opening_balance, 2),
+        "next_payment": next_payment,
+        "critical_threshold": critical_threshold,
+        "liquidity_warning": liquidity_warning,
+    }
+
+async def migrate_tax_accruals_to_cash_plan(current_user: Dict[str, Any]) -> None:
+    """Copy compatible legacy accruals once, without deleting or changing source data."""
+    user_id = current_user["user_id"]
+    existing_records = await db.cash_plan_entries.find(
+        {"user_id": user_id},
+        {"_id": 0, "month": 1},
+    ).to_list(240)
+    existing_months = {record["month"] for record in existing_records}
+    legacy_accruals = await db.tax_accruals.find(
+        {"user_id": user_id},
+        {"_id": 0},
+    ).sort("month", 1).to_list(240)
+
+    for accrual in legacy_accruals:
+        month = accrual.get("month")
+        if not month or month in existing_months:
+            continue
+        try:
+            year = validate_cash_plan_month(month)
+        except ValueError:
+            continue
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.cash_plan_entries.insert_one({
+            "cash_plan_id": f"cash_{uuid.uuid4().hex[:12]}",
+            "user_id": user_id,
+            "month": month,
+            "year": year,
+            "data_type": "actual",
+            "revenue": float(accrual.get("revenue", 0)),
+            "fixed_expenses": 0,
+            "variable_expenses": 0,
+            "other_expenses": 0,
+            "taxes_paid": 0,
+            "tax_regime": accrual.get("tax_regime", current_user.get("tax_regime", "forfettario_15")),
+            "notes": "Importato dallo storico accantonamenti",
+            "created_at": accrual.get("created_at", now_iso),
+            "updated_at": now_iso,
+        })
+        existing_months.add(month)
+
+async def get_cash_plan_opening_balance(user_id: str) -> float:
+    settings = await db.cash_plan_settings.find_one(
+        {"user_id": user_id},
+        {"_id": 0, "opening_balance": 1},
+    )
+    return float(settings.get("opening_balance", 0)) if settings else 0.0
+
+async def get_cash_plan_recurring_defaults(user_id: str) -> Dict[str, float]:
+    """Reuse compatible values already saved by the existing finance calculator."""
+    settings = await db.finance_settings.find_one(
+        {"user_id": user_id},
+        {"_id": 0},
+    )
+    if not settings:
+        return {"revenue": 0, "fixed_expenses": 0, "variable_expenses": 0}
+
+    divisor = 12 if settings.get("period") == "yearly" else 1
+    return {
+        "revenue": round(float(settings.get("revenue", 0)) / divisor, 2),
+        "fixed_expenses": round(float(settings.get("fixed_expenses", 0)) / divisor, 2),
+        "variable_expenses": round(float(settings.get("variable_expenses", 0)) / divisor, 2),
+    }
+
+async def recalculate_user_cash_plan(user_id: str) -> List[Dict[str, Any]]:
+    """Recalculate and persist all derived values while preserving chronological chaining."""
+    records = await db.cash_plan_entries.find(
+        {"user_id": user_id},
+        {"_id": 0},
+    ).sort("month", 1).to_list(240)
+    opening_balance = await get_cash_plan_opening_balance(user_id)
+    calculated_records = calculate_cash_plan_records(records, opening_balance)
+
+    derived_fields = {
+        "opening_balance",
+        "operating_expenses",
+        "real_outflows",
+        "real_cash_flow",
+        "recommended_tax_reserve",
+        "reserved_tax_balance",
+        "closing_balance",
+        "available_liquidity",
+    }
+    for record in calculated_records:
+        await db.cash_plan_entries.update_one(
+            {"cash_plan_id": record["cash_plan_id"], "user_id": user_id},
+            {"$set": {field: record[field] for field in derived_fields}},
+        )
+
+    return calculated_records
 
 def calculate_job_profitability(quote: float, hours: float, materials: float, waste_pct: float) -> Dict[str, float]:
     """Calculate job profitability metrics"""
@@ -1237,6 +1467,244 @@ async def get_finance_cash_flow(current_user: Dict = Depends(get_current_user)):
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+
+def validate_cash_plan_payload(month: str, data_type: str) -> int:
+    if data_type not in CASH_PLAN_DATA_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo di dato del piano di cassa non valido")
+    try:
+        return validate_cash_plan_month(month)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+@api_router.get("/finance/cash-plan/settings")
+async def get_cash_plan_settings(current_user: Dict = Depends(get_current_user)):
+    """Return the single opening balance used by the user's cash plan."""
+    return {
+        "opening_balance": await get_cash_plan_opening_balance(current_user["user_id"]),
+    }
+
+@api_router.put("/finance/cash-plan/settings")
+async def update_cash_plan_settings(
+    settings_data: CashPlanSettingsUpdate,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Persist the opening balance and recalculate every following month."""
+    user_id = current_user["user_id"]
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.cash_plan_settings.update_one(
+        {"user_id": user_id},
+        {"$set": {
+            "user_id": user_id,
+            "opening_balance": round(settings_data.opening_balance, 2),
+            "updated_at": now_iso,
+        }, "$setOnInsert": {"created_at": now_iso}},
+        upsert=True,
+    )
+    records = await recalculate_user_cash_plan(user_id)
+    return {
+        "opening_balance": round(settings_data.opening_balance, 2),
+        "summary": build_cash_plan_summary(records, settings_data.opening_balance),
+    }
+
+@api_router.get("/finance/cash-plan/months")
+async def get_cash_plan_months(
+    data_type: Optional[str] = None,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Return chronological monthly records, optionally filtered by actual/forecast."""
+    if data_type is not None and data_type not in CASH_PLAN_DATA_TYPES:
+        raise HTTPException(status_code=400, detail="Tipo di dato del piano di cassa non valido")
+
+    await migrate_tax_accruals_to_cash_plan(current_user)
+    user_id = current_user["user_id"]
+    opening_balance = await get_cash_plan_opening_balance(user_id)
+    records = await recalculate_user_cash_plan(user_id)
+    visible_records = [record for record in records if data_type is None or record["data_type"] == data_type]
+    return {
+        "months": visible_records,
+        "opening_balance": opening_balance,
+        "recurring_defaults": await get_cash_plan_recurring_defaults(user_id),
+        "summary": build_cash_plan_summary(records, opening_balance),
+    }
+
+@api_router.post("/finance/cash-plan/months")
+async def create_cash_plan_month(
+    month_data: CashPlanMonthCreate,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Create one user-owned cash-plan month and chain all following balances."""
+    await migrate_tax_accruals_to_cash_plan(current_user)
+    user_id = current_user["user_id"]
+    year = validate_cash_plan_payload(month_data.month, month_data.data_type)
+    existing = await db.cash_plan_entries.find_one(
+        {"user_id": user_id, "month": month_data.month},
+        {"_id": 0, "cash_plan_id": 1},
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="Esiste già un mese con questa data")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cash_plan_id = f"cash_{uuid.uuid4().hex[:12]}"
+    document = {
+        "cash_plan_id": cash_plan_id,
+        "user_id": user_id,
+        "year": year,
+        **month_data.model_dump(),
+        "tax_regime": current_user.get("tax_regime", "forfettario_15"),
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
+    await db.cash_plan_entries.insert_one(document)
+    records = await recalculate_user_cash_plan(user_id)
+    return next(record for record in records if record["cash_plan_id"] == cash_plan_id)
+
+@api_router.put("/finance/cash-plan/months/{cash_plan_id}")
+async def update_cash_plan_month(
+    cash_plan_id: str,
+    month_data: CashPlanMonthUpdate,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Update only a cash-plan month owned by the authenticated user."""
+    user_id = current_user["user_id"]
+    year = validate_cash_plan_payload(month_data.month, month_data.data_type)
+    existing = await db.cash_plan_entries.find_one(
+        {"cash_plan_id": cash_plan_id, "user_id": user_id},
+        {"_id": 0},
+    )
+    if not existing:
+        raise HTTPException(status_code=404, detail="Mese del piano di cassa non trovato")
+
+    duplicate = await db.cash_plan_entries.find_one(
+        {
+            "user_id": user_id,
+            "month": month_data.month,
+            "cash_plan_id": {"$ne": cash_plan_id},
+        },
+        {"_id": 0, "cash_plan_id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Esiste già un mese con questa data")
+
+    await db.cash_plan_entries.update_one(
+        {"cash_plan_id": cash_plan_id, "user_id": user_id},
+        {"$set": {
+            **month_data.model_dump(),
+            "year": year,
+            "tax_regime": existing.get("tax_regime", current_user.get("tax_regime", "forfettario_15")),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    records = await recalculate_user_cash_plan(user_id)
+    return next(record for record in records if record["cash_plan_id"] == cash_plan_id)
+
+@api_router.delete("/finance/cash-plan/months/{cash_plan_id}")
+async def delete_cash_plan_month(
+    cash_plan_id: str,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Delete one owned month and repair the opening/closing chain that follows it."""
+    user_id = current_user["user_id"]
+    result = await db.cash_plan_entries.delete_one(
+        {"cash_plan_id": cash_plan_id, "user_id": user_id},
+    )
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Mese del piano di cassa non trovato")
+    await recalculate_user_cash_plan(user_id)
+    return {"message": "Mese eliminato"}
+
+@api_router.post("/finance/cash-plan/forecast/generate")
+async def generate_cash_plan_forecast(
+    request_data: CashPlanForecastRequest,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Append editable forecast months without ever changing saved actual months."""
+    if request_data.method not in CASH_PLAN_FORECAST_METHODS:
+        raise HTTPException(status_code=400, detail="Metodo di previsione non valido")
+
+    await migrate_tax_accruals_to_cash_plan(current_user)
+    user_id = current_user["user_id"]
+    records = await recalculate_user_cash_plan(user_id)
+    actual_records = [record for record in records if record["data_type"] == "actual"]
+    source_records = actual_records
+    latest_record = records[-1] if records else None
+    recurring_defaults = await get_cash_plan_recurring_defaults(user_id)
+
+    if request_data.method == "average_3":
+        source_records = actual_records[-3:]
+    elif request_data.method == "average_6":
+        source_records = actual_records[-6:]
+    elif request_data.method == "copy_previous":
+        source_records = [latest_record] if latest_record else []
+
+    if request_data.method != "manual" and not source_records:
+        raise HTTPException(
+            status_code=400,
+            detail="Inserisci almeno un mese consuntivo prima di generare la previsione",
+        )
+
+    def average(field: str) -> float:
+        return round(sum(float(record.get(field, 0)) for record in source_records) / len(source_records), 2)
+
+    if request_data.method == "manual":
+        template = {
+            "revenue": 0,
+            "fixed_expenses": float(latest_record.get("fixed_expenses", 0)) if latest_record else recurring_defaults["fixed_expenses"],
+            "variable_expenses": 0,
+            "other_expenses": 0,
+        }
+    elif request_data.method == "copy_previous":
+        template = {
+            "revenue": float(latest_record.get("revenue", 0)),
+            "fixed_expenses": float(latest_record.get("fixed_expenses", 0)),
+            "variable_expenses": float(latest_record.get("variable_expenses", 0)),
+            "other_expenses": float(latest_record.get("other_expenses", 0)),
+        }
+    else:
+        template = {
+            "revenue": average("revenue"),
+            "fixed_expenses": average("fixed_expenses"),
+            "variable_expenses": average("variable_expenses"),
+            "other_expenses": average("other_expenses"),
+        }
+
+    starting_month = records[-1]["month"] if records else datetime.now(timezone.utc).strftime("%Y-%m")
+    created_ids = []
+    for offset in range(1, request_data.months + 1):
+        month = add_months_to_cash_plan(starting_month, offset)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        cash_plan_id = f"cash_{uuid.uuid4().hex[:12]}"
+        await db.cash_plan_entries.insert_one({
+            "cash_plan_id": cash_plan_id,
+            "user_id": user_id,
+            "month": month,
+            "year": int(month[:4]),
+            "data_type": "forecast",
+            **template,
+            "taxes_paid": 0,
+            "tax_regime": current_user.get("tax_regime", "forfettario_15"),
+            "notes": "",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+        created_ids.append(cash_plan_id)
+
+    calculated_records = await recalculate_user_cash_plan(user_id)
+    return {
+        "created_count": len(created_ids),
+        "months": [
+            record for record in calculated_records
+            if record["cash_plan_id"] in created_ids
+        ],
+    }
+
+@api_router.get("/finance/cash-plan/summary")
+async def get_cash_plan_summary(current_user: Dict = Depends(get_current_user)):
+    """Return the cash-plan KPI summary and first forecast liquidity warning."""
+    await migrate_tax_accruals_to_cash_plan(current_user)
+    user_id = current_user["user_id"]
+    opening_balance = await get_cash_plan_opening_balance(user_id)
+    records = await recalculate_user_cash_plan(user_id)
+    return build_cash_plan_summary(records, opening_balance)
 
 @api_router.post("/tax/accruals")
 async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict = Depends(get_current_user)):

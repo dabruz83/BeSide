@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { CashPlanSection } from "@/components/finance/CashPlanSection";
 import { toast } from "sonner";
 import { 
   Calculator, 
@@ -19,18 +20,6 @@ import {
   Info,
   Download
 } from "lucide-react";
-import {
-  Bar,
-  CartesianGrid,
-  ComposedChart,
-  Legend,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
-} from "recharts";
 
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('it-IT', {
@@ -49,8 +38,6 @@ const TAX_REGIMES = [
 export const FinancePage = () => {
   const { user } = useAuth();
   const [accruals, setAccruals] = useState([]);
-  const [forecast, setForecast] = useState(null);
-  const [cashFlow, setCashFlow] = useState(null);
   const [deadlines, setDeadlines] = useState([]);
   const [loading, setLoading] = useState(true);
   
@@ -69,17 +56,13 @@ export const FinancePage = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const [accrualsRes, forecastRes, deadlinesRes, settingsRes, cashFlowRes] = await Promise.all([
+      const [accrualsRes, deadlinesRes, settingsRes] = await Promise.all([
         axios.get(`${API}/tax/accruals`),
-        axios.get(`${API}/tax/forecast`),
         axios.get(`${API}/tax/deadlines`),
-        axios.get(`${API}/finance/settings`),
-        axios.get(`${API}/finance/cash-flow`)
+        axios.get(`${API}/finance/settings`)
       ]);
       setAccruals(accrualsRes.data);
-      setForecast(forecastRes.data);
       setDeadlines(deadlinesRes.data.deadlines);
-      setCashFlow(cashFlowRes.data);
 
       const settings = settingsRes.data;
       setCalcRevenue(settings.revenue > 0 ? String(settings.revenue) : "");
@@ -136,9 +119,7 @@ export const FinancePage = () => {
         axios.post(`${API}/tax/calculate`, payload),
         axios.put(`${API}/finance/settings`, payload)
       ]);
-      const cashFlowResponse = await axios.get(`${API}/finance/cash-flow`);
       setCalcResult(calculationResponse.data);
-      setCashFlow(cashFlowResponse.data);
       toast.success("Calcolo aggiornato e dati salvati");
     } catch (error) {
       toast.error("Errore nel calcolo o nel salvataggio");
@@ -201,23 +182,6 @@ export const FinancePage = () => {
       toast.error("Errore durante l'export");
     }
   };
-
-  const forecastChartData = forecast?.forecast?.map((item) => ({
-    month: item.month.slice(5),
-    accantonamento: item.total_accrual,
-    netto: item.net_income
-  })) || [];
-
-  const cashFlowChartData = cashFlow?.forecast?.map((item) => {
-    const [year, month] = item.month.split("-").map(Number);
-    return {
-      ...item,
-      monthLabel: new Intl.DateTimeFormat("it-IT", {
-        month: "short",
-        year: "2-digit"
-      }).format(new Date(year, month - 1, 1))
-    };
-  }) || [];
 
   const getRegimeDescription = (regime) => {
     switch (regime) {
@@ -514,115 +478,7 @@ export const FinancePage = () => {
             </Card>
           </div>
 
-          {/* Persisted Cash Flow Forecast */}
-          {cashFlowChartData.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-secondary" />
-                  Previsione Cash Flow - 12 Mesi
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Entrate, uscite e saldo cumulativo calcolati sui valori salvati sopra.
-                </p>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                {cashFlow.summary && (
-                  <div className="grid sm:grid-cols-3 gap-3">
-                    <div className="rounded-lg border border-border p-3">
-                      <p className="text-xs text-muted-foreground">Entrate Medie Mensili</p>
-                      <p className="font-semibold text-success">{formatCurrency(cashFlow.summary.monthly_inflows)}</p>
-                    </div>
-                    <div className="rounded-lg border border-border p-3">
-                      <p className="text-xs text-muted-foreground">Uscite Medie Mensili</p>
-                      <p className="font-semibold text-destructive">{formatCurrency(cashFlow.summary.monthly_outflows)}</p>
-                    </div>
-                    <div className="rounded-lg border border-border p-3">
-                      <p className="text-xs text-muted-foreground">Saldo Medio Mensile</p>
-                      <p className={cashFlow.summary.monthly_net_cash_flow >= 0 ? "font-semibold text-success" : "font-semibold text-destructive"}>
-                        {formatCurrency(cashFlow.summary.monthly_net_cash_flow)}
-                      </p>
-                    </div>
-                  </div>
-                )}
-
-                <ResponsiveContainer width="100%" height={320}>
-                  <ComposedChart data={cashFlowChartData} margin={{ top: 10, right: 10, left: 0, bottom: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="monthLabel" />
-                    <YAxis yAxisId="amounts" tickFormatter={(value) => `${Math.round(value / 1000)}k`} />
-                    <YAxis
-                      yAxisId="cumulative"
-                      orientation="right"
-                      tickFormatter={(value) => `${Math.round(value / 1000)}k`}
-                    />
-                    <Tooltip
-                      formatter={(value) => formatCurrency(value)}
-                      contentStyle={{ borderRadius: "8px", border: "1px solid #e5e7eb" }}
-                    />
-                    <Legend />
-                    <Bar yAxisId="amounts" dataKey="inflows" fill="#1A7A4A" name="Entrate" radius={[4, 4, 0, 0]} />
-                    <Bar yAxisId="amounts" dataKey="outflows" fill="#C0392B" name="Uscite" radius={[4, 4, 0, 0]} />
-                    <Line
-                      yAxisId="cumulative"
-                      type="monotone"
-                      dataKey="cumulative_cash_flow"
-                      stroke="#1e3a5f"
-                      strokeWidth={3}
-                      dot={false}
-                      name="Saldo Cumulativo"
-                    />
-                  </ComposedChart>
-                </ResponsiveContainer>
-                <p className="text-xs text-muted-foreground">
-                  Stima orientativa basata su valori costanti. Le imposte sono una previsione semplificata e non sostituiscono il commercialista.
-                </p>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Forecast Chart */}
-          {forecast && forecastChartData.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-secondary" />
-                  Previsione 6 Mesi
-                </CardTitle>
-                <p className="text-sm text-muted-foreground">
-                  Basata sul fatturato medio di {formatCurrency(forecast.avg_monthly_revenue)}/mese
-                </p>
-              </CardHeader>
-              <CardContent>
-                <ResponsiveContainer width="100%" height={250}>
-                  <LineChart data={forecastChartData}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="month" />
-                    <YAxis />
-                    <Tooltip 
-                      formatter={(value) => formatCurrency(value)}
-                      contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb' }}
-                    />
-                    <Legend />
-                    <Line 
-                      type="monotone" 
-                      dataKey="netto" 
-                      stroke="#1A7A4A" 
-                      strokeWidth={2}
-                      name="Netto Disponibile"
-                    />
-                    <Line 
-                      type="monotone" 
-                      dataKey="accantonamento" 
-                      stroke="#C0392B" 
-                      strokeWidth={2}
-                      name="Da Accantonare"
-                    />
-                  </LineChart>
-                </ResponsiveContainer>
-              </CardContent>
-            </Card>
-          )}
+          <CashPlanSection />
         </TabsContent>
 
         {/* Accruals Tab */}
