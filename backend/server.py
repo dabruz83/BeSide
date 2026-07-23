@@ -84,6 +84,7 @@ USER_ROLES = ["user", "admin", "super_admin"]
 class UserCreate(BaseModel):
     email: EmailStr
     password: str
+    first_name: str = ""
     business_name: str
     team_size: int = 1
     services: List[str] = []
@@ -531,6 +532,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks):
         "user_id": user_id,
         "email": user_data.email,
         "password_hash": hash_password(user_data.password),
+        "first_name": user_data.first_name,
         "business_name": user_data.business_name,
         "team_size": user_data.team_size,
         "services": user_data.services,
@@ -605,6 +607,7 @@ async def login(user_data: UserLogin, response: Response):
         "user": {
             "user_id": user["user_id"],
             "email": user["email"],
+            "first_name": user.get("first_name", ""),
             "business_name": user.get("business_name", ""),
             "team_size": user.get("team_size", 1),
             "services": user.get("services", []),
@@ -719,6 +722,7 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
     return {
         "user_id": current_user["user_id"],
         "email": current_user["email"],
+        "first_name": current_user.get("first_name", ""),
         "name": current_user.get("name"),
         "picture": current_user.get("picture"),
         "business_name": current_user.get("business_name", ""),

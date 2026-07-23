@@ -32,6 +32,7 @@ export const RegisterPage = () => {
   const [formData, setFormData] = useState({
     email: "",
     password: "",
+    first_name: "",
     business_name: "",
     team_size: 1,
     services: [],
@@ -51,8 +52,8 @@ export const RegisterPage = () => {
     e.preventDefault();
     
     if (step === 1) {
-      if (!formData.email || !formData.password) {
-        toast.error("Inserisci email e password");
+      if (!formData.first_name || !formData.email || !formData.password) {
+        toast.error("Inserisci nome, email e password");
         return;
       }
       if (formData.password.length < 6) {
@@ -114,6 +115,21 @@ export const RegisterPage = () => {
           <form onSubmit={handleSubmit} className="space-y-6">
             {step === 1 ? (
               <>
+                <div className="space-y-2">
+                  <Label htmlFor="first_name">Il tuo nome</Label>
+                  <div className="relative">
+                    <Input
+                      id="first_name"
+                      type="text"
+                      placeholder="Come ti chiami?"
+                      value={formData.first_name}
+                      onChange={(e) => setFormData({ ...formData, first_name: e.target.value })}
+                      required
+                      data-testid="register-name-input"
+                    />
+                  </div>
+                </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="email">Email</Label>
                   <div className="relative">

@@ -114,7 +114,7 @@ export const DashboardPage = () => {
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-heading-2 text-primary" data-testid="dashboard-title">
-            Ciao, {user?.business_name || user?.name || "Installatore"}!
+            Ciao, {user?.first_name || user?.name || user?.business_name?.split(' ')[0] || "Installatore"}!
           </h1>
           <p className="text-muted-foreground">Ecco il riepilogo della tua attività</p>
         </div>

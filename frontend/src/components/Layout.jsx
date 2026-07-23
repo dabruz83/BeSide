@@ -19,7 +19,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 const navItems = [
   { path: "/dashboard", label: "Bacheca", icon: LayoutDashboard },
   { path: "/jobs", label: "Lavori", icon: Wrench },
-  { path: "/configurator", label: "Configuratore", icon: Palette },
+  // { path: "/configurator", label: "Configuratore", icon: Palette }, // TODO: Riattivare quando pronto
   { path: "/finance", label: "Finanza", icon: Euro },
   { path: "/marketing", label: "Marketing", icon: Megaphone },
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
