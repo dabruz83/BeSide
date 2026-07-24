@@ -14,6 +14,7 @@ export const LoginPage = () => {
   const [formData, setFormData] = useState({ email: "", password: "" });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const oauthLoginUrl = (process.env.REACT_APP_OAUTH_LOGIN_URL || "").trim().replace(/\/+$/, "");
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -35,9 +36,8 @@ export const LoginPage = () => {
   };
 
   const handleGoogleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     const redirectUrl = window.location.origin + '/dashboard';
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    window.location.href = `${oauthLoginUrl}/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
   return (
@@ -73,7 +73,12 @@ export const LoginPage = () => {
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">Password</Label>
+                <Link to="/forgot-password" className="text-xs text-primary hover:underline">
+                  Password dimenticata?
+                </Link>
+              </div>
               <div className="relative">
                 <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <Input
@@ -106,16 +111,16 @@ export const LoginPage = () => {
             </Button>
           </form>
 
-          <div className="relative">
+          {oauthLoginUrl && <div className="relative">
             <div className="absolute inset-0 flex items-center">
               <div className="w-full border-t border-border"></div>
             </div>
             <div className="relative flex justify-center text-xs uppercase">
               <span className="bg-background px-2 text-muted-foreground">Oppure continua con</span>
             </div>
-          </div>
+          </div>}
 
-          <Button
+          {oauthLoginUrl && <Button
             type="button"
             variant="outline"
             className="w-full"
@@ -141,7 +146,7 @@ export const LoginPage = () => {
               />
             </svg>
             Accedi con Google
-          </Button>
+          </Button>}
 
           <p className="text-center text-sm text-muted-foreground">
             Non hai un account?{" "}

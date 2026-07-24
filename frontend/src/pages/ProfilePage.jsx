@@ -24,7 +24,7 @@ import {
   Search,
   Loader2
 } from "lucide-react";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 
 const TAX_REGIMES = [
   { value: "forfettario_5", label: "Forfettario 5%" },
@@ -143,16 +143,17 @@ export const ProfilePage = () => {
 
   const getSubscriptionLabel = (tier) => {
     switch (tier) {
-      case "essential": return "Essential - €97/mese";
-      case "professional": return "Professional - €197/mese";
-      case "elite": return "Elite - €397/mese";
+      case "essential": return "Essential";
+      case "professional": return "Professional";
+      case "elite": return "Elite";
       default: return tier;
     }
   };
 
   const getStatusLabel = (status) => {
     switch (status) {
-      case "trial": return "Prova Gratuita";
+      case "trial":
+      case "trialing": return "Prova Gratuita";
       case "active": return "Attivo";
       case "cancelled": return "Cancellato";
       default: return status;
@@ -545,20 +546,18 @@ export const ProfilePage = () => {
               <div>
                 <p className="text-sm text-muted-foreground">Stato</p>
                 <span className={`inline-flex px-2 py-1 rounded-full text-xs font-medium ${
-                  user?.subscription_status === "active" 
+                  user?.subscription_status === "active"
                     ? "bg-success/10 text-success"
-                    : user?.subscription_status === "trial"
+                    : ["trial", "trialing"].includes(user?.subscription_status)
                     ? "bg-warning/10 text-warning"
                     : "bg-muted text-muted-foreground"
                 }`}>
                   {getStatusLabel(user?.subscription_status)}
                 </span>
               </div>
-              <Link to="/subscription">
-                <Button variant="outline" className="w-full" data-testid="upgrade-btn">
-                  {user?.subscription_status === "trial" ? "Attiva Abbonamento" : "Gestisci Piano"}
-                </Button>
-              </Link>
+              <p className="text-xs text-muted-foreground">
+                La gestione degli abbonamenti non è ancora attiva.
+              </p>
             </CardContent>
           </Card>
 

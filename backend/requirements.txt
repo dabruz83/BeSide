@@ -10,5 +10,4 @@ PyJWT==2.11.0
 pymongo==4.5.0
 python-dotenv==1.2.1
 python-multipart==0.0.22
-stripe==14.4.0
 uvicorn==0.25.0

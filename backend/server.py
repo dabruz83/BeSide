@@ -8,15 +8,28 @@ import logging
 from pathlib import Path
 from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Dict, Any
-import asyncio
 import uuid
 from datetime import datetime, timezone, timedelta
 from contextlib import asynccontextmanager
 import bcrypt
+import hashlib
+import hmac
 import jwt
 import httpx
+import secrets
 import csv
 import io
+from pymongo import ReturnDocument
+
+from multitenancy import (
+    COMPANY_ROLES,
+    PLATFORM_COMPANY_ID,
+    company_document,
+    company_scope,
+    migrate_to_company_tenancy,
+    normalize_email,
+    parse_datetime,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -52,10 +65,16 @@ db = client[DB_NAME]
 JWT_SECRET = get_required_environment_variable('JWT_SECRET_KEY')
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
+PASSWORD_RESET_TOKEN_MINUTES = 30
+EMAIL_VERIFICATION_TOKEN_HOURS = 24
+if len(JWT_SECRET) < 32:
+    raise RuntimeError('JWT_SECRET_KEY must contain at least 32 characters')
 
 # Admin credentials
 ADMIN_EMAIL = get_required_environment_variable('ADMIN_EMAIL')
 ADMIN_PASSWORD = get_required_environment_variable('ADMIN_PASSWORD')
+if len(ADMIN_PASSWORD) < 12:
+    raise RuntimeError('ADMIN_PASSWORD must contain at least 12 characters')
 
 # SendGrid Configuration
 SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '').strip()
@@ -64,11 +83,17 @@ ADMIN_NOTIFICATION_EMAIL = os.environ.get('ADMIN_NOTIFICATION_EMAIL', '').strip(
 
 # Browser origins allowed to call the API (comma-separated, without paths).
 CORS_ORIGINS = parse_cors_origins(get_required_environment_variable('CORS_ORIGINS'))
+FRONTEND_PUBLIC_URL = (
+    os.environ.get('FRONTEND_PUBLIC_URL', '').strip().rstrip('/') or CORS_ORIGINS[0]
+)
+OAUTH_SESSION_URL = os.environ.get('OAUTH_SESSION_URL', '').strip()
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
+        stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
+        logger.info("Multi-tenant migration completed: %s", stats)
         yield
     finally:
         client.close()
@@ -118,15 +143,15 @@ ONBOARDING_STATUS = ["pending", "in_progress", "complete", "overdue"]
 # Default waste percentages
 DEFAULT_WASTE = {"ppf": 0.20, "vinyl": 0.12}
 
-# User Roles
-USER_ROLES = ["user", "admin", "super_admin"]
+# Company roles are separate from the explicit ``platform_role`` used by BESIDE.
+USER_ROLES = list(COMPANY_ROLES)
 
 # ==================== MODELS ====================
 
 # User Models
 class UserCreate(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=10, max_length=128)
     first_name: str = ""
     business_name: str
     team_size: int = 1
@@ -136,6 +161,25 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+class EmailRequest(BaseModel):
+    email: EmailStr
+
+class TokenRequest(BaseModel):
+    token: str = Field(min_length=20, max_length=512)
+
+class PasswordResetRequest(TokenRequest):
+    password: str = Field(min_length=10, max_length=128)
+
+class CompanyUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    status: Optional[str] = None
+
+class CompanyRoleUpdate(BaseModel):
+    role: str
+
+class CompanyStatusUpdate(BaseModel):
+    status: str
 
 class BusinessInfo(BaseModel):
     business_type: Optional[str] = None  # ditta_individuale, forfettario, societa_persone, societa_capitali
@@ -281,11 +325,6 @@ class ContentGenerationRequest(BaseModel):
     context: Dict[str, Any] = {}
     user_input: Optional[str] = None
 
-# Subscription Models
-class SubscriptionCheckoutRequest(BaseModel):
-    tier: str
-    origin_url: str
-
 # Admin Models
 class AdminUserUpdate(BaseModel):
     subscription_tier: Optional[str] = None
@@ -300,17 +339,39 @@ class AdminChatMessage(BaseModel):
 # ==================== HELPER FUNCTIONS ====================
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
 
 def verify_password(password: str, hashed: str) -> bool:
+    if not hashed:
+        return False
     return bcrypt.checkpw(password.encode(), hashed.encode())
 
-def create_jwt_token(user_id: str, email: str, role: str = "user") -> str:
+def validate_password_strength(password: str) -> None:
+    if len(password) < 10:
+        raise HTTPException(status_code=400, detail="La password deve contenere almeno 10 caratteri")
+    if len(password) > 128:
+        raise HTTPException(status_code=400, detail="La password è troppo lunga")
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def create_jwt_token(
+    user_id: str,
+    email: str,
+    role: str = "member",
+    company_id: str = "",
+    jti: Optional[str] = None,
+) -> str:
+    now = datetime.now(timezone.utc)
     payload = {
         "user_id": user_id,
         "email": email,
         "role": role,
-        "exp": datetime.now(timezone.utc) + timedelta(days=JWT_EXPIRATION_DAYS)
+        "company_id": company_id,
+        "type": "access",
+        "jti": jti or uuid.uuid4().hex,
+        "iat": now,
+        "exp": now + timedelta(days=JWT_EXPIRATION_DAYS),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -322,55 +383,167 @@ def decode_jwt_token(token: str) -> Dict[str, Any]:
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token non valido")
 
+def _session_expired(session: Dict[str, Any]) -> bool:
+    expires_at = parse_datetime(session.get("expires_at"))
+    return expires_at <= datetime.now(timezone.utc)
+
+def _extract_request_token(request: Request) -> Optional[str]:
+    auth_header = request.headers.get("Authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:].strip()
+
+    token = request.cookies.get("session_token")
+    if token and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        origin = request.headers.get("Origin", "").rstrip("/")
+        if origin not in CORS_ORIGINS:
+            raise HTTPException(status_code=403, detail="Origine della richiesta non autorizzata")
+    return token
+
+async def create_authenticated_session(user: Dict[str, Any]) -> str:
+    jti = uuid.uuid4().hex
+    token = create_jwt_token(
+        user["user_id"],
+        user["email"],
+        user.get("role", "member"),
+        user.get("company_id", ""),
+        jti,
+    )
+    now = datetime.now(timezone.utc)
+    await db.user_sessions.insert_one({
+        "session_id": f"session_{uuid.uuid4().hex[:16]}",
+        "user_id": user["user_id"],
+        "company_id": user.get("company_id"),
+        "jti": jti,
+        "token_hash": hash_token(token),
+        "session_type": "jwt",
+        "expires_at": (now + timedelta(days=JWT_EXPIRATION_DAYS)).isoformat(),
+        "created_at": now.isoformat(),
+        "revoked_at": None,
+    })
+    return token
+
+async def _load_active_user(user_id: str) -> Dict[str, Any]:
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=401, detail="Utente non trovato")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Account disattivato")
+    if not user.get("company_id"):
+        raise HTTPException(status_code=403, detail="Account non associato a un'azienda")
+
+    company = await db.companies.find_one({"company_id": user["company_id"]}, {"_id": 0})
+    if not company:
+        raise HTTPException(status_code=403, detail="Azienda non trovata")
+    if company.get("status", "active") != "active":
+        raise HTTPException(status_code=403, detail="Azienda non attiva")
+    user["company"] = company
+    return user
+
 async def get_current_user(request: Request) -> Dict[str, Any]:
-    # Check Authorization header first
-    auth_header = request.headers.get("Authorization")
-    token = None
-    
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    
-    # Then check cookie
-    if not token:
-        token = request.cookies.get("session_token")
-    
+    token = _extract_request_token(request)
     if not token:
         raise HTTPException(status_code=401, detail="Non autenticato")
-    
-    # Check if it's a session token (Google OAuth)
-    session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-    if session:
-        expires_at = session.get("expires_at")
-        if isinstance(expires_at, str):
-            expires_at = datetime.fromisoformat(expires_at)
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if expires_at < datetime.now(timezone.utc):
+
+    token_digest = hash_token(token)
+    session = await db.user_sessions.find_one(
+        {"token_hash": token_digest, "revoked_at": None},
+        {"_id": 0},
+    )
+    if not session:
+        # Temporary compatibility with pre-migration OAuth sessions. The raw
+        # credential is removed as soon as it is successfully used.
+        session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
+        if session:
+            await db.user_sessions.update_one(
+                {"session_token": token},
+                {"$set": {"token_hash": token_digest}, "$unset": {"session_token": ""}},
+            )
+
+    if session and session.get("session_type") != "jwt":
+        if _session_expired(session):
             raise HTTPException(status_code=401, detail="Sessione scaduta")
-        
-        user = await db.users.find_one({"user_id": session["user_id"]}, {"_id": 0})
-        if not user:
-            raise HTTPException(status_code=401, detail="Utente non trovato")
-        return user
-    
-    # Try JWT token
+        return await _load_active_user(session["user_id"])
+
     try:
         payload = decode_jwt_token(token)
-        user = await db.users.find_one({"user_id": payload["user_id"]}, {"_id": 0})
-        if not user:
-            raise HTTPException(status_code=401, detail="Utente non trovato")
-        return user
+        if payload.get("type", "access") != "access":
+            raise HTTPException(status_code=401, detail="Tipo di token non valido")
+        # Legacy JWTs did not contain a jti. They remain valid until their own
+        # expiry; all newly issued tokens require a non-revoked DB session.
+        if payload.get("jti"):
+            if not session or session.get("jti") != payload["jti"] or _session_expired(session):
+                raise HTTPException(status_code=401, detail="Sessione revocata o scaduta")
+        return await _load_active_user(payload["user_id"])
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(status_code=401, detail="Token non valido")
 
 async def get_admin_user(request: Request) -> Dict[str, Any]:
-    """Get admin user - requires admin or super_admin role"""
+    """Require explicit platform privileges, never a company role alone."""
     user = await get_current_user(request)
-    if user.get("role") not in ["admin", "super_admin"]:
+    if user.get("platform_role") != "super_admin":
         raise HTTPException(status_code=403, detail="Accesso negato - richiesti privilegi admin")
     return user
+
+def require_company_roles(*allowed_roles: str):
+    invalid = set(allowed_roles) - set(COMPANY_ROLES)
+    if invalid:
+        raise ValueError(f"Unknown company roles: {sorted(invalid)}")
+
+    async def dependency(current_user: Dict = Depends(get_current_user)) -> Dict[str, Any]:
+        if current_user.get("role") not in allowed_roles:
+            raise HTTPException(status_code=403, detail="Ruolo aziendale non autorizzato")
+        return current_user
+
+    return dependency
+
+async def audit_event(
+    event: str,
+    *,
+    user: Optional[Dict[str, Any]] = None,
+    user_id: Optional[str] = None,
+    company_id: Optional[str] = None,
+    request: Optional[Request] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    await db.audit_logs.insert_one({
+        "audit_id": f"audit_{uuid.uuid4().hex[:16]}",
+        "event": event,
+        "user_id": user_id or (user or {}).get("user_id"),
+        "company_id": company_id or (user or {}).get("company_id"),
+        "ip_address": request.client.host if request and request.client else None,
+        "user_agent": request.headers.get("User-Agent") if request else None,
+        "metadata": metadata or {},
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
+    company = user.get("company") or {}
+    return {
+        "user_id": user["user_id"],
+        "company_id": user.get("company_id"),
+        "email": user["email"],
+        "first_name": user.get("first_name", ""),
+        "full_name": user.get("full_name") or user.get("first_name") or user.get("name") or "",
+        "name": user.get("name"),
+        "picture": user.get("picture"),
+        "business_name": company.get("name") or user.get("business_name", ""),
+        "team_size": user.get("team_size", 1),
+        "services": user.get("services", []),
+        "tax_regime": user.get("tax_regime", "forfettario_15"),
+        "business_info": user.get("business_info", {}),
+        "subscription_tier": company.get("plan_id") or user.get("subscription_tier", "essential"),
+        "subscription_status": company.get("subscription_status") or user.get("subscription_status", "trialing"),
+        "trial_started_at": company.get("trial_started_at"),
+        "trial_ends_at": company.get("trial_ends_at"),
+        "role": user.get("role", "member"),
+        "email_verified": bool(user.get("email_verified", False)),
+        "is_active": bool(user.get("is_active", True)),
+        "created_at": user.get("created_at", ""),
+        "updated_at": user.get("updated_at", ""),
+        "last_login_at": user.get("last_login_at"),
+    }
 
 def calculate_tax(
     revenue: float,
@@ -652,14 +825,14 @@ def build_cash_plan_summary(
 
 async def migrate_tax_accruals_to_cash_plan(current_user: Dict[str, Any]) -> None:
     """Copy compatible legacy accruals once, without deleting or changing source data."""
-    user_id = current_user["user_id"]
+    company_id = current_user["company_id"]
     existing_records = await db.cash_plan_entries.find(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"_id": 0, "month": 1},
     ).to_list(240)
     existing_months = {record["month"] for record in existing_records}
     legacy_accruals = await db.tax_accruals.find(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"_id": 0},
     ).sort("month", 1).to_list(240)
 
@@ -675,7 +848,8 @@ async def migrate_tax_accruals_to_cash_plan(current_user: Dict[str, Any]) -> Non
         now_iso = datetime.now(timezone.utc).isoformat()
         await db.cash_plan_entries.insert_one({
             "cash_plan_id": f"cash_{uuid.uuid4().hex[:12]}",
-            "user_id": user_id,
+            "company_id": company_id,
+            "user_id": current_user["user_id"],
             "month": month,
             "year": year,
             "data_type": "actual",
@@ -691,17 +865,17 @@ async def migrate_tax_accruals_to_cash_plan(current_user: Dict[str, Any]) -> Non
         })
         existing_months.add(month)
 
-async def get_cash_plan_opening_balance(user_id: str) -> float:
+async def get_cash_plan_opening_balance(company_id: str) -> float:
     settings = await db.cash_plan_settings.find_one(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"_id": 0, "opening_balance": 1},
     )
     return float(settings.get("opening_balance", 0)) if settings else 0.0
 
-async def get_cash_plan_recurring_defaults(user_id: str) -> Dict[str, float]:
+async def get_cash_plan_recurring_defaults(company_id: str) -> Dict[str, float]:
     """Reuse compatible values already saved by the existing finance calculator."""
     settings = await db.finance_settings.find_one(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"_id": 0},
     )
     if not settings:
@@ -714,13 +888,13 @@ async def get_cash_plan_recurring_defaults(user_id: str) -> Dict[str, float]:
         "variable_expenses": round(float(settings.get("variable_expenses", 0)) / divisor, 2),
     }
 
-async def recalculate_user_cash_plan(user_id: str) -> List[Dict[str, Any]]:
+async def recalculate_user_cash_plan(company_id: str) -> List[Dict[str, Any]]:
     """Recalculate and persist all derived values while preserving chronological chaining."""
     records = await db.cash_plan_entries.find(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"_id": 0},
     ).sort("month", 1).to_list(240)
-    opening_balance = await get_cash_plan_opening_balance(user_id)
+    opening_balance = await get_cash_plan_opening_balance(company_id)
     calculated_records = calculate_cash_plan_records(records, opening_balance)
 
     derived_fields = {
@@ -735,7 +909,7 @@ async def recalculate_user_cash_plan(user_id: str) -> List[Dict[str, Any]]:
     }
     for record in calculated_records:
         await db.cash_plan_entries.update_one(
-            {"cash_plan_id": record["cash_plan_id"], "user_id": user_id},
+            {"cash_plan_id": record["cash_plan_id"], "company_id": company_id},
             {"$set": {field: record[field] for field in derived_fields}},
         )
 
@@ -895,25 +1069,87 @@ async def send_registration_notification(user_email: str, business_name: str, re
     
     return await send_email_sendgrid(ADMIN_NOTIFICATION_EMAIL, subject, html_content)
 
+async def send_email_verification(user_email: str, token: str) -> bool:
+    verification_url = f"{FRONTEND_PUBLIC_URL}/verify-email?token={token}"
+    return await send_email_sendgrid(
+        user_email,
+        "Verifica il tuo indirizzo email BESIDE",
+        (
+            "<p>Conferma il tuo indirizzo email per BESIDE.</p>"
+            f'<p><a href="{verification_url}">Verifica email</a></p>'
+            "<p>Il link scade tra 24 ore e può essere usato una sola volta.</p>"
+        ),
+    )
+
+async def send_password_reset_email(user_email: str, token: str) -> bool:
+    reset_url = f"{FRONTEND_PUBLIC_URL}/reset-password?token={token}"
+    return await send_email_sendgrid(
+        user_email,
+        "Reimposta la password BESIDE",
+        (
+            "<p>È stata richiesta la reimpostazione della password BESIDE.</p>"
+            f'<p><a href="{reset_url}">Scegli una nuova password</a></p>'
+            f"<p>Il link scade tra {PASSWORD_RESET_TOKEN_MINUTES} minuti, è monouso e "
+            "può essere ignorato se non hai effettuato tu la richiesta.</p>"
+        ),
+    )
+
+async def create_one_time_token(
+    collection: Any,
+    user: Dict[str, Any],
+    lifetime: timedelta,
+) -> str:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    await collection.insert_one({
+        "token_id": f"token_{uuid.uuid4().hex[:16]}",
+        "token_hash": hash_token(token),
+        "user_id": user["user_id"],
+        "company_id": user["company_id"],
+        "created_at": now.isoformat(),
+        "expires_at": (now + lifetime).isoformat(),
+        "used_at": None,
+    })
+    return token
+
 # ==================== AUTH ENDPOINTS ====================
 
 @api_router.post("/auth/register")
-async def register(user_data: UserCreate, background_tasks: BackgroundTasks):
+async def register(user_data: UserCreate, background_tasks: BackgroundTasks, request: Request):
     """Register a new user with email/password"""
-    existing = await db.users.find_one({"email": user_data.email}, {"_id": 0})
+    validate_password_strength(user_data.password)
+    email = normalize_email(str(user_data.email))
+    existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email già registrata")
-    
+
     user_id = f"user_{uuid.uuid4().hex[:12]}"
+    company_id = f"company_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
     now_iso = now.isoformat()
     now_formatted = now.strftime("%d/%m/%Y alle %H:%M")
-    
+
+    company_doc = {
+        "company_id": company_id,
+        "name": user_data.business_name.strip(),
+        "owner_user_id": user_id,
+        "status": "active",
+        "subscription_status": "trialing",
+        "trial_started_at": now_iso,
+        "trial_ends_at": (now + timedelta(days=7)).isoformat(),
+        "stripe_customer_id": None,
+        "stripe_subscription_id": None,
+        "plan_id": "essential",
+        "created_at": now_iso,
+        "updated_at": now_iso,
+    }
     user_doc = {
         "user_id": user_id,
-        "email": user_data.email,
+        "company_id": company_id,
+        "email": email,
         "password_hash": hash_password(user_data.password),
         "first_name": user_data.first_name,
+        "full_name": user_data.first_name,
         "business_name": user_data.business_name,
         "team_size": user_data.team_size,
         "services": user_data.services,
@@ -921,58 +1157,73 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks):
         "business_info": {},
         "subscription_tier": "essential",
         "subscription_status": "trial",
-        "role": "user",
+        "role": "owner",
         "is_active": True,
         "email_verified": False,
-        "created_at": now_iso
+        "created_at": now_iso,
+        "updated_at": now_iso,
+        "last_login_at": None,
     }
-    
+
+    await db.companies.insert_one(company_doc)
     await db.users.insert_one(user_doc)
-    
-    # Send notification email to admin in background
+    verification_token = await create_one_time_token(
+        db.email_verification_tokens,
+        user_doc,
+        timedelta(hours=EMAIL_VERIFICATION_TOKEN_HOURS),
+    )
+    await audit_event("registration", user=user_doc, request=request)
+
     background_tasks.add_task(
         send_registration_notification,
-        user_data.email,
+        email,
         user_data.business_name,
-        now_formatted
+        now_formatted,
     )
-    
+    background_tasks.add_task(send_email_verification, email, verification_token)
+
     return {
         "user_id": user_id,
-        "email": user_data.email,
+        "company_id": company_id,
+        "email": email,
         "business_name": user_data.business_name,
+        "trial_started_at": company_doc["trial_started_at"],
+        "trial_ends_at": company_doc["trial_ends_at"],
+        "subscription_status": "trialing",
         "message": "Registrazione completata. Controlla la tua email per verificare l'account."
     }
 
 @api_router.post("/auth/login")
-async def login(user_data: UserLogin, response: Response):
+async def login(user_data: UserLogin, response: Response, request: Request):
     """Login with email/password"""
-    # Check if trying to login as admin - redirect to admin login
-    if user_data.email == ADMIN_EMAIL:
+    email = normalize_email(str(user_data.email))
+    if email == normalize_email(ADMIN_EMAIL):
         raise HTTPException(
-            status_code=401, 
+            status_code=401,
             detail="Per accedere come admin, usa la pagina /admin"
         )
-    
-    user = await db.users.find_one({"email": user_data.email}, {"_id": 0})
-    
+
+    user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Email o password non corretti")
-    
-    # Safely check password - handle invalid hash
+
     try:
         password_valid = verify_password(user_data.password, user.get("password_hash", ""))
-    except (ValueError, Exception):
+    except (TypeError, ValueError):
         password_valid = False
-    
     if not password_valid:
         raise HTTPException(status_code=401, detail="Email o password non corretti")
-    
-    if not user.get("is_active", True):
-        raise HTTPException(status_code=401, detail="Account disattivato")
-    
-    token = create_jwt_token(user["user_id"], user["email"], user.get("role", "user"))
-    
+
+    user = await _load_active_user(user["user_id"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"user_id": user["user_id"], "company_id": user["company_id"]},
+        {"$set": {"last_login_at": now_iso, "updated_at": now_iso}},
+    )
+    user["last_login_at"] = now_iso
+    token = await create_authenticated_session(user)
+    await audit_event("login", user=user, request=request)
+
     response.set_cookie(
         key="session_token",
         value=token,
@@ -982,30 +1233,14 @@ async def login(user_data: UserLogin, response: Response):
         max_age=JWT_EXPIRATION_DAYS * 24 * 60 * 60,
         path="/"
     )
-    
-    return {
-        "token": token,
-        "user": {
-            "user_id": user["user_id"],
-            "email": user["email"],
-            "first_name": user.get("first_name", ""),
-            "business_name": user.get("business_name", ""),
-            "team_size": user.get("team_size", 1),
-            "services": user.get("services", []),
-            "tax_regime": user.get("tax_regime", "forfettario_15"),
-            "business_info": user.get("business_info", {}),
-            "subscription_tier": user.get("subscription_tier", "essential"),
-            "subscription_status": user.get("subscription_status", "trial"),
-            "role": user.get("role", "user"),
-            "name": user.get("name"),
-            "picture": user.get("picture"),
-            "created_at": user.get("created_at", "")
-        }
-    }
+
+    return {"token": token, "user": public_user(user)}
 
 @api_router.post("/auth/session")
 async def process_google_session(request: Request, response: Response):
     """Process Google OAuth session_id and create local session"""
+    if not OAUTH_SESSION_URL:
+        raise HTTPException(status_code=503, detail="Accesso Google non configurato")
     body = await request.json()
     session_id = body.get("session_id")
     
@@ -1014,7 +1249,7 @@ async def process_google_session(request: Request, response: Response):
     
     async with httpx.AsyncClient() as client_http:
         resp = await client_http.get(
-            "https://demobackend.emergentagent.com/auth/v1/env/oauth/session-data",
+            OAUTH_SESSION_URL,
             headers={"X-Session-ID": session_id}
         )
         
@@ -1023,27 +1258,46 @@ async def process_google_session(request: Request, response: Response):
         
         google_data = resp.json()
     
-    email = google_data.get("email")
+    email = normalize_email(google_data.get("email", ""))
     name = google_data.get("name")
     picture = google_data.get("picture")
     session_token = google_data.get("session_token")
-    
+    if not email or not session_token:
+        raise HTTPException(status_code=401, detail="Sessione Google incompleta")
+
     user = await db.users.find_one({"email": email}, {"_id": 0})
-    
+    created_new_user = user is None
     if user:
         await db.users.update_one(
             {"email": email},
-            {"$set": {"name": name, "picture": picture}}
+            {"$set": {"name": name, "full_name": name or user.get("full_name", ""), "picture": picture}}
         )
         user_id = user["user_id"]
     else:
         user_id = f"user_{uuid.uuid4().hex[:12]}"
-        now = datetime.now(timezone.utc).isoformat()
-        
+        company_id = f"company_{uuid.uuid4().hex[:12]}"
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        await db.companies.insert_one({
+            "company_id": company_id,
+            "name": name or "La Mia Attività",
+            "owner_user_id": user_id,
+            "status": "active",
+            "subscription_status": "trialing",
+            "trial_started_at": now,
+            "trial_ends_at": (now_dt + timedelta(days=7)).isoformat(),
+            "stripe_customer_id": None,
+            "stripe_subscription_id": None,
+            "plan_id": "essential",
+            "created_at": now,
+            "updated_at": now,
+        })
         user_doc = {
             "user_id": user_id,
+            "company_id": company_id,
             "email": email,
             "name": name,
+            "full_name": name or "",
             "picture": picture,
             "business_name": name or "La Mia Attività",
             "team_size": 1,
@@ -1052,22 +1306,37 @@ async def process_google_session(request: Request, response: Response):
             "business_info": {},
             "subscription_tier": "essential",
             "subscription_status": "trial",
-            "role": "user",
+            "role": "owner",
             "is_active": True,
             "email_verified": True,
-            "created_at": now
+            "created_at": now,
+            "updated_at": now,
+            "last_login_at": None,
         }
         await db.users.insert_one(user_doc)
         user = user_doc
-    
+
+    user = await _load_active_user(user_id)
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({
+        "session_id": f"session_{uuid.uuid4().hex[:16]}",
         "user_id": user_id,
-        "session_token": session_token,
+        "company_id": user["company_id"],
+        "token_hash": hash_token(session_token),
+        "session_type": "oauth",
         "expires_at": expires_at.isoformat(),
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "revoked_at": None,
     })
-    
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"user_id": user_id, "company_id": user["company_id"]},
+        {"$set": {"last_login_at": now_iso, "updated_at": now_iso}},
+    )
+    if created_new_user:
+        await audit_event("registration", user=user, request=request, metadata={"provider": "oauth"})
+    await audit_event("login", user=user, request=request, metadata={"provider": "oauth"})
+
     response.set_cookie(
         key="session_token",
         value=session_token,
@@ -1078,52 +1347,27 @@ async def process_google_session(request: Request, response: Response):
         path="/"
     )
     
-    return {
-        "user": {
-            "user_id": user_id,
-            "email": email,
-            "name": name,
-            "picture": picture,
-            "business_name": user.get("business_name", name or "La Mia Attività"),
-            "team_size": user.get("team_size", 1),
-            "services": user.get("services", []),
-            "tax_regime": user.get("tax_regime", "forfettario_15"),
-            "business_info": user.get("business_info", {}),
-            "subscription_tier": user.get("subscription_tier", "essential"),
-            "subscription_status": user.get("subscription_status", "trial"),
-            "role": user.get("role", "user"),
-            "created_at": user.get("created_at", "")
-        },
-        "session_token": session_token
-    }
+    return {"user": public_user(user), "session_token": session_token}
 
 @api_router.get("/auth/me")
 async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
     """Get current authenticated user info"""
-    return {
-        "user_id": current_user["user_id"],
-        "email": current_user["email"],
-        "first_name": current_user.get("first_name", ""),
-        "name": current_user.get("name"),
-        "picture": current_user.get("picture"),
-        "business_name": current_user.get("business_name", ""),
-        "team_size": current_user.get("team_size", 1),
-        "services": current_user.get("services", []),
-        "tax_regime": current_user.get("tax_regime", "forfettario_15"),
-        "business_info": current_user.get("business_info", {}),
-        "subscription_tier": current_user.get("subscription_tier", "essential"),
-        "subscription_status": current_user.get("subscription_status", "trial"),
-        "role": current_user.get("role", "user"),
-        "created_at": current_user.get("created_at", "")
-    }
+    return public_user(current_user)
 
 @api_router.put("/auth/profile")
-async def update_profile(update_data: UserUpdate, current_user: Dict = Depends(get_current_user)):
+async def update_profile(
+    update_data: UserUpdate,
+    current_user: Dict = Depends(require_company_roles("owner", "admin")),
+):
     """Update user profile"""
     update_fields = {}
     
     if update_data.business_name is not None:
         update_fields["business_name"] = update_data.business_name
+        await db.companies.update_one(
+            {"company_id": current_user["company_id"]},
+            {"$set": {"name": update_data.business_name, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
     if update_data.team_size is not None:
         update_fields["team_size"] = update_data.team_size
     if update_data.services is not None:
@@ -1134,34 +1378,206 @@ async def update_profile(update_data: UserUpdate, current_user: Dict = Depends(g
         update_fields["business_info"] = update_data.business_info.model_dump()
     
     if update_fields:
+        update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
         await db.users.update_one(
-            {"user_id": current_user["user_id"]},
+            {"user_id": current_user["user_id"], "company_id": current_user["company_id"]},
             {"$set": update_fields}
         )
-    
-    updated_user = await db.users.find_one({"user_id": current_user["user_id"]}, {"_id": 0, "password_hash": 0})
-    return updated_user
+
+    updated_user = await _load_active_user(current_user["user_id"])
+    return public_user(updated_user)
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(data: EmailRequest, background_tasks: BackgroundTasks, request: Request):
+    """Always return the same response to prevent account enumeration."""
+    email = normalize_email(str(data.email))
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if user and user.get("password_hash") and user.get("company_id"):
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.password_reset_tokens.update_many(
+            {"user_id": user["user_id"], "company_id": user["company_id"], "used_at": None},
+            {"$set": {"used_at": now_iso, "invalidated_reason": "replaced"}},
+        )
+        token = await create_one_time_token(
+            db.password_reset_tokens,
+            user,
+            timedelta(minutes=PASSWORD_RESET_TOKEN_MINUTES),
+        )
+        background_tasks.add_task(send_password_reset_email, email, token)
+        await audit_event("password_reset_requested", user=user, request=request)
+    return {"message": "Se l'indirizzo è registrato, riceverai un link per reimpostare la password."}
+
+@api_router.post("/auth/reset-password")
+async def reset_password(data: PasswordResetRequest, request: Request):
+    validate_password_strength(data.password)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    token_doc = await db.password_reset_tokens.find_one_and_update(
+        {
+            "token_hash": hash_token(data.token),
+            "used_at": None,
+            "expires_at": {"$gt": now_iso},
+        },
+        {"$set": {"used_at": now_iso}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Token non valido, già usato o scaduto")
+
+    user = await db.users.find_one(
+        {"user_id": token_doc["user_id"], "company_id": token_doc["company_id"]},
+        {"_id": 0},
+    )
+    if not user:
+        raise HTTPException(status_code=400, detail="Token non valido")
+    await db.users.update_one(
+        {"user_id": user["user_id"], "company_id": user["company_id"]},
+        {"$set": {"password_hash": hash_password(data.password), "updated_at": now_iso}},
+    )
+    await db.user_sessions.update_many(
+        {"user_id": user["user_id"], "revoked_at": None},
+        {"$set": {"revoked_at": now_iso}},
+    )
+    await audit_event("password_reset_completed", user=user, request=request)
+    return {"message": "Password aggiornata. Accedi nuovamente con la nuova password."}
+
+@api_router.post("/auth/email-verification/request")
+async def request_email_verification(
+    background_tasks: BackgroundTasks,
+    current_user: Dict = Depends(get_current_user),
+):
+    if current_user.get("email_verified"):
+        return {"message": "Indirizzo email già verificato."}
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.email_verification_tokens.update_many(
+        {
+            "user_id": current_user["user_id"],
+            "company_id": current_user["company_id"],
+            "used_at": None,
+        },
+        {"$set": {"used_at": now_iso, "invalidated_reason": "replaced"}},
+    )
+    token = await create_one_time_token(
+        db.email_verification_tokens,
+        current_user,
+        timedelta(hours=EMAIL_VERIFICATION_TOKEN_HOURS),
+    )
+    background_tasks.add_task(send_email_verification, current_user["email"], token)
+    return {"message": "Email di verifica inviata."}
+
+@api_router.post("/auth/email-verification/verify")
+async def verify_email(data: TokenRequest):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    token_doc = await db.email_verification_tokens.find_one_and_update(
+        {
+            "token_hash": hash_token(data.token),
+            "used_at": None,
+            "expires_at": {"$gt": now_iso},
+        },
+        {"$set": {"used_at": now_iso}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Token non valido, già usato o scaduto")
+    await db.users.update_one(
+        {"user_id": token_doc["user_id"], "company_id": token_doc["company_id"]},
+        {"$set": {"email_verified": True, "updated_at": now_iso}},
+    )
+    return {"message": "Indirizzo email verificato."}
 
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response):
     """Logout user"""
-    auth_header = request.headers.get("Authorization")
-    token = None
-    if auth_header and auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    if not token:
-        token = request.cookies.get("session_token")
-    
+    token = _extract_request_token(request)
     if token:
-        await db.user_sessions.delete_one({"session_token": token})
-    
-    response.delete_cookie(key="session_token", path="/")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.user_sessions.update_many(
+            {"token_hash": hash_token(token), "revoked_at": None},
+            {"$set": {"revoked_at": now_iso}},
+        )
+        await db.user_sessions.update_many(
+            {"session_token": token},
+            {"$set": {"revoked_at": now_iso}, "$unset": {"session_token": ""}},
+        )
+
+    response.delete_cookie(key="session_token", path="/", secure=True, samesite="none")
     return {"message": "Logout effettuato"}
+
+# ==================== COMPANY & ROLE ENDPOINTS ====================
+
+@api_router.get("/companies/current")
+async def get_current_company(current_user: Dict = Depends(get_current_user)):
+    return current_user["company"]
+
+@api_router.put("/companies/current")
+async def update_current_company(
+    data: CompanyUpdate,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner", "admin")),
+):
+    updates: Dict[str, Any] = {}
+    if data.name is not None:
+        updates["name"] = data.name.strip()
+    if data.status is not None:
+        # Company members cannot self-activate/suspend a tenant. This is kept for
+        # the future platform dashboard through the dedicated admin endpoint.
+        raise HTTPException(status_code=403, detail="Lo stato aziendale è gestito da BESIDE")
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.companies.update_one(
+            {"company_id": current_user["company_id"]},
+            {"$set": updates},
+        )
+    return await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0})
+
+@api_router.get("/companies/current/users")
+async def get_company_users(
+    current_user: Dict = Depends(require_company_roles("owner", "admin")),
+):
+    return await db.users.find(
+        {"company_id": current_user["company_id"]},
+        {"_id": 0, "password_hash": 0, "platform_role": 0},
+    ).to_list(100)
+
+@api_router.put("/companies/current/users/{user_id}/role")
+async def change_company_user_role(
+    user_id: str,
+    data: CompanyRoleUpdate,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner")),
+):
+    if data.role not in COMPANY_ROLES:
+        raise HTTPException(status_code=400, detail="Ruolo non valido")
+    target = await db.users.find_one(
+        {"user_id": user_id, "company_id": current_user["company_id"]},
+        {"_id": 0},
+    )
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato nell'azienda")
+    if target["user_id"] == current_user["user_id"]:
+        raise HTTPException(status_code=400, detail="Il proprietario non può modificare il proprio ruolo")
+    if data.role == "owner":
+        raise HTTPException(status_code=400, detail="Il trasferimento di proprietà non è ancora supportato")
+    old_role = target.get("role")
+    await db.users.update_one(
+        {"user_id": user_id, "company_id": current_user["company_id"]},
+        {"$set": {"role": data.role, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await audit_event(
+        "role_changed",
+        user=current_user,
+        request=request,
+        metadata={"target_user_id": user_id, "old_role": old_role, "new_role": data.role},
+    )
+    return {"user_id": user_id, "role": data.role}
 
 # ==================== JOBS ENDPOINTS ====================
 
 @api_router.post("/jobs", response_model=JobResponse)
-async def create_job(job_data: JobCreate, request: Request, current_user: Dict = Depends(get_current_user)):
+async def create_job(
+    job_data: JobCreate,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
+):
     """Create a new job or quote"""
     job_id = f"job_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
@@ -1189,12 +1605,12 @@ async def create_job(job_data: JobCreate, request: Request, current_user: Dict =
         await db.quote_tokens.insert_one({
             "token": quote_token,
             "job_id": job_id,
+            "company_id": current_user["company_id"],
             "created_at": now.isoformat()
         })
-    
-    job_doc = {
+
+    job_doc = company_document(current_user, **{
         "job_id": job_id,
-        "user_id": current_user["user_id"],
         "client_name": job_data.client_name,
         "client_email": job_data.client_email,
         "job_type": job_data.job_type,
@@ -1213,20 +1629,19 @@ async def create_job(job_data: JobCreate, request: Request, current_user: Dict =
         "quote_status": "pending" if job_data.is_quote else None,
         "quote_link": quote_link,
         "completed_date": now.isoformat(),
-        "created_at": now.isoformat()
-    }
+        "created_at": now.isoformat(),
+    })
     
     await db.jobs.insert_one(job_doc)
     
     if job_data.lead_source and not job_data.is_quote:
-        await db.lead_sources.insert_one({
+        await db.lead_sources.insert_one(company_document(current_user, **{
             "lead_id": f"lead_{uuid.uuid4().hex[:12]}",
-            "user_id": current_user["user_id"],
             "job_id": job_id,
             "source": job_data.lead_source,
             "revenue": job_data.quote_amount,
-            "created_at": now.isoformat()
-        })
+            "created_at": now.isoformat(),
+        }))
     
     return JobResponse(**{k: v for k, v in job_doc.items() if k != "_id"})
 
@@ -1240,7 +1655,7 @@ async def get_jobs(
     current_user: Dict = Depends(get_current_user)
 ):
     """Get all jobs for current user"""
-    query = {"user_id": current_user["user_id"]}
+    query = company_scope(current_user)
     if job_type:
         query["job_type"] = job_type
     if vehicle_type:
@@ -1254,19 +1669,22 @@ async def get_jobs(
 @api_router.get("/jobs/{job_id}", response_model=JobResponse)
 async def get_job(job_id: str, current_user: Dict = Depends(get_current_user)):
     """Get a specific job"""
-    job = await db.jobs.find_one({"job_id": job_id, "user_id": current_user["user_id"]}, {"_id": 0})
+    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0})
     if not job:
         raise HTTPException(status_code=404, detail="Lavoro non trovato")
     return job
 
 @api_router.delete("/jobs/{job_id}")
-async def delete_job(job_id: str, current_user: Dict = Depends(get_current_user)):
+async def delete_job(
+    job_id: str,
+    current_user: Dict = Depends(require_company_roles("owner", "admin")),
+):
     """Delete a job"""
-    result = await db.jobs.delete_one({"job_id": job_id, "user_id": current_user["user_id"]})
+    result = await db.jobs.delete_one(company_scope(current_user, job_id=job_id))
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Lavoro non trovato")
     
-    await db.lead_sources.delete_many({"job_id": job_id})
+    await db.lead_sources.delete_many(company_scope(current_user, job_id=job_id))
     return {"message": "Lavoro eliminato"}
 
 # Public quote viewing and acceptance
@@ -1277,12 +1695,19 @@ async def get_public_quote(token: str):
     if not quote_token:
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
-    job = await db.jobs.find_one({"job_id": quote_token["job_id"]}, {"_id": 0})
+    job = await db.jobs.find_one(
+        {"job_id": quote_token["job_id"], "company_id": quote_token.get("company_id")},
+        {"_id": 0},
+    )
     if not job:
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
     # Get business info for the quote
-    user = await db.users.find_one({"user_id": job["user_id"]}, {"_id": 0, "password_hash": 0})
+    company = await db.companies.find_one({"company_id": job["company_id"]}, {"_id": 0})
+    owner = await db.users.find_one(
+        {"user_id": (company or {}).get("owner_user_id"), "company_id": job["company_id"]},
+        {"_id": 0, "password_hash": 0},
+    )
     
     # Return only client-visible fields
     return {
@@ -1295,8 +1720,8 @@ async def get_public_quote(token: str):
         "notes": job.get("notes"),
         "quote_status": job.get("quote_status"),
         "created_at": job["created_at"],
-        "business_name": user.get("business_name"),
-        "business_info": user.get("business_info", {})
+        "business_name": (company or {}).get("name") or (owner or {}).get("business_name"),
+        "business_info": (owner or {}).get("business_info", {})
     }
 
 @api_router.post("/quote/{token}/accept")
@@ -1306,7 +1731,10 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance):
     if not quote_token:
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
-    job = await db.jobs.find_one({"job_id": quote_token["job_id"]}, {"_id": 0})
+    job = await db.jobs.find_one(
+        {"job_id": quote_token["job_id"], "company_id": quote_token.get("company_id")},
+        {"_id": 0},
+    )
     if not job:
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
@@ -1325,7 +1753,7 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance):
     }
     
     await db.jobs.update_one(
-        {"job_id": quote_token["job_id"]},
+        {"job_id": quote_token["job_id"], "company_id": job["company_id"]},
         {"$set": update_fields}
     )
     
@@ -1334,6 +1762,7 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance):
         await db.lead_sources.insert_one({
             "lead_id": f"lead_{uuid.uuid4().hex[:12]}",
             "user_id": job["user_id"],
+            "company_id": job["company_id"],
             "job_id": job["job_id"],
             "source": job["lead_source"],
             "revenue": job["quote_amount"],
@@ -1346,7 +1775,7 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance):
 async def get_profitability_analytics(current_user: Dict = Depends(get_current_user)):
     """Get profitability analytics by job type and vehicle type"""
     pipeline_job_type = [
-        {"$match": {"user_id": current_user["user_id"], "is_quote": {"$ne": True}}},
+        {"$match": company_scope(current_user, is_quote={"$ne": True})},
         {"$group": {
             "_id": "$job_type",
             "total_revenue": {"$sum": "$quote_amount"},
@@ -1358,7 +1787,7 @@ async def get_profitability_analytics(current_user: Dict = Depends(get_current_u
     ]
     
     pipeline_vehicle_type = [
-        {"$match": {"user_id": current_user["user_id"], "is_quote": {"$ne": True}}},
+        {"$match": company_scope(current_user, is_quote={"$ne": True})},
         {"$group": {
             "_id": "$vehicle_type",
             "total_revenue": {"$sum": "$quote_amount"},
@@ -1403,8 +1832,8 @@ async def calculate_taxes(request: TaxCalculationRequest):
 async def get_finance_settings(current_user: Dict = Depends(get_current_user)):
     """Return the current user's persisted finance calculator settings."""
     settings = await db.finance_settings.find_one(
-        {"user_id": current_user["user_id"]},
-        {"_id": 0, "user_id": 0},
+        company_scope(current_user),
+        {"_id": 0, "user_id": 0, "company_id": 0},
     )
     if settings:
         return settings
@@ -1420,7 +1849,7 @@ async def get_finance_settings(current_user: Dict = Depends(get_current_user)):
 @api_router.put("/finance/settings")
 async def update_finance_settings(
     settings_data: FinanceSettingsUpdate,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Persist finance calculator settings in MongoDB, scoped to the current user."""
     if settings_data.period not in FINANCE_PERIODS:
@@ -1431,27 +1860,31 @@ async def update_finance_settings(
     now_iso = datetime.now(timezone.utc).isoformat()
     settings_doc = {
         **settings_data.model_dump(),
+        "company_id": current_user["company_id"],
         "user_id": current_user["user_id"],
         "updated_at": now_iso,
     }
     existing = await db.finance_settings.find_one(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"_id": 0, "created_at": 1},
     )
     settings_doc["created_at"] = existing.get("created_at", now_iso) if existing else now_iso
 
     await db.finance_settings.update_one(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"$set": settings_doc},
         upsert=True,
     )
-    return {key: value for key, value in settings_doc.items() if key != "user_id"}
+    return {
+        key: value for key, value in settings_doc.items()
+        if key not in {"user_id", "company_id"}
+    }
 
 @api_router.get("/finance/cash-flow")
 async def get_finance_cash_flow(current_user: Dict = Depends(get_current_user)):
     """Return a 12-month cash-flow forecast based on persisted finance settings."""
     settings = await db.finance_settings.find_one(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"_id": 0},
     )
     if not settings or settings.get("revenue", 0) <= 0:
@@ -1480,27 +1913,28 @@ def validate_cash_plan_payload(month: str, data_type: str) -> int:
 async def get_cash_plan_settings(current_user: Dict = Depends(get_current_user)):
     """Return the single opening balance used by the user's cash plan."""
     return {
-        "opening_balance": await get_cash_plan_opening_balance(current_user["user_id"]),
+        "opening_balance": await get_cash_plan_opening_balance(current_user["company_id"]),
     }
 
 @api_router.put("/finance/cash-plan/settings")
 async def update_cash_plan_settings(
     settings_data: CashPlanSettingsUpdate,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Persist the opening balance and recalculate every following month."""
-    user_id = current_user["user_id"]
+    company_id = current_user["company_id"]
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.cash_plan_settings.update_one(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"$set": {
-            "user_id": user_id,
+            "company_id": company_id,
+            "user_id": current_user["user_id"],
             "opening_balance": round(settings_data.opening_balance, 2),
             "updated_at": now_iso,
         }, "$setOnInsert": {"created_at": now_iso}},
         upsert=True,
     )
-    records = await recalculate_user_cash_plan(user_id)
+    records = await recalculate_user_cash_plan(company_id)
     return {
         "opening_balance": round(settings_data.opening_balance, 2),
         "summary": build_cash_plan_summary(records, settings_data.opening_balance),
@@ -1516,28 +1950,28 @@ async def get_cash_plan_months(
         raise HTTPException(status_code=400, detail="Tipo di dato del piano di cassa non valido")
 
     await migrate_tax_accruals_to_cash_plan(current_user)
-    user_id = current_user["user_id"]
-    opening_balance = await get_cash_plan_opening_balance(user_id)
-    records = await recalculate_user_cash_plan(user_id)
+    company_id = current_user["company_id"]
+    opening_balance = await get_cash_plan_opening_balance(company_id)
+    records = await recalculate_user_cash_plan(company_id)
     visible_records = [record for record in records if data_type is None or record["data_type"] == data_type]
     return {
         "months": visible_records,
         "opening_balance": opening_balance,
-        "recurring_defaults": await get_cash_plan_recurring_defaults(user_id),
+        "recurring_defaults": await get_cash_plan_recurring_defaults(company_id),
         "summary": build_cash_plan_summary(records, opening_balance),
     }
 
 @api_router.post("/finance/cash-plan/months")
 async def create_cash_plan_month(
     month_data: CashPlanMonthCreate,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Create one user-owned cash-plan month and chain all following balances."""
     await migrate_tax_accruals_to_cash_plan(current_user)
-    user_id = current_user["user_id"]
+    company_id = current_user["company_id"]
     year = validate_cash_plan_payload(month_data.month, month_data.data_type)
     existing = await db.cash_plan_entries.find_one(
-        {"user_id": user_id, "month": month_data.month},
+        {"company_id": company_id, "month": month_data.month},
         {"_id": 0, "cash_plan_id": 1},
     )
     if existing:
@@ -1547,7 +1981,8 @@ async def create_cash_plan_month(
     cash_plan_id = f"cash_{uuid.uuid4().hex[:12]}"
     document = {
         "cash_plan_id": cash_plan_id,
-        "user_id": user_id,
+        "company_id": company_id,
+        "user_id": current_user["user_id"],
         "year": year,
         **month_data.model_dump(),
         "tax_regime": current_user.get("tax_regime", "forfettario_15"),
@@ -1555,20 +1990,20 @@ async def create_cash_plan_month(
         "updated_at": now_iso,
     }
     await db.cash_plan_entries.insert_one(document)
-    records = await recalculate_user_cash_plan(user_id)
+    records = await recalculate_user_cash_plan(company_id)
     return next(record for record in records if record["cash_plan_id"] == cash_plan_id)
 
 @api_router.put("/finance/cash-plan/months/{cash_plan_id}")
 async def update_cash_plan_month(
     cash_plan_id: str,
     month_data: CashPlanMonthUpdate,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Update only a cash-plan month owned by the authenticated user."""
-    user_id = current_user["user_id"]
+    company_id = current_user["company_id"]
     year = validate_cash_plan_payload(month_data.month, month_data.data_type)
     existing = await db.cash_plan_entries.find_one(
-        {"cash_plan_id": cash_plan_id, "user_id": user_id},
+        {"cash_plan_id": cash_plan_id, "company_id": company_id},
         {"_id": 0},
     )
     if not existing:
@@ -1576,7 +2011,7 @@ async def update_cash_plan_month(
 
     duplicate = await db.cash_plan_entries.find_one(
         {
-            "user_id": user_id,
+            "company_id": company_id,
             "month": month_data.month,
             "cash_plan_id": {"$ne": cash_plan_id},
         },
@@ -1586,7 +2021,7 @@ async def update_cash_plan_month(
         raise HTTPException(status_code=409, detail="Esiste già un mese con questa data")
 
     await db.cash_plan_entries.update_one(
-        {"cash_plan_id": cash_plan_id, "user_id": user_id},
+        {"cash_plan_id": cash_plan_id, "company_id": company_id},
         {"$set": {
             **month_data.model_dump(),
             "year": year,
@@ -1594,40 +2029,40 @@ async def update_cash_plan_month(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }},
     )
-    records = await recalculate_user_cash_plan(user_id)
+    records = await recalculate_user_cash_plan(company_id)
     return next(record for record in records if record["cash_plan_id"] == cash_plan_id)
 
 @api_router.delete("/finance/cash-plan/months/{cash_plan_id}")
 async def delete_cash_plan_month(
     cash_plan_id: str,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(require_company_roles("owner", "admin")),
 ):
     """Delete one owned month and repair the opening/closing chain that follows it."""
-    user_id = current_user["user_id"]
+    company_id = current_user["company_id"]
     result = await db.cash_plan_entries.delete_one(
-        {"cash_plan_id": cash_plan_id, "user_id": user_id},
+        {"cash_plan_id": cash_plan_id, "company_id": company_id},
     )
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Mese del piano di cassa non trovato")
-    await recalculate_user_cash_plan(user_id)
+    await recalculate_user_cash_plan(company_id)
     return {"message": "Mese eliminato"}
 
 @api_router.post("/finance/cash-plan/forecast/generate")
 async def generate_cash_plan_forecast(
     request_data: CashPlanForecastRequest,
-    current_user: Dict = Depends(get_current_user),
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Append editable forecast months without ever changing saved actual months."""
     if request_data.method not in CASH_PLAN_FORECAST_METHODS:
         raise HTTPException(status_code=400, detail="Metodo di previsione non valido")
 
     await migrate_tax_accruals_to_cash_plan(current_user)
-    user_id = current_user["user_id"]
-    records = await recalculate_user_cash_plan(user_id)
+    company_id = current_user["company_id"]
+    records = await recalculate_user_cash_plan(company_id)
     actual_records = [record for record in records if record["data_type"] == "actual"]
     source_records = actual_records
     latest_record = records[-1] if records else None
-    recurring_defaults = await get_cash_plan_recurring_defaults(user_id)
+    recurring_defaults = await get_cash_plan_recurring_defaults(company_id)
 
     if request_data.method == "average_3":
         source_records = actual_records[-3:]
@@ -1675,7 +2110,8 @@ async def generate_cash_plan_forecast(
         cash_plan_id = f"cash_{uuid.uuid4().hex[:12]}"
         await db.cash_plan_entries.insert_one({
             "cash_plan_id": cash_plan_id,
-            "user_id": user_id,
+            "company_id": company_id,
+            "user_id": current_user["user_id"],
             "month": month,
             "year": int(month[:4]),
             "data_type": "forecast",
@@ -1688,7 +2124,7 @@ async def generate_cash_plan_forecast(
         })
         created_ids.append(cash_plan_id)
 
-    calculated_records = await recalculate_user_cash_plan(user_id)
+    calculated_records = await recalculate_user_cash_plan(company_id)
     return {
         "created_count": len(created_ids),
         "months": [
@@ -1701,13 +2137,16 @@ async def generate_cash_plan_forecast(
 async def get_cash_plan_summary(current_user: Dict = Depends(get_current_user)):
     """Return the cash-plan KPI summary and first forecast liquidity warning."""
     await migrate_tax_accruals_to_cash_plan(current_user)
-    user_id = current_user["user_id"]
-    opening_balance = await get_cash_plan_opening_balance(user_id)
-    records = await recalculate_user_cash_plan(user_id)
+    company_id = current_user["company_id"]
+    opening_balance = await get_cash_plan_opening_balance(company_id)
+    records = await recalculate_user_cash_plan(company_id)
     return build_cash_plan_summary(records, opening_balance)
 
 @api_router.post("/tax/accruals")
-async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict = Depends(get_current_user)):
+async def create_tax_accrual(
+    accrual_data: TaxAccrualCreate,
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
+):
     """Create a tax accrual entry for a month"""
     accrual_id = f"accrual_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
@@ -1716,7 +2155,7 @@ async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict 
     tax_data = calculate_tax(accrual_data.revenue, tax_regime, "monthly")
     
     prev_accruals = await db.tax_accruals.find(
-        {"user_id": current_user["user_id"], "month": {"$lt": accrual_data.month}},
+        company_scope(current_user, month={"$lt": accrual_data.month}),
         {"_id": 0}
     ).sort("month", -1).limit(1).to_list(1)
     
@@ -1725,6 +2164,7 @@ async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict 
     
     accrual_doc = {
         "accrual_id": accrual_id,
+        "company_id": current_user["company_id"],
         "user_id": current_user["user_id"],
         "month": accrual_data.month,
         "revenue": accrual_data.revenue,
@@ -1739,7 +2179,7 @@ async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict 
     }
     
     await db.tax_accruals.update_one(
-        {"user_id": current_user["user_id"], "month": accrual_data.month},
+        company_scope(current_user, month=accrual_data.month),
         {"$set": accrual_doc},
         upsert=True
     )
@@ -1750,7 +2190,7 @@ async def create_tax_accrual(accrual_data: TaxAccrualCreate, current_user: Dict 
 async def get_tax_accruals(current_user: Dict = Depends(get_current_user)):
     """Get all tax accruals for current user"""
     accruals = await db.tax_accruals.find(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"_id": 0}
     ).sort("month", -1).to_list(100)
     return accruals
@@ -1761,7 +2201,7 @@ async def get_tax_forecast(current_user: Dict = Depends(get_current_user)):
     three_months_ago = (datetime.now(timezone.utc) - timedelta(days=90)).strftime("%Y-%m")
     
     recent_accruals = await db.tax_accruals.find(
-        {"user_id": current_user["user_id"], "month": {"$gte": three_months_ago}},
+        company_scope(current_user, month={"$gte": three_months_ago}),
         {"_id": 0}
     ).to_list(100)
     
@@ -1821,7 +2261,7 @@ async def export_jobs_csv(
     current_user: Dict = Depends(get_current_user)
 ):
     """Export jobs as CSV for accountant"""
-    query = {"user_id": current_user["user_id"], "is_quote": {"$ne": True}}
+    query = company_scope(current_user, is_quote={"$ne": True})
     
     # Filter by date range if provided
     if start_date or end_date:
@@ -1904,7 +2344,7 @@ async def export_tax_accruals_csv(
     current_user: Dict = Depends(get_current_user)
 ):
     """Export tax accruals as CSV for accountant"""
-    query = {"user_id": current_user["user_id"]}
+    query = company_scope(current_user)
     
     if year:
         query["month"] = {"$regex": f"^{year}"}
@@ -1979,7 +2419,7 @@ DEFAULT_CHECKLIST = [
 async def create_onboarding(
     onboarding_data: OnboardingCreate,
     request: Request,
-    current_user: Dict = Depends(get_current_user)
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Create a new client onboarding"""
     onboarding_id = f"onb_{uuid.uuid4().hex[:12]}"
@@ -1991,6 +2431,7 @@ async def create_onboarding(
     
     onboarding_doc = {
         "onboarding_id": onboarding_id,
+        "company_id": current_user["company_id"],
         "user_id": current_user["user_id"],
         "client_name": onboarding_data.client_name,
         "client_email": onboarding_data.client_email,
@@ -2013,7 +2454,7 @@ async def get_onboardings(
     current_user: Dict = Depends(get_current_user)
 ):
     """Get all onboardings for current user"""
-    query = {"user_id": current_user["user_id"]}
+    query = company_scope(current_user)
     if status:
         query["status"] = status
     
@@ -2024,7 +2465,7 @@ async def get_onboardings(
 async def get_onboarding(onboarding_id: str, current_user: Dict = Depends(get_current_user)):
     """Get a specific onboarding"""
     onboarding = await db.onboardings.find_one(
-        {"onboarding_id": onboarding_id, "user_id": current_user["user_id"]},
+        company_scope(current_user, onboarding_id=onboarding_id),
         {"_id": 0, "unique_link_token": 0}
     )
     if not onboarding:
@@ -2036,7 +2477,7 @@ async def get_client_onboarding(token: str):
     """Public endpoint for client to view their onboarding checklist"""
     onboarding = await db.onboardings.find_one(
         {"unique_link_token": token},
-        {"_id": 0, "unique_link_token": 0, "user_id": 0}
+        {"_id": 0, "unique_link_token": 0, "user_id": 0, "company_id": 0}
     )
     if not onboarding:
         raise HTTPException(status_code=404, detail="Link non valido o scaduto")
@@ -2061,7 +2502,7 @@ async def update_client_onboarding(token: str, update_data: OnboardingClientUpda
         update_fields["completed_at"] = now.isoformat()
     
     await db.onboardings.update_one(
-        {"unique_link_token": token},
+        {"unique_link_token": token, "company_id": onboarding["company_id"]},
         {"$set": update_fields}
     )
     
@@ -2073,7 +2514,7 @@ async def update_client_onboarding(token: str, update_data: OnboardingClientUpda
 async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
     """Get lead source statistics and ROI"""
     pipeline = [
-        {"$match": {"user_id": current_user["user_id"]}},
+        {"$match": company_scope(current_user)},
         {"$group": {
             "_id": "$source",
             "client_count": {"$sum": 1},
@@ -2085,7 +2526,7 @@ async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
     lead_stats = await db.lead_sources.aggregate(pipeline).to_list(100)
     
     marketing_efforts = await db.marketing_efforts.find(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"_id": 0}
     ).to_list(100)
     
@@ -2123,7 +2564,7 @@ async def get_lead_source_stats(current_user: Dict = Depends(get_current_user)):
 @api_router.post("/marketing/efforts")
 async def create_marketing_effort(
     effort_data: MarketingEffortCreate,
-    current_user: Dict = Depends(get_current_user)
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Track marketing effort hours"""
     effort_id = f"effort_{uuid.uuid4().hex[:12]}"
@@ -2131,6 +2572,7 @@ async def create_marketing_effort(
     
     effort_doc = {
         "effort_id": effort_id,
+        "company_id": current_user["company_id"],
         "user_id": current_user["user_id"],
         "month": effort_data.month,
         "channel": effort_data.channel,
@@ -2145,7 +2587,7 @@ async def create_marketing_effort(
 async def get_marketing_efforts(current_user: Dict = Depends(get_current_user)):
     """Get all marketing efforts"""
     efforts = await db.marketing_efforts.find(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"_id": 0}
     ).sort("month", -1).to_list(100)
     return efforts
@@ -2155,7 +2597,7 @@ async def get_marketing_efforts(current_user: Dict = Depends(get_current_user)):
 @api_router.post("/marketing/ai/generate")
 async def generate_ai_content(
     request_data: ContentGenerationRequest,
-    current_user: Dict = Depends(get_current_user)
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member")),
 ):
     """Generate marketing content using AI"""
     from google import genai
@@ -2277,6 +2719,7 @@ Rispondi in italiano."""
         # Save to history
         await db.ai_content_history.insert_one({
             "history_id": f"ai_{uuid.uuid4().hex[:12]}",
+            "company_id": current_user["company_id"],
             "user_id": current_user["user_id"],
             "step": request_data.step,
             "context": request_data.context,
@@ -2294,7 +2737,7 @@ Rispondi in italiano."""
 async def get_ai_content_history(current_user: Dict = Depends(get_current_user)):
     """Get AI content generation history"""
     history = await db.ai_content_history.find(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user),
         {"_id": 0}
     ).sort("created_at", -1).limit(50).to_list(50)
     return history
@@ -2304,19 +2747,23 @@ async def get_ai_content_history(current_user: Dict = Depends(get_current_user))
 @api_router.get("/dashboard/metrics")
 async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     """Get dashboard metrics for current user"""
-    user_id = current_user["user_id"]
+    company_id = current_user["company_id"]
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     
     latest_accrual = await db.tax_accruals.find_one(
-        {"user_id": user_id},
+        {"company_id": company_id},
         {"_id": 0},
         sort=[("month", -1)]
     )
     tax_reserve = latest_accrual["cumulative_balance"] if latest_accrual else 0
     
     jobs_this_month = await db.jobs.find(
-        {"user_id": user_id, "completed_date": {"$gte": month_start.isoformat()}, "is_quote": {"$ne": True}},
+        {
+            "company_id": company_id,
+            "completed_date": {"$gte": month_start.isoformat()},
+            "is_quote": {"$ne": True},
+        },
         {"_id": 0}
     ).to_list(1000)
     
@@ -2332,7 +2779,7 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
         cash_flow_status = "red"
     
     profitability = await db.jobs.aggregate([
-        {"$match": {"user_id": user_id, "is_quote": {"$ne": True}}},
+        {"$match": {"company_id": company_id, "is_quote": {"$ne": True}}},
         {"$group": {"_id": "$job_type", "avg_margin": {"$avg": "$profit_margin"}}},
         {"$sort": {"avg_margin": -1}},
         {"$limit": 1}
@@ -2340,7 +2787,7 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
     most_profitable = profitability[0]["_id"] if profitability else None
     
     lead_stats = await db.lead_sources.aggregate([
-        {"$match": {"user_id": user_id}},
+        {"$match": {"company_id": company_id}},
         {"$group": {"_id": "$source", "total_revenue": {"$sum": "$revenue"}}},
         {"$sort": {"total_revenue": -1}},
         {"$limit": 1}
@@ -2364,33 +2811,82 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
 # ==================== ADMIN ENDPOINTS ====================
 
 @api_router.post("/admin/login")
-async def admin_login(user_data: UserLogin, response: Response):
+async def admin_login(user_data: UserLogin, response: Response, request: Request):
     """Admin login endpoint"""
-    # Check if it's the super admin
-    if user_data.email == ADMIN_EMAIL and user_data.password == ADMIN_PASSWORD:
-        # Create or get admin user
-        admin_user = await db.users.find_one({"email": ADMIN_EMAIL}, {"_id": 0})
-        if not admin_user:
-            admin_user = {
-                "user_id": "admin_super",
-                "email": ADMIN_EMAIL,
-                "business_name": "BESIDE Admin",
-                "role": "super_admin",
-                "is_active": True,
-                "created_at": datetime.now(timezone.utc).isoformat()
-            }
-            await db.users.insert_one(admin_user)
-        
-        token = create_jwt_token(admin_user["user_id"], admin_user["email"], "super_admin")
-        return {"token": token, "user": admin_user}
-    
-    # Check regular admin users
-    user = await db.users.find_one({"email": user_data.email, "role": {"$in": ["admin", "super_admin"]}}, {"_id": 0})
-    if not user or not verify_password(user_data.password, user.get("password_hash", "")):
+    email = normalize_email(str(user_data.email))
+    if email != normalize_email(ADMIN_EMAIL):
         raise HTTPException(status_code=401, detail="Credenziali non valide")
-    
-    token = create_jwt_token(user["user_id"], user["email"], user.get("role", "admin"))
-    return {"token": token, "user": user}
+
+    admin_user = await db.users.find_one({"email": email}, {"_id": 0})
+    password_valid = False
+    if admin_user and admin_user.get("password_hash"):
+        try:
+            password_valid = verify_password(user_data.password, admin_user["password_hash"])
+        except (TypeError, ValueError):
+            password_valid = False
+        if not password_valid:
+            password_valid = hmac.compare_digest(user_data.password, ADMIN_PASSWORD)
+    else:
+        # Bootstrap compatibility: the clear credential exists only in the
+        # Railway environment and is immediately persisted as a bcrypt hash.
+        password_valid = hmac.compare_digest(user_data.password, ADMIN_PASSWORD)
+
+    if not password_valid:
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    company = await db.companies.find_one({"company_id": PLATFORM_COMPANY_ID}, {"_id": 0})
+    if not company:
+        await db.companies.insert_one({
+            "company_id": PLATFORM_COMPANY_ID,
+            "name": "BESIDE",
+            "owner_user_id": "admin_super",
+            "status": "active",
+            "subscription_status": "internal",
+            "trial_started_at": None,
+            "trial_ends_at": None,
+            "stripe_customer_id": None,
+            "stripe_subscription_id": None,
+            "plan_id": None,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        })
+    if not admin_user:
+        admin_user = {
+            "user_id": "admin_super",
+            "company_id": PLATFORM_COMPANY_ID,
+            "email": email,
+            "password_hash": hash_password(user_data.password),
+            "full_name": "BESIDE Admin",
+            "business_name": "BESIDE",
+            "role": "admin",
+            "platform_role": "super_admin",
+            "email_verified": True,
+            "is_active": True,
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "last_login_at": now_iso,
+        }
+        await db.users.insert_one(admin_user)
+    else:
+        await db.users.update_one(
+            {"user_id": admin_user["user_id"]},
+            {"$set": {
+                "company_id": PLATFORM_COMPANY_ID,
+                "password_hash": admin_user.get("password_hash") or hash_password(user_data.password),
+                "role": "admin",
+                "platform_role": "super_admin",
+                "email_verified": True,
+                "is_active": True,
+                "last_login_at": now_iso,
+                "updated_at": now_iso,
+            }},
+        )
+
+    admin_user = await _load_active_user(admin_user["user_id"])
+    token = await create_authenticated_session(admin_user)
+    await audit_event("login", user=admin_user, request=request, metadata={"platform_admin": True})
+    return {"token": token, "user": public_user(admin_user)}
 
 @api_router.get("/admin/users")
 async def admin_get_users(
@@ -2400,7 +2896,7 @@ async def admin_get_users(
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Get all users (admin only)"""
-    query = {"role": {"$nin": ["super_admin"]}}
+    query = {"platform_role": {"$ne": "super_admin"}}
     if search:
         query["$or"] = [
             {"email": {"$regex": search, "$options": "i"}},
@@ -2421,23 +2917,108 @@ async def admin_get_user(user_id: str, admin_user: Dict = Depends(get_admin_user
     return user
 
 @api_router.put("/admin/users/{user_id}")
-async def admin_update_user(user_id: str, update_data: AdminUserUpdate, admin_user: Dict = Depends(get_admin_user)):
+async def admin_update_user(
+    user_id: str,
+    update_data: AdminUserUpdate,
+    request: Request,
+    admin_user: Dict = Depends(get_admin_user),
+):
     """Update a user (admin only)"""
-    update_fields = {k: v for k, v in update_data.model_dump().items() if v is not None}
-    
+    target = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    if target.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=400, detail="L'amministratore di sistema non è modificabile qui")
+    raw_updates = {k: v for k, v in update_data.model_dump().items() if v is not None}
+    update_fields = {
+        key: value for key, value in raw_updates.items()
+        if key in {"role", "is_active"}
+    }
+    if "subscription_tier" in raw_updates:
+        if raw_updates["subscription_tier"] not in SUBSCRIPTION_TIERS:
+            raise HTTPException(status_code=400, detail="Piano non valido")
+        update_fields["subscription_tier"] = raw_updates["subscription_tier"]
+    if "subscription_status" in raw_updates:
+        legacy_status = raw_updates["subscription_status"]
+        if legacy_status not in {"trial", "trialing", "active", "cancelled", "past_due"}:
+            raise HTTPException(status_code=400, detail="Stato abbonamento non valido")
+        update_fields["subscription_status"] = "trial" if legacy_status == "trialing" else legacy_status
+    if "role" in update_fields and update_fields["role"] not in COMPANY_ROLES:
+        raise HTTPException(status_code=400, detail="Ruolo non valido")
+    if target.get("role") == "owner" and update_fields.get("role", "owner") != "owner":
+        raise HTTPException(status_code=400, detail="Trasferisci prima la proprietà dell'azienda")
+    if target.get("role") != "owner" and update_fields.get("role") == "owner":
+        raise HTTPException(status_code=400, detail="Il trasferimento di proprietà non è ancora supportato")
     if update_fields:
-        await db.users.update_one({"user_id": user_id}, {"$set": update_fields})
-    
+        update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one(
+            {"user_id": user_id, "company_id": target["company_id"]},
+            {"$set": update_fields},
+        )
+    company_updates = {}
+    if "subscription_tier" in raw_updates:
+        company_updates["plan_id"] = raw_updates["subscription_tier"]
+    if "subscription_status" in raw_updates:
+        company_updates["subscription_status"] = (
+            "trialing" if raw_updates["subscription_status"] == "trial" else raw_updates["subscription_status"]
+        )
+    if company_updates:
+        company_updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await db.companies.update_one(
+            {"company_id": target["company_id"]},
+            {"$set": company_updates},
+        )
+    if "role" in update_fields and update_fields["role"] != target.get("role"):
+        await audit_event(
+            "role_changed",
+            user=admin_user,
+            request=request,
+            company_id=target["company_id"],
+            metadata={
+                "target_user_id": user_id,
+                "old_role": target.get("role"),
+                "new_role": update_fields["role"],
+                "changed_by_platform_admin": True,
+            },
+        )
     updated_user = await db.users.find_one({"user_id": user_id}, {"_id": 0, "password_hash": 0})
     return updated_user
+
+@api_router.put("/admin/companies/{company_id}/status")
+async def admin_update_company_status(
+    company_id: str,
+    data: CompanyStatusUpdate,
+    request: Request,
+    admin_user: Dict = Depends(get_admin_user),
+):
+    if data.status not in {"active", "suspended", "archived"}:
+        raise HTTPException(status_code=400, detail="Stato aziendale non valido")
+    company = await db.companies.find_one({"company_id": company_id}, {"_id": 0})
+    if not company:
+        raise HTTPException(status_code=404, detail="Azienda non trovata")
+    if company_id == PLATFORM_COMPANY_ID:
+        raise HTTPException(status_code=400, detail="Lo stato dell'azienda di sistema non è modificabile")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.companies.update_one(
+        {"company_id": company_id},
+        {"$set": {"status": data.status, "updated_at": now_iso}},
+    )
+    await audit_event(
+        "company_status_changed",
+        user=admin_user,
+        company_id=company_id,
+        request=request,
+        metadata={"old_status": company.get("status"), "new_status": data.status},
+    )
+    return {"company_id": company_id, "status": data.status}
 
 @api_router.get("/admin/stats")
 async def admin_get_stats(admin_user: Dict = Depends(get_admin_user)):
     """Get admin dashboard statistics"""
-    total_users = await db.users.count_documents({"role": {"$nin": ["super_admin", "admin"]}})
-    active_users = await db.users.count_documents({"is_active": True, "role": {"$nin": ["super_admin", "admin"]}})
-    trial_users = await db.users.count_documents({"subscription_status": "trial"})
-    paying_users = await db.users.count_documents({"subscription_status": "active"})
+    total_users = await db.users.count_documents({"platform_role": {"$ne": "super_admin"}})
+    active_users = await db.users.count_documents({"is_active": True, "platform_role": {"$ne": "super_admin"}})
+    trial_users = await db.companies.count_documents({"subscription_status": "trialing"})
+    paying_users = await db.companies.count_documents({"subscription_status": "active"})
     
     total_jobs = await db.jobs.count_documents({})
     
@@ -2449,9 +3030,9 @@ async def admin_get_stats(admin_user: Dict = Depends(get_admin_user)):
     total_revenue = revenue_result[0]["total_revenue"] if revenue_result else 0
     
     # Users by tier
-    users_by_tier = await db.users.aggregate([
-        {"$match": {"role": {"$nin": ["super_admin", "admin"]}}},
-        {"$group": {"_id": "$subscription_tier", "count": {"$sum": 1}}}
+    users_by_tier = await db.companies.aggregate([
+        {"$match": {"company_id": {"$ne": PLATFORM_COMPANY_ID}}},
+        {"$group": {"_id": "$plan_id", "count": {"$sum": 1}}}
     ]).to_list(10)
     
     return {
@@ -2482,8 +3063,12 @@ async def admin_send_chat(message_data: AdminChatMessage, admin_user: Dict = Dep
     message_id = f"msg_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
     
+    target_user = await db.users.find_one({"user_id": message_data.user_id}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
     message_doc = {
         "message_id": message_id,
+        "company_id": target_user["company_id"],
         "user_id": message_data.user_id,
         "sender_type": "admin",
         "sender_id": admin_user["user_id"],
@@ -2498,8 +3083,11 @@ async def admin_send_chat(message_data: AdminChatMessage, admin_user: Dict = Dep
 @api_router.get("/admin/chat/{user_id}")
 async def admin_get_chat(user_id: str, admin_user: Dict = Depends(get_admin_user)):
     """Get chat history with a user (admin only)"""
+    target_user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
     messages = await db.admin_chat.find(
-        {"user_id": user_id},
+        {"user_id": user_id, "company_id": target_user["company_id"]},
         {"_id": 0}
     ).sort("created_at", 1).to_list(100)
     return messages
@@ -2508,26 +3096,35 @@ async def admin_get_chat(user_id: str, admin_user: Dict = Depends(get_admin_user
 async def get_user_chat_messages(current_user: Dict = Depends(get_current_user)):
     """Get chat messages for current user"""
     messages = await db.admin_chat.find(
-        {"user_id": current_user["user_id"]},
+        company_scope(current_user, user_id=current_user["user_id"]),
         {"_id": 0}
     ).sort("created_at", 1).to_list(100)
     
     # Mark as read
     await db.admin_chat.update_many(
-        {"user_id": current_user["user_id"], "sender_type": "admin", "read": False},
+        company_scope(
+            current_user,
+            user_id=current_user["user_id"],
+            sender_type="admin",
+            read=False,
+        ),
         {"$set": {"read": True}}
     )
     
     return messages
 
 @api_router.post("/chat/send")
-async def user_send_chat(message: str, current_user: Dict = Depends(get_current_user)):
+async def user_send_chat(
+    message: str,
+    current_user: Dict = Depends(require_company_roles("owner", "admin", "member", "viewer")),
+):
     """Send a chat message to admin"""
     message_id = f"msg_{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
     
     message_doc = {
         "message_id": message_id,
+        "company_id": current_user["company_id"],
         "user_id": current_user["user_id"],
         "sender_type": "user",
         "sender_id": current_user["user_id"],
@@ -2538,146 +3135,6 @@ async def user_send_chat(message: str, current_user: Dict = Depends(get_current_
     
     await db.admin_chat.insert_one(message_doc)
     return message_doc
-
-# ==================== SUBSCRIPTION/STRIPE ENDPOINTS ====================
-
-@api_router.post("/subscription/checkout")
-async def create_subscription_checkout(
-    checkout_data: SubscriptionCheckoutRequest,
-    request: Request,
-    current_user: Dict = Depends(get_current_user)
-):
-    """Create Stripe checkout session for subscription"""
-    import stripe
-    
-    if checkout_data.tier not in SUBSCRIPTION_PRICES:
-        raise HTTPException(status_code=400, detail="Tier non valido")
-    
-    amount = SUBSCRIPTION_PRICES[checkout_data.tier]
-    
-    stripe_api_key = os.environ.get("STRIPE_API_KEY")
-    if not stripe_api_key:
-        raise HTTPException(status_code=503, detail="Pagamenti non configurati")
-    stripe.api_key = stripe_api_key
-    
-    success_url = f"{checkout_data.origin_url}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}"
-    cancel_url = f"{checkout_data.origin_url}/subscription"
-    
-    session = await asyncio.to_thread(
-        stripe.checkout.Session.create,
-        mode="payment",
-        success_url=success_url,
-        cancel_url=cancel_url,
-        line_items=[{
-            "price_data": {
-                "currency": "eur",
-                "product_data": {"name": f"BESIDE {checkout_data.tier.title()}"},
-                "unit_amount": int(round(amount * 100)),
-            },
-            "quantity": 1,
-        }],
-        metadata={
-            "user_id": current_user["user_id"],
-            "tier": checkout_data.tier,
-            "type": "subscription",
-        },
-    )
-    
-    await db.payment_transactions.insert_one({
-        "transaction_id": f"txn_{uuid.uuid4().hex[:12]}",
-        "user_id": current_user["user_id"],
-        "session_id": session.id,
-        "amount": amount,
-        "currency": "eur",
-        "tier": checkout_data.tier,
-        "payment_status": "pending",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    })
-    
-    return {"checkout_url": session.url, "session_id": session.id}
-
-@api_router.get("/subscription/status/{session_id}")
-async def get_subscription_status(session_id: str, current_user: Dict = Depends(get_current_user)):
-    """Check subscription payment status"""
-    import stripe
-    
-    stripe_api_key = os.environ.get("STRIPE_API_KEY")
-    if not stripe_api_key:
-        raise HTTPException(status_code=503, detail="Pagamenti non configurati")
-    stripe.api_key = stripe_api_key
-    status = await asyncio.to_thread(stripe.checkout.Session.retrieve, session_id)
-    
-    if status.payment_status == "paid":
-        transaction = await db.payment_transactions.find_one(
-            {"session_id": session_id, "payment_status": "pending"},
-            {"_id": 0}
-        )
-        
-        if transaction:
-            await db.payment_transactions.update_one(
-                {"session_id": session_id},
-                {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc).isoformat()}}
-            )
-            
-            await db.users.update_one(
-                {"user_id": current_user["user_id"]},
-                {"$set": {
-                    "subscription_tier": transaction["tier"],
-                    "subscription_status": "active",
-                    "subscription_updated_at": datetime.now(timezone.utc).isoformat()
-                }}
-            )
-    
-    return {
-        "status": status.status,
-        "payment_status": status.payment_status,
-        "amount": (status.amount_total or 0) / 100,
-        "currency": status.currency
-    }
-
-@api_router.post("/webhook/stripe")
-async def stripe_webhook(request: Request):
-    """Handle Stripe webhooks"""
-    import stripe
-    
-    body = await request.body()
-    sig_header = request.headers.get("Stripe-Signature")
-    
-    webhook_secret = os.environ.get("STRIPE_WEBHOOK_SECRET")
-    if not webhook_secret:
-        raise HTTPException(status_code=503, detail="Webhook pagamenti non configurato")
-    
-    try:
-        event = stripe.Webhook.construct_event(body, sig_header, webhook_secret)
-        checkout_session = event["data"]["object"]
-
-        if (
-            event["type"] in ["checkout.session.completed", "checkout.session.async_payment_succeeded"]
-            and checkout_session.get("payment_status") == "paid"
-        ):
-            metadata = checkout_session.get("metadata") or {}
-            user_id = metadata.get("user_id")
-            tier = metadata.get("tier")
-            
-            if user_id and tier:
-                await db.payment_transactions.update_one(
-                    {"session_id": checkout_session["id"]},
-                    {"$set": {"payment_status": "paid", "updated_at": datetime.now(timezone.utc).isoformat()}}
-                )
-                
-                await db.users.update_one(
-                    {"user_id": user_id},
-                    {"$set": {
-                        "subscription_tier": tier,
-                        "subscription_status": "active",
-                        "subscription_updated_at": datetime.now(timezone.utc).isoformat()
-                    }}
-                )
-        
-        return {"status": "success"}
-    except Exception:
-        logger.exception("Stripe webhook error")
-        return JSONResponse(status_code=400, content={"error": "Webhook non valido"})
 
 # ==================== UTILITY ENDPOINTS ====================
 

@@ -9,6 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 import httpx
+import jwt
+from fastapi import BackgroundTasks, Request
 
 
 BACKEND_DIRECTORY = Path(__file__).resolve().parents[1]
@@ -118,7 +120,7 @@ class InMemoryFinanceSettingsCollection:
         self.documents = {}
 
     async def find_one(self, query, projection=None):
-        document = self.documents.get(query["user_id"])
+        document = self.documents.get(query["company_id"])
         if document is None:
             return None
         result = copy.deepcopy(document)
@@ -137,13 +139,13 @@ class InMemoryFinanceSettingsCollection:
 
     async def update_one(self, query, update, upsert=False):
         assert upsert is True
-        self.documents[query["user_id"]] = copy.deepcopy(update["$set"])
+        self.documents[query["company_id"]] = copy.deepcopy(update["$set"])
 
 
-def test_finance_settings_are_persisted_per_user(monkeypatch):
+def test_finance_settings_are_persisted_per_company(monkeypatch):
     collection = InMemoryFinanceSettingsCollection()
     monkeypatch.setattr(server, "db", SimpleNamespace(finance_settings=collection))
-    user = {"user_id": "user_finance", "tax_regime": "forfettario_5"}
+    user = {"user_id": "user_finance", "company_id": "company_finance", "tax_regime": "forfettario_5"}
     settings = server.FinanceSettingsUpdate(
         revenue=72000,
         tax_regime="ordinario",
@@ -160,6 +162,7 @@ def test_finance_settings_are_persisted_per_user(monkeypatch):
     assert loaded["fixed_expenses"] == 18000
     assert loaded["variable_expenses"] == 9000
     assert "user_id" not in loaded
+    assert "company_id" not in loaded
 
 
 def test_cash_plan_calculation_keeps_reserves_separate_from_paid_outflows():
@@ -231,9 +234,15 @@ def matches_query(document, query):
         if isinstance(expected, dict):
             if "$ne" in expected and actual == expected["$ne"]:
                 return False
-            if "$lt" in expected and not actual < expected["$lt"]:
+            if "$exists" in expected and (key in document) != expected["$exists"]:
                 return False
-            if "$gte" in expected and not actual >= expected["$gte"]:
+            if "$in" in expected and actual not in expected["$in"]:
+                return False
+            if "$lt" in expected and (actual is None or not actual < expected["$lt"]):
+                return False
+            if "$gt" in expected and (actual is None or not actual > expected["$gt"]):
+                return False
+            if "$gte" in expected and (actual is None or not actual >= expected["$gte"]):
                 return False
         elif actual != expected:
             return False
@@ -264,6 +273,10 @@ class InMemoryCursor:
 
     def limit(self, amount):
         self.documents = self.documents[:amount]
+        return self
+
+    def skip(self, amount):
+        self.documents = self.documents[amount:]
         return self
 
     async def to_list(self, amount):
@@ -298,7 +311,37 @@ class InMemoryCollection:
         if inserted:
             matching.update(copy.deepcopy(update.get("$setOnInsert", {})))
         matching.update(copy.deepcopy(update.get("$set", {})))
+        for key in update.get("$unset", {}):
+            matching.pop(key, None)
         return SimpleNamespace(matched_count=1)
+
+    async def update_many(self, query, update):
+        matched_count = 0
+        for document in self.documents:
+            if matches_query(document, query):
+                document.update(copy.deepcopy(update.get("$set", {})))
+                for key in update.get("$unset", {}):
+                    document.pop(key, None)
+                matched_count += 1
+        return SimpleNamespace(matched_count=matched_count, modified_count=matched_count)
+
+    async def find_one_and_update(self, query, update, return_document=None):
+        matching = next((document for document in self.documents if matches_query(document, query)), None)
+        if matching is None:
+            return None
+        matching.update(copy.deepcopy(update.get("$set", {})))
+        return copy.deepcopy(matching)
+
+    async def create_index(self, *args, **kwargs):
+        return "test_index"
+
+    async def count_documents(self, query):
+        return sum(1 for document in self.documents if matches_query(document, query))
+
+    async def delete_many(self, query):
+        before = len(self.documents)
+        self.documents = [document for document in self.documents if not matches_query(document, query)]
+        return SimpleNamespace(deleted_count=before - len(self.documents))
 
     async def delete_one(self, query):
         for index, document in enumerate(self.documents):
@@ -308,7 +351,20 @@ class InMemoryCollection:
         return SimpleNamespace(deleted_count=0)
 
 
-def test_cash_plan_crud_copy_and_user_separation(monkeypatch):
+class InMemoryDatabase:
+    def __init__(self, **collections):
+        self.collections = collections
+
+    def __getattr__(self, name):
+        if name not in self.collections:
+            self.collections[name] = InMemoryCollection()
+        return self.collections[name]
+
+    def __getitem__(self, name):
+        return getattr(self, name)
+
+
+def test_cash_plan_crud_copy_and_company_separation(monkeypatch):
     fake_db = SimpleNamespace(
         cash_plan_entries=InMemoryCollection(),
         cash_plan_settings=InMemoryCollection(),
@@ -316,9 +372,20 @@ def test_cash_plan_crud_copy_and_user_separation(monkeypatch):
         tax_accruals=InMemoryCollection(),
     )
     monkeypatch.setattr(server, "db", fake_db)
-    first_user = {"user_id": "user_first", "tax_regime": "forfettario_15"}
-    second_user = {"user_id": "user_second", "tax_regime": "forfettario_5"}
+    first_user = {
+        "user_id": "user_first",
+        "company_id": "company_first",
+        "role": "owner",
+        "tax_regime": "forfettario_15",
+    }
+    second_user = {
+        "user_id": "user_second",
+        "company_id": "company_second",
+        "role": "owner",
+        "tax_regime": "forfettario_5",
+    }
     fake_db.finance_settings.documents.append({
+        "company_id": "company_first",
         "user_id": "user_first",
         "period": "yearly",
         "revenue": 72000,
@@ -367,7 +434,7 @@ def test_cash_plan_crud_copy_and_user_separation(monkeypatch):
         assert len(first_user_plan["months"]) == 4
         assert first_user_plan["recurring_defaults"]["fixed_expenses"] == 1000
         assert len(second_user_plan["months"]) == 1
-        assert all(record["user_id"] == "user_first" for record in first_user_plan["months"])
+        assert all(record["company_id"] == "company_first" for record in first_user_plan["months"])
         assert second_user_plan["months"][0]["cash_plan_id"] == second_user_month["cash_plan_id"]
 
         with pytest.raises(server.HTTPException) as forbidden_update:
@@ -395,6 +462,7 @@ def test_legacy_tax_accruals_are_copied_without_deleting_source(monkeypatch):
     )
     fake_db.tax_accruals.documents.append({
         "accrual_id": "legacy_accrual",
+        "company_id": "company_legacy",
         "user_id": "user_legacy",
         "month": "2026-11",
         "revenue": 4500,
@@ -404,7 +472,11 @@ def test_legacy_tax_accruals_are_copied_without_deleting_source(monkeypatch):
     monkeypatch.setattr(server, "db", fake_db)
 
     result = asyncio.run(server.get_cash_plan_months(
-        current_user={"user_id": "user_legacy", "tax_regime": "forfettario_15"},
+        current_user={
+            "user_id": "user_legacy",
+            "company_id": "company_legacy",
+            "tax_regime": "forfettario_15",
+        },
     ))
 
     assert len(result["months"]) == 1
@@ -412,3 +484,235 @@ def test_legacy_tax_accruals_are_copied_without_deleting_source(monkeypatch):
     assert result["months"][0]["revenue"] == 4500
     assert result["months"][0]["notes"] == "Importato dallo storico accantonamenti"
     assert len(fake_db.tax_accruals.documents) == 1
+
+
+def make_request(path="/api/test", method="POST", headers=None):
+    raw_headers = [
+        (key.lower().encode("latin-1"), value.encode("latin-1"))
+        for key, value in (headers or {}).items()
+    ]
+    return Request({
+        "type": "http",
+        "http_version": "1.1",
+        "method": method,
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "headers": raw_headers,
+        "client": ("127.0.0.1", 12345),
+        "server": ("test", 80),
+    })
+
+
+def test_registration_creates_company_owner_and_exact_seven_day_trial(monkeypatch):
+    fake_db = InMemoryDatabase()
+    monkeypatch.setattr(server, "db", fake_db)
+    user_data = server.UserCreate(
+        email="Owner@Beside.it",
+        password="StrongPass-123",
+        first_name="Owner",
+        business_name="Tenant One",
+        team_size=1,
+        services=["ppf"],
+        tax_regime="forfettario_15",
+    )
+
+    async def exercise_registration_and_login():
+        registered = await server.register(
+            user_data,
+            BackgroundTasks(),
+            make_request("/api/auth/register"),
+        )
+        response = server.Response()
+        logged_in = await server.login(
+            server.UserLogin(email=user_data.email, password=user_data.password),
+            response,
+            make_request("/api/auth/login"),
+        )
+        return registered, logged_in
+
+    registered, logged_in = asyncio.run(exercise_registration_and_login())
+    company = fake_db.companies.documents[0]
+    user = fake_db.users.documents[0]
+    trial_delta = server.parse_datetime(company["trial_ends_at"]) - server.parse_datetime(company["trial_started_at"])
+
+    assert registered["company_id"] == company["company_id"]
+    assert company["subscription_status"] == "trialing"
+    assert trial_delta == server.timedelta(days=7)
+    assert user["role"] == "owner"
+    assert user["email"] == "owner@beside.it"
+    assert logged_in["user"]["company_id"] == company["company_id"]
+    assert logged_in["user"]["subscription_status"] == "trialing"
+    assert any(log["event"] == "registration" for log in fake_db.audit_logs.documents)
+    assert any(log["event"] == "login" for log in fake_db.audit_logs.documents)
+
+
+def test_company_scope_blocks_cross_tenant_job_access_and_allows_collaborator(monkeypatch):
+    fake_db = InMemoryDatabase()
+    fake_db.jobs.documents.append({
+        "job_id": "job_private",
+        "company_id": "company_one",
+        "user_id": "owner_one",
+        "client_name": "Cliente riservato",
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+
+    collaborator = {"user_id": "member_one", "company_id": "company_one", "role": "member"}
+    outsider = {"user_id": "owner_two", "company_id": "company_two", "role": "owner"}
+
+    assert asyncio.run(server.get_job("job_private", collaborator))["client_name"] == "Cliente riservato"
+    with pytest.raises(server.HTTPException) as denied:
+        asyncio.run(server.get_job("job_private", outsider))
+    assert denied.value.status_code == 404
+
+
+def test_company_role_dependency_denies_viewer_writes():
+    dependency = server.require_company_roles("owner", "admin", "member")
+
+    allowed = asyncio.run(dependency(current_user={"role": "member"}))
+    assert allowed["role"] == "member"
+    with pytest.raises(server.HTTPException) as denied:
+        asyncio.run(dependency(current_user={"role": "viewer"}))
+    assert denied.value.status_code == 403
+
+
+def test_expired_jwt_is_rejected():
+    expired = jwt.encode(
+        {
+            "user_id": "user_expired",
+            "company_id": "company_expired",
+            "type": "access",
+            "exp": server.datetime.now(server.timezone.utc) - server.timedelta(seconds=1),
+        },
+        server.JWT_SECRET,
+        algorithm=server.JWT_ALGORITHM,
+    )
+
+    with pytest.raises(server.HTTPException) as denied:
+        server.decode_jwt_token(expired)
+    assert denied.value.status_code == 401
+    assert denied.value.detail == "Token scaduto"
+
+
+def test_password_reset_token_is_one_time_and_revokes_sessions(monkeypatch):
+    fake_db = InMemoryDatabase()
+    user = {
+        "user_id": "user_reset",
+        "company_id": "company_reset",
+        "email": "reset@example.test",
+        "password_hash": server.hash_password("OldPassword-123"),
+        "is_active": True,
+    }
+    fake_db.users.documents.append(user)
+    fake_db.user_sessions.documents.append({
+        "user_id": user["user_id"],
+        "company_id": user["company_id"],
+        "revoked_at": None,
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+
+    async def exercise_reset():
+        token = await server.create_one_time_token(
+            fake_db.password_reset_tokens,
+            user,
+            server.timedelta(minutes=30),
+        )
+        payload = server.PasswordResetRequest(token=token, password="NewPassword-456")
+        result = await server.reset_password(payload, make_request("/api/auth/reset-password"))
+        with pytest.raises(server.HTTPException) as second_use:
+            await server.reset_password(payload, make_request("/api/auth/reset-password"))
+        return result, second_use.value
+
+    result, second_error = asyncio.run(exercise_reset())
+
+    assert result["message"].startswith("Password aggiornata")
+    assert second_error.status_code == 400
+    assert server.verify_password("NewPassword-456", fake_db.users.documents[0]["password_hash"])
+    assert fake_db.user_sessions.documents[0]["revoked_at"] is not None
+    assert any(log["event"] == "password_reset_completed" for log in fake_db.audit_logs.documents)
+
+
+def test_expired_password_reset_token_is_rejected(monkeypatch):
+    fake_db = InMemoryDatabase()
+    user = {
+        "user_id": "user_expired_reset",
+        "company_id": "company_expired_reset",
+        "email": "expired-reset@beside.it",
+        "password_hash": server.hash_password("OldPassword-123"),
+        "is_active": True,
+    }
+    fake_db.users.documents.append(user)
+    monkeypatch.setattr(server, "db", fake_db)
+
+    async def exercise_expired_reset():
+        token = await server.create_one_time_token(
+            fake_db.password_reset_tokens,
+            user,
+            server.timedelta(minutes=30),
+        )
+        fake_db.password_reset_tokens.documents[0]["expires_at"] = (
+            server.datetime.now(server.timezone.utc) - server.timedelta(seconds=1)
+        ).isoformat()
+        await server.reset_password(
+            server.PasswordResetRequest(token=token, password="NewPassword-456"),
+            make_request("/api/auth/reset-password"),
+        )
+
+    with pytest.raises(server.HTTPException) as denied:
+        asyncio.run(exercise_expired_reset())
+    assert denied.value.status_code == 400
+    assert server.verify_password("OldPassword-123", fake_db.users.documents[0]["password_hash"])
+
+
+def test_legacy_migration_is_idempotent_and_backfills_company_id():
+    from multitenancy import migrate_to_company_tenancy
+
+    fake_db = InMemoryDatabase()
+    fake_db.users.documents.append({
+        "user_id": "legacy_user",
+        "email": "Legacy@Example.Test",
+        "business_name": "Legacy Company",
+        "role": "user",
+        "subscription_status": "trial",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    fake_db.jobs.documents.append({"job_id": "legacy_job", "user_id": "legacy_user"})
+    fake_db.quote_tokens.documents.append({"token": "legacy_quote", "job_id": "legacy_job"})
+
+    first = asyncio.run(migrate_to_company_tenancy(fake_db, "admin@example.test"))
+    second = asyncio.run(migrate_to_company_tenancy(fake_db, "admin@example.test"))
+
+    company_id = fake_db.users.documents[0]["company_id"]
+    assert first["companies"] == 1
+    assert second["companies"] == 0
+    assert len(fake_db.companies.documents) == 1
+    assert fake_db.users.documents[0]["role"] == "owner"
+    assert fake_db.jobs.documents[0]["company_id"] == company_id
+    assert fake_db.quote_tokens.documents[0]["company_id"] == company_id
+
+
+def test_migration_never_escalates_company_admin_to_platform_admin():
+    from multitenancy import migrate_to_company_tenancy
+
+    fake_db = InMemoryDatabase()
+    fake_db.users.documents.append({
+        "user_id": "company_admin",
+        "company_id": "company_existing",
+        "email": "company-admin@beside.it",
+        "business_name": "Existing Company",
+        "role": "admin",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+    fake_db.companies.documents.append({
+        "company_id": "company_existing",
+        "name": "Existing Company",
+        "owner_user_id": "owner_existing",
+        "status": "active",
+    })
+
+    asyncio.run(migrate_to_company_tenancy(fake_db, "platform-admin@beside.it"))
+
+    migrated_user = fake_db.users.documents[0]
+    assert migrated_user["role"] == "admin"
+    assert "platform_role" not in migrated_user

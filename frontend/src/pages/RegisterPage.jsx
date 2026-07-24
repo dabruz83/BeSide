@@ -29,6 +29,7 @@ export const RegisterPage = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const oauthLoginUrl = (process.env.REACT_APP_OAUTH_LOGIN_URL || "").trim().replace(/\/+$/, "");
   const [formData, setFormData] = useState({
     email: "",
     password: "",
@@ -56,8 +57,8 @@ export const RegisterPage = () => {
         toast.error("Inserisci nome, email e password");
         return;
       }
-      if (formData.password.length < 6) {
-        toast.error("La password deve essere di almeno 6 caratteri");
+      if (formData.password.length < 10) {
+        toast.error("La password deve essere di almeno 10 caratteri");
         return;
       }
       setStep(2);
@@ -85,9 +86,8 @@ export const RegisterPage = () => {
   };
 
   const handleGoogleLogin = () => {
-    // REMINDER: DO NOT HARDCODE THE URL, OR ADD ANY FALLBACKS OR REDIRECT URLS, THIS BREAKS THE AUTH
     const redirectUrl = window.location.origin + '/dashboard';
-    window.location.href = `https://auth.emergentagent.com/?redirect=${encodeURIComponent(redirectUrl)}`;
+    window.location.href = `${oauthLoginUrl}/?redirect=${encodeURIComponent(redirectUrl)}`;
   };
 
   return (
@@ -154,7 +154,9 @@ export const RegisterPage = () => {
                     <Input
                       id="password"
                       type={showPassword ? "text" : "password"}
-                      placeholder="Minimo 6 caratteri"
+                      placeholder="Minimo 10 caratteri"
+                      minLength={10}
+                      maxLength={128}
                       className="pl-10 pr-10"
                       value={formData.password}
                       onChange={(e) => setFormData({ ...formData, password: e.target.value })}
@@ -175,16 +177,16 @@ export const RegisterPage = () => {
                   Continua
                 </Button>
 
-                <div className="relative">
+                {oauthLoginUrl && <div className="relative">
                   <div className="absolute inset-0 flex items-center">
                     <div className="w-full border-t border-border"></div>
                   </div>
                   <div className="relative flex justify-center text-xs uppercase">
                     <span className="bg-background px-2 text-muted-foreground">Oppure</span>
                   </div>
-                </div>
+                </div>}
 
-                <Button
+                {oauthLoginUrl && <Button
                   type="button"
                   variant="outline"
                   className="w-full"
@@ -198,7 +200,7 @@ export const RegisterPage = () => {
                     <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" />
                   </svg>
                   Registrati con Google
-                </Button>
+                </Button>}
               </>
             ) : (
               <>

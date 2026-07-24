@@ -6,7 +6,7 @@ Questa procedura crea tre servizi nello stesso progetto Railway:
 - `backend`: FastAPI, root directory `/backend`;
 - `frontend`: React, root directory `/frontend` e link per i beta tester.
 
-Il branch da pubblicare è `codex/railway-deploy`. Non è necessario unirlo a `main`.
+Per questa fase usa il branch `codex/auth-multitenant-foundation`. Non è necessario unirlo a `main`.
 
 ## 1. Porta il branch su GitHub
 
@@ -15,7 +15,7 @@ Il repository deve essere disponibile su GitHub. Dalla radice del progetto:
 ```bash
 git add .
 git commit -m "Prepare Railway deployment"
-git push -u origin codex/railway-deploy
+git push -u origin codex/auth-multitenant-foundation
 ```
 
 Se `origin` non esiste ancora, crea prima un repository GitHub vuoto e collega il remote indicato da GitHub.
@@ -34,7 +34,7 @@ Nel medesimo progetto Railway crea due **Empty Service** e chiamali esattamente:
 - `backend`
 - `frontend`
 
-Per entrambi, in **Settings → Source** collega lo stesso repository GitHub e seleziona il branch `codex/railway-deploy`.
+Per entrambi, in **Settings → Source** collega lo stesso repository GitHub e seleziona il branch `codex/auth-multitenant-foundation`.
 
 Configura poi:
 
@@ -78,16 +78,22 @@ JWT_SECRET_KEY=INCOLLA_IL_PRIMO_SEGRETO
 ADMIN_EMAIL=LA_TUA_EMAIL_ADMIN
 ADMIN_PASSWORD=INCOLLA_IL_SECONDO_SEGRETO
 CORS_ORIGINS=https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}
+FRONTEND_PUBLIC_URL=https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}
 ```
 
 Non aggiungere virgolette e non aggiungere `/` alla fine di `CORS_ORIGINS`.
 
-Variabili opzionali per integrazioni già presenti nel progetto; lasciale assenti se non le usi:
+Per rendere operativi recupero password e verifica email aggiungi le credenziali SendGrid:
 
 ```dotenv
-SENDGRID_API_KEY=
-SENDER_EMAIL=
-ADMIN_NOTIFICATION_EMAIL=
+SENDGRID_API_KEY=LA_TUA_CHIAVE_SENDGRID
+SENDER_EMAIL=MITTENTE_VERIFICATO_IN_SENDGRID
+ADMIN_NOTIFICATION_EMAIL=EMAIL_CHE_RICEVE_LE_NUOVE_REGISTRAZIONI
+```
+
+Variabili opzionali per le altre integrazioni già presenti:
+
+```dotenv
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-3-flash-preview
 ```
@@ -109,6 +115,18 @@ REACT_APP_POSTHOG_KEY=
 REACT_APP_POSTHOG_HOST=https://us.i.posthog.com
 ```
 
+Per mostrare il pulsante Google, configura anche il broker OAuth su backend e frontend:
+
+```dotenv
+# backend
+OAUTH_SESSION_URL=URL_ENDPOINT_SESSIONE_DEL_PROVIDER
+
+# frontend
+REACT_APP_OAUTH_LOGIN_URL=URL_PUBBLICO_LOGIN_DEL_PROVIDER
+```
+
+Se queste due variabili non sono presenti, il login email/password continua a funzionare e il pulsante Google rimane nascosto.
+
 ## 7. Pubblica e verifica
 
 1. Premi **Deploy** sui cambiamenti staged di Railway.
@@ -123,6 +141,13 @@ REACT_APP_POSTHOG_HOST=https://us.i.posthog.com
 5. Apri `https://DOMINIO_FRONTEND/health`: deve rispondere con lo stato del frontend.
 6. Apri `https://DOMINIO_FRONTEND`: questo è il link da inviare ai beta tester.
 7. Prova registrazione, login, creazione di un lavoro e ricarica diretta di `/dashboard`.
+8. Prova “Password dimenticata” e il link di verifica email dopo aver configurato SendGrid.
+
+## Migrazione automatica e rollback
+
+Al primo avvio del backend il servizio crea le aziende e aggiunge `company_id` ai record esistenti. La migrazione è idempotente e non elimina né rinomina campi: può essere eseguita più volte. I vecchi `user_id` restano nei documenti come autore del record.
+
+Prima del primo deploy di questo branch è comunque consigliato creare un backup MongoDB. Se devi tornare indietro, ridistribuisci il commit precedente: i campi aggiunti non impediscono al vecchio codice di leggere i dati.
 
 ## Domini personalizzati o più frontend
 
