@@ -303,6 +303,10 @@ class InMemoryCollection:
         return apply_projection(matching, projection) if matching is not None else None
 
     async def insert_one(self, document):
+        if "_id" in document and any(
+            existing.get("_id") == document["_id"] for existing in self.documents
+        ):
+            raise server.DuplicateKeyError("duplicate _id")
         self.documents.append(copy.deepcopy(document))
         return SimpleNamespace(inserted_id=document.get("cash_plan_id"))
 
@@ -781,10 +785,76 @@ def test_distributed_rate_limit_uses_hashed_key_and_rejects_excess(monkeypatch):
         asyncio.run(exercise_limit())
 
     assert denied.value.status_code == 429
-    stored = fake_db.rate_limits.documents[0]
+    stored = next(
+        document for document in fake_db.rate_limits.documents
+        if document.get("scope") == "test_login"
+    )
     assert stored["count"] == 2
     assert "sensitive@example.test" not in str(stored).lower()
     assert len(stored["key"]) == 64
+    assert stored["_id"] == stored["key"]
+
+
+def test_email_claim_blocks_concurrent_registration_without_custom_index(monkeypatch):
+    fake_db = InMemoryDatabase()
+    monkeypatch.setattr(server, "db", fake_db)
+    user_data = server.UserCreate(
+        email="same@beside.it",
+        password="StrongPass-123",
+        first_name="First",
+        business_name="First Company",
+        team_size=1,
+        services=["ppf"],
+        tax_regime="forfettario_15",
+    )
+
+    asyncio.run(server.register(
+        user_data,
+        BackgroundTasks(),
+        make_request("/api/auth/register"),
+    ))
+    # Simulate a stale read in the public pre-check: the _id-backed claim remains
+    # authoritative even when Railway cannot create a custom email index.
+    original_find_one = fake_db.users.find_one
+
+    async def stale_email_lookup(query, projection=None):
+        if query == {"email": "same@beside.it"}:
+            return None
+        return await original_find_one(query, projection)
+
+    fake_db.users.find_one = stale_email_lookup
+    with pytest.raises(server.HTTPException) as duplicate:
+        asyncio.run(server.register(
+            user_data,
+            BackgroundTasks(),
+            make_request("/api/auth/register"),
+        ))
+
+    assert duplicate.value.status_code == 400
+    assert len(fake_db.users.documents) == 1
+    assert len(fake_db.companies.documents) == 1
+    assert len(fake_db.email_claims.documents) == 1
+
+
+def test_low_disk_defers_indexes_without_hiding_other_database_errors():
+    from multitenancy import ensure_multitenant_indexes
+    from pymongo.errors import OperationFailure
+
+    class FailingIndexCollection(InMemoryCollection):
+        def __init__(self, code):
+            super().__init__()
+            self.code = code
+
+        async def create_index(self, *args, **kwargs):
+            raise OperationFailure("index failure", code=self.code)
+
+    low_disk_db = InMemoryDatabase(users=FailingIndexCollection(14031))
+    assert asyncio.run(ensure_multitenant_indexes(low_disk_db)) is False
+
+    unexpected_db = InMemoryDatabase(users=FailingIndexCollection(13))
+    with pytest.raises(OperationFailure) as unexpected:
+        asyncio.run(ensure_multitenant_indexes(unexpected_db))
+    assert unexpected.value.code == 13
 
 
 def test_email_verification_can_be_enforced_without_locking_legacy_users(monkeypatch):

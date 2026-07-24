@@ -27,6 +27,13 @@ Se `origin` non esiste ancora, crea prima un repository GitHub vuoto e collega i
 3. Rinomina il servizio esattamente `MongoDB`.
 4. Non generare un dominio HTTP per MongoDB e non eliminare il suo volume: è lì che restano i dati.
 
+Il piano Trial limita il volume a 500 MB, una dimensione inferiore allo spazio libero che
+MongoDB richiede per costruire nuovi indici. BESIDE rileva esclusivamente quell'errore e
+completa comunque la migrazione, continuando a proteggere email e rate limit con l'indice
+`_id` nativo. Prima di usare il progetto con un numero significativo di beta tester,
+passa almeno al piano Hobby, porta il volume a **1 GB** e ridistribuisci il backend: gli
+indici applicativi e TTL verranno creati automaticamente al nuovo avvio.
+
 ## 3. Crea i due servizi applicativi
 
 Nel medesimo progetto Railway crea due **Empty Service** e chiamali esattamente:

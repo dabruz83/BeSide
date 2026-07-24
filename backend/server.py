@@ -29,6 +29,7 @@ from multitenancy import (
     PLATFORM_COMPANY_ID,
     company_document,
     company_scope,
+    email_claim_id,
     migrate_to_company_tenancy,
     normalize_email,
     parse_datetime,
@@ -494,11 +495,25 @@ async def enforce_rate_limit(
         (bucket + 2) * window_seconds,
         tz=timezone.utc,
     )
+    # Trial volumes cannot build TTL indexes. One _id-protected maintenance
+    # marker per day keeps expired counters bounded until the volume is enlarged.
+    cleanup_marker = f"rate-limit-cleanup:{int(now.timestamp()) // 86400}"
+    try:
+        await db.rate_limits.insert_one({
+            "_id": cleanup_marker,
+            "scope": "maintenance",
+            "expires_at": now + timedelta(days=2),
+        })
+    except DuplicateKeyError:
+        pass
+    else:
+        await db.rate_limits.delete_many({"expires_at": {"$lt": now}})
     rate_limit = await db.rate_limits.find_one_and_update(
-        {"key": key},
+        {"_id": key},
         {
             "$inc": {"count": 1},
             "$setOnInsert": {
+                "key": key,
                 "scope": scope,
                 "window_started_at": datetime.fromtimestamp(
                     bucket * window_seconds, tz=timezone.utc
@@ -516,6 +531,27 @@ async def enforce_rate_limit(
             detail="Troppi tentativi. Riprova più tardi.",
             headers={"Retry-After": str(retry_after)},
         )
+
+
+async def reserve_email_claim(email: str, user_id: str, company_id: str) -> None:
+    """Serialize new accounts without relying on a custom MongoDB index."""
+    try:
+        await db.email_claims.insert_one({
+            "_id": email_claim_id(email),
+            "user_id": user_id,
+            "company_id": company_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status_code=400, detail="Email già registrata")
+
+
+async def release_email_claim(email: str, user_id: str) -> None:
+    """Release only a claim owned by a registration that did not complete."""
+    await db.email_claims.delete_one({
+        "_id": email_claim_id(email),
+        "user_id": user_id,
+    })
 
 def create_jwt_token(
     user_id: str,
@@ -1351,14 +1387,20 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         "last_login_at": None,
     }
 
-    await db.companies.insert_one(company_doc)
+    await reserve_email_claim(email, user_id, company_id)
     try:
+        await db.companies.insert_one(company_doc)
         await db.users.insert_one(user_doc)
     except DuplicateKeyError:
         # A concurrent registration won the unique-email race. Remove only the
         # company created by this request, leaving existing data untouched.
         await db.companies.delete_one({"company_id": company_id, "owner_user_id": user_id})
+        await release_email_claim(email, user_id)
         raise HTTPException(status_code=400, detail="Email già registrata")
+    except Exception:
+        await db.companies.delete_one({"company_id": company_id, "owner_user_id": user_id})
+        await release_email_claim(email, user_id)
+        raise
     verification_token = await create_one_time_token(
         db.email_verification_tokens,
         user_doc,
@@ -1480,7 +1522,8 @@ async def process_google_session(request: Request, response: Response):
         company_id = f"company_{uuid.uuid4().hex[:12]}"
         now_dt = datetime.now(timezone.utc)
         now = now_dt.isoformat()
-        await db.companies.insert_one({
+        await reserve_email_claim(email, user_id, company_id)
+        company_doc = {
             "company_id": company_id,
             "name": name or "La Mia Attività",
             "owner_user_id": user_id,
@@ -1493,7 +1536,7 @@ async def process_google_session(request: Request, response: Response):
             "plan_id": "essential",
             "created_at": now,
             "updated_at": now,
-        })
+        }
         user_doc = {
             "user_id": user_id,
             "company_id": company_id,
@@ -1516,7 +1559,17 @@ async def process_google_session(request: Request, response: Response):
             "updated_at": now,
             "last_login_at": None,
         }
-        await db.users.insert_one(user_doc)
+        try:
+            await db.companies.insert_one(company_doc)
+            await db.users.insert_one(user_doc)
+        except DuplicateKeyError:
+            await db.companies.delete_one({"company_id": company_id, "owner_user_id": user_id})
+            await release_email_claim(email, user_id)
+            raise HTTPException(status_code=409, detail="Account già in creazione; riprova")
+        except Exception:
+            await db.companies.delete_one({"company_id": company_id, "owner_user_id": user_id})
+            await release_email_claim(email, user_id)
+            raise
         user = user_doc
 
     user = await _load_active_user(user_id)

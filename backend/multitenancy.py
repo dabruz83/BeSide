@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable
+
+from pymongo.errors import DuplicateKeyError, OperationFailure
 
 
 COMPANY_ROLES = ("owner", "admin", "member", "viewer")
 PLATFORM_COMPANY_ID = "company_beside_platform"
 ORPHAN_COMPANY_ID = "company_legacy_quarantine"
+MONGO_LOW_DISK_ERROR = 14031
+
+logger = logging.getLogger(__name__)
 
 # Collections containing company-owned or company-related records. ``user_id`` is
 # retained as creator/subject attribution; ``company_id`` becomes the access scope.
@@ -57,6 +63,11 @@ def legacy_company_id(user_id: str) -> str:
     """Return a stable company id so rerunning migration is always safe."""
     digest = hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:16]
     return f"company_legacy_{digest}"
+
+
+def email_claim_id(email: str) -> str:
+    """Build a PII-minimised key backed by MongoDB's always-unique _id index."""
+    return hashlib.sha256(normalize_email(email).encode("utf-8")).hexdigest()
 
 
 def company_scope(user: Dict[str, Any], **filters: Any) -> Dict[str, Any]:
@@ -109,24 +120,43 @@ def build_legacy_company(user: Dict[str, Any], company_id: str) -> Dict[str, Any
     }
 
 
-async def ensure_multitenant_indexes(database: Any) -> None:
-    """Create only indexes that are safe for migrated production data."""
-    await database.users.create_index("email", unique=True)
-    await database.users.create_index("company_id")
-    await database.companies.create_index("company_id", unique=True)
-    await database.companies.create_index("owner_user_id")
-    await database.user_sessions.create_index("token_hash", sparse=True)
-    await database.user_sessions.create_index("jti", sparse=True)
-    await database.user_sessions.create_index("expires_at_dt", expireAfterSeconds=0)
-    await database.password_reset_tokens.create_index("token_hash", unique=True)
-    await database.password_reset_tokens.create_index("expires_at_dt", expireAfterSeconds=0)
-    await database.email_verification_tokens.create_index("token_hash", unique=True)
-    await database.email_verification_tokens.create_index("expires_at_dt", expireAfterSeconds=0)
-    await database.audit_logs.create_index([("company_id", 1), ("created_at", -1)])
-    await database.rate_limits.create_index("key", unique=True)
-    await database.rate_limits.create_index("expires_at", expireAfterSeconds=0)
-    for collection_name in TENANT_COLLECTIONS:
-        await database[collection_name].create_index("company_id")
+async def ensure_multitenant_indexes(database: Any) -> bool:
+    """Create safe indexes, deferring only MongoDB's explicit low-disk error.
+
+    Railway's Trial volume is capped at 500 MB while MongoDB requires 500 MB
+    *free* to build an index. Tenant checks remain enforced by every query; the
+    built-in ``_id`` index also continues to protect email claims and rate-limit
+    counters. Once the volume is enlarged, a later startup creates these indexes.
+    """
+    indexes = [
+        (database.users, "email", {"unique": True}),
+        (database.users, "company_id", {}),
+        (database.companies, "company_id", {"unique": True}),
+        (database.companies, "owner_user_id", {}),
+        (database.user_sessions, "token_hash", {"sparse": True}),
+        (database.user_sessions, "jti", {"sparse": True}),
+        (database.user_sessions, "expires_at_dt", {"expireAfterSeconds": 0}),
+        (database.password_reset_tokens, "token_hash", {"unique": True}),
+        (database.password_reset_tokens, "expires_at_dt", {"expireAfterSeconds": 0}),
+        (database.email_verification_tokens, "token_hash", {"unique": True}),
+        (database.email_verification_tokens, "expires_at_dt", {"expireAfterSeconds": 0}),
+        (database.audit_logs, [("company_id", 1), ("created_at", -1)], {}),
+        (database.rate_limits, "expires_at", {"expireAfterSeconds": 0}),
+    ]
+    indexes.extend((database[name], "company_id", {}) for name in TENANT_COLLECTIONS)
+
+    for collection, keys, options in indexes:
+        try:
+            await collection.create_index(keys, **options)
+        except OperationFailure as exc:
+            if exc.code != MONGO_LOW_DISK_ERROR:
+                raise
+            logger.warning(
+                "MongoDB indexes deferred because the volume has less than 500 MB free; "
+                "upgrade/resize the Railway volume and redeploy to create them"
+            )
+            return False
+    return True
 
 
 async def _backfill_user_records(database: Any, user_id: str, company_id: str) -> None:
@@ -160,6 +190,17 @@ async def migrate_to_company_tenancy(database: Any, admin_email: str) -> Dict[st
         email = normalize_email(user.get("email", ""))
         if not user_id or not email:
             continue
+
+        try:
+            await database.email_claims.insert_one({
+                "_id": email_claim_id(email),
+                "user_id": user_id,
+                "created_at": parse_datetime(user.get("created_at")).isoformat(),
+            })
+        except DuplicateKeyError:
+            # A rerun, or a pre-existing duplicate legacy email. Existing data is
+            # preserved; all new registrations are still serialized by this claim.
+            pass
 
         is_platform_admin = (
             email == normalized_admin
