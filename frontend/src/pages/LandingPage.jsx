@@ -87,7 +87,7 @@ export const LandingPage = () => {
               <div className="flex flex-col sm:flex-row gap-4">
                 <Link to="/register">
                   <Button size="lg" className="w-full sm:w-auto" data-testid="hero-cta-btn">
-                    Prova Gratis 14 Giorni
+                    Prova Gratis 7 Giorni
                     <ArrowRight className="w-4 h-4 ml-2" />
                   </Button>
                 </Link>

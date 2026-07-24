@@ -330,7 +330,7 @@ export const RegisterPage = () => {
             Unisciti a BESIDE
           </h2>
           <p className="text-white/80">
-            14 giorni di prova gratuita. Nessuna carta richiesta. 
+            7 giorni di prova gratuita. Nessuna carta richiesta. 
             Scopri quanto guadagni davvero dai tuoi lavori.
           </p>
         </div>
