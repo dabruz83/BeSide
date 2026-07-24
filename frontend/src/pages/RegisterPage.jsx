@@ -61,6 +61,10 @@ export const RegisterPage = () => {
         toast.error("La password deve essere di almeno 10 caratteri");
         return;
       }
+      if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(formData.password) || !/\d/.test(formData.password)) {
+        toast.error("La password deve contenere almeno una lettera e un numero");
+        return;
+      }
       setStep(2);
       return;
     }
@@ -68,14 +72,20 @@ export const RegisterPage = () => {
     setLoading(true);
     try {
       const response = await axios.post(`${API}/auth/register`, formData);
-      
-      // Auto login after registration
+
+      if (response.data.email_verification_required) {
+        toast.success("Registrazione completata. Controlla la tua email prima di accedere.");
+        navigate("/login", { replace: true });
+        return;
+      }
+
+      // Compatibility mode until transactional email is enabled in Railway.
       const loginResponse = await axios.post(
         `${API}/auth/login`,
         { email: formData.email, password: formData.password }
       );
       
-      login(loginResponse.data.user, loginResponse.data.token);
+      login(loginResponse.data.user);
       toast.success("Registrazione completata! Benvenuto in BESIDE");
       navigate("/dashboard");
     } catch (error) {

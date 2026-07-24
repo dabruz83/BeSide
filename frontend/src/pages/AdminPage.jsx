@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
 import { API } from "@/App";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,10 +48,8 @@ const SUBSCRIPTION_STATUS = [
 ];
 
 export const AdminPage = () => {
-  const navigate = useNavigate();
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [adminToken, setAdminToken] = useState("");
   
   // Login state
   const [loginEmail, setLoginEmail] = useState("");
@@ -73,12 +70,17 @@ export const AdminPage = () => {
   const [newMessage, setNewMessage] = useState("");
 
   useEffect(() => {
-    const token = localStorage.getItem("beside_admin_token");
-    if (token) {
-      setAdminToken(token);
-      setIsLoggedIn(true);
-    }
-    setLoading(false);
+    const checkAdminSession = async () => {
+      try {
+        await axios.get(`${API}/admin/stats`);
+        setIsLoggedIn(true);
+      } catch (error) {
+        setIsLoggedIn(false);
+      } finally {
+        setLoading(false);
+      }
+    };
+    checkAdminSession();
   }, []);
 
   const handleLogin = async (e) => {
@@ -86,14 +88,10 @@ export const AdminPage = () => {
     setLoginLoading(true);
     
     try {
-      const response = await axios.post(`${API}/admin/login`, {
+      await axios.post(`${API}/admin/login`, {
         email: loginEmail,
         password: loginPassword
       });
-      
-      const token = response.data.token;
-      localStorage.setItem("beside_admin_token", token);
-      setAdminToken(token);
       setIsLoggedIn(true);
       toast.success("Accesso admin effettuato");
     } catch (error) {
@@ -104,21 +102,22 @@ export const AdminPage = () => {
     }
   };
 
-  const handleLogout = useCallback(() => {
-    localStorage.removeItem("beside_admin_token");
-    setAdminToken("");
+  const handleLogout = useCallback(async () => {
+    try {
+      await axios.post(`${API}/auth/logout`, {});
+    } catch (error) {
+      console.error("Admin logout error:", error);
+    }
     setIsLoggedIn(false);
     toast.success("Logout effettuato");
   }, []);
 
   const fetchData = useCallback(async () => {
     try {
-      const headers = { Authorization: `Bearer ${adminToken}` };
-      
       const [statsRes, usersRes, paymentsRes] = await Promise.all([
-        axios.get(`${API}/admin/stats`, { headers }),
-        axios.get(`${API}/admin/users`, { headers }),
-        axios.get(`${API}/admin/payments`, { headers })
+        axios.get(`${API}/admin/stats`),
+        axios.get(`${API}/admin/users`),
+        axios.get(`${API}/admin/payments`)
       ]);
       
       setStats(statsRes.data);
@@ -126,22 +125,21 @@ export const AdminPage = () => {
       setPayments(paymentsRes.data.payments);
     } catch (error) {
       if (error.response?.status === 403 || error.response?.status === 401) {
-        handleLogout();
+        setIsLoggedIn(false);
         toast.error("Sessione scaduta");
       }
     }
-  }, [adminToken, handleLogout]);
+  }, []);
 
   useEffect(() => {
-    if (isLoggedIn && adminToken) {
+    if (isLoggedIn) {
       fetchData();
     }
-  }, [isLoggedIn, adminToken, fetchData]);
+  }, [isLoggedIn, fetchData]);
 
   const handleSearchUsers = async () => {
     try {
-      const headers = { Authorization: `Bearer ${adminToken}` };
-      const response = await axios.get(`${API}/admin/users?search=${searchQuery}`, { headers });
+      const response = await axios.get(`${API}/admin/users`, { params: { search: searchQuery } });
       setUsers(response.data.users);
     } catch (error) {
       toast.error("Errore nella ricerca");
@@ -150,8 +148,7 @@ export const AdminPage = () => {
 
   const handleUpdateUser = async (userId, updates) => {
     try {
-      const headers = { Authorization: `Bearer ${adminToken}` };
-      await axios.put(`${API}/admin/users/${userId}`, updates, { headers });
+      await axios.put(`${API}/admin/users/${userId}`, updates);
       toast.success("Utente aggiornato");
       fetchData();
       setUserDialogOpen(false);
@@ -163,8 +160,7 @@ export const AdminPage = () => {
   const openChat = async (user) => {
     setSelectedUser(user);
     try {
-      const headers = { Authorization: `Bearer ${adminToken}` };
-      const response = await axios.get(`${API}/admin/chat/${user.user_id}`, { headers });
+      const response = await axios.get(`${API}/admin/chat/${user.user_id}`);
       setChatMessages(response.data);
       setChatDialogOpen(true);
     } catch (error) {
@@ -176,16 +172,15 @@ export const AdminPage = () => {
     if (!newMessage.trim()) return;
     
     try {
-      const headers = { Authorization: `Bearer ${adminToken}` };
       await axios.post(`${API}/admin/chat/send`, {
         user_id: selectedUser.user_id,
         message: newMessage
-      }, { headers });
+      });
       
       setNewMessage("");
       
       // Refresh chat
-      const response = await axios.get(`${API}/admin/chat/${selectedUser.user_id}`, { headers });
+      const response = await axios.get(`${API}/admin/chat/${selectedUser.user_id}`);
       setChatMessages(response.data);
       
       toast.success("Messaggio inviato");

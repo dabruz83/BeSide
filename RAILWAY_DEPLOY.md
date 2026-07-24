@@ -79,6 +79,10 @@ ADMIN_EMAIL=LA_TUA_EMAIL_ADMIN
 ADMIN_PASSWORD=INCOLLA_IL_SECONDO_SEGRETO
 CORS_ORIGINS=https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}
 FRONTEND_PUBLIC_URL=https://${{frontend.RAILWAY_PUBLIC_DOMAIN}}
+COOKIE_SECURE=true
+COOKIE_SAMESITE=lax
+RATE_LIMITING_ENABLED=true
+EMAIL_VERIFICATION_REQUIRED=false
 ```
 
 Non aggiungere virgolette e non aggiungere `/` alla fine di `CORS_ORIGINS`.
@@ -90,6 +94,12 @@ SENDGRID_API_KEY=LA_TUA_CHIAVE_SENDGRID
 SENDER_EMAIL=MITTENTE_VERIFICATO_IN_SENDGRID
 ADMIN_NOTIFICATION_EMAIL=EMAIL_CHE_RICEVE_LE_NUOVE_REGISTRAZIONI
 ```
+
+Solo dopo aver verificato il mittente SendGrid e inviato con successo una email di prova,
+porta `EMAIL_VERIFICATION_REQUIRED` a `true` e ridistribuisci il backend. Il backend rifiuta
+l'avvio se la verifica obbligatoria è attiva senza chiave e mittente, così le registrazioni
+non possono restare bloccate per errore. Gli utenti presenti prima dell'attivazione restano
+compatibili; i nuovi account dovranno verificare l'indirizzo prima del login.
 
 Variabili opzionali per le altre integrazioni già presenti:
 
@@ -145,7 +155,7 @@ Se queste due variabili non sono presenti, il login email/password continua a fu
 
 ## Migrazione automatica e rollback
 
-Al primo avvio del backend il servizio crea le aziende e aggiunge `company_id` ai record esistenti. La migrazione è idempotente e non elimina né rinomina campi: può essere eseguita più volte. I vecchi `user_id` restano nei documenti come autore del record.
+Al primo avvio del backend il servizio crea le aziende e aggiunge `company_id` ai record esistenti. La migrazione è idempotente e non elimina né rinomina campi: può essere eseguita più volte. I vecchi `user_id` restano nei documenti come autore del record. Crea inoltre indici TTL per sessioni e token nuovi, e conserva l'accesso degli utenti storici durante l'introduzione della verifica email.
 
 Prima del primo deploy di questo branch è comunque consigliato creare un backup MongoDB. Se devi tornare indietro, ridistribuisci il commit precedente: i campi aggiunti non impediscono al vecchio codice di leggere i dati.
 

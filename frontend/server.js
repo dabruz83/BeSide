@@ -1,6 +1,7 @@
 const fs = require("fs");
 const http = require("http");
 const path = require("path");
+const crypto = require("crypto");
 
 const DEFAULT_BUILD_DIRECTORY = path.join(__dirname, "build");
 const CONTENT_TYPES = {
@@ -15,7 +16,51 @@ const CONTENT_TYPES = {
   ".webmanifest": "application/manifest+json; charset=utf-8",
 };
 
-const sendFile = (request, response, filePath) => {
+const getBackendOrigin = () => {
+  try {
+    return new URL(process.env.REACT_APP_BACKEND_URL || "").origin;
+  } catch (_error) {
+    return "";
+  }
+};
+
+const inlineScriptHashes = (buildDirectory) => {
+  try {
+    const html = fs.readFileSync(path.join(buildDirectory, "index.html"), "utf8");
+    return [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)]
+      .map((match) => `'sha256-${crypto.createHash("sha256").update(match[1]).digest("base64")}'`);
+  } catch (_error) {
+    return [];
+  }
+};
+
+const securityHeaders = (buildDirectory) => {
+  const connectSources = ["'self'", "https://*.posthog.com", "https://*.i.posthog.com"];
+  const backendOrigin = getBackendOrigin();
+  if (backendOrigin) connectSources.push(backendOrigin);
+  return {
+    "Content-Security-Policy": [
+      "default-src 'self'",
+      "base-uri 'self'",
+      `connect-src ${connectSources.join(" ")}`,
+      "font-src 'self' https://fonts.gstatic.com data:",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      "img-src 'self' data: blob: https:",
+      "object-src 'none'",
+      `script-src 'self' https://*.i.posthog.com ${inlineScriptHashes(buildDirectory).join(" ")}`.trim(),
+      "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+      "upgrade-insecure-requests",
+    ].join("; "),
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+  };
+};
+
+const sendFile = (request, response, filePath, headers) => {
   const stream = fs.createReadStream(filePath);
   stream.on("error", () => {
     if (!response.headersSent) {
@@ -28,6 +73,7 @@ const sendFile = (request, response, filePath) => {
     path.basename(filePath),
   );
   response.writeHead(200, {
+    ...headers,
     "Content-Type": CONTENT_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream",
     "Cache-Control": mustRevalidate ? "no-cache" : "public, max-age=31536000, immutable",
   });
@@ -41,17 +87,30 @@ const sendFile = (request, response, filePath) => {
   stream.pipe(response);
 };
 
-const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => http.createServer(
-  (request, response) => {
+const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => {
+  const headers = securityHeaders(buildDirectory);
+  return http.createServer((request, response) => {
     if (!request.url || !["GET", "HEAD"].includes(request.method)) {
-      response.writeHead(405, { "Content-Type": "text/plain; charset=utf-8" });
+      response.writeHead(405, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
       response.end("Method not allowed");
       return;
     }
 
-    const pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+    let pathname;
+    try {
+      pathname = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
+    } catch (_error) {
+      response.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Bad request");
+      return;
+    }
+    if (pathname.includes("\0")) {
+      response.writeHead(400, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
+      response.end("Bad request");
+      return;
+    }
     if (pathname === "/health") {
-      response.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+      response.writeHead(200, { ...headers, "Content-Type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ status: "healthy", service: "frontend" }));
       return;
     }
@@ -60,21 +119,21 @@ const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => http.cr
     const requestedPath = path.resolve(buildDirectory, relativePath || "index.html");
     const buildPrefix = `${path.resolve(buildDirectory)}${path.sep}`;
     if (requestedPath !== path.resolve(buildDirectory) && !requestedPath.startsWith(buildPrefix)) {
-      response.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+      response.writeHead(403, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
       response.end("Forbidden");
       return;
     }
 
     fs.stat(requestedPath, (error, stats) => {
       if (!error && stats.isFile()) {
-        sendFile(request, response, requestedPath);
+        sendFile(request, response, requestedPath, headers);
         return;
       }
 
-      sendFile(request, response, path.join(buildDirectory, "index.html"));
+      sendFile(request, response, path.join(buildDirectory, "index.html"), headers);
     });
-  },
-);
+  });
+};
 
 if (require.main === module) {
   const port = Number.parseInt(process.env.PORT || "3000", 10);

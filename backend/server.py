@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -19,7 +19,10 @@ import httpx
 import secrets
 import csv
 import io
+import html
+import re
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from multitenancy import (
     COMPANY_ROLES,
@@ -67,6 +70,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
 PASSWORD_RESET_TOKEN_MINUTES = 30
 EMAIL_VERIFICATION_TOKEN_HOURS = 24
+PUBLIC_LINK_TOKEN_DAYS = 30
 if len(JWT_SECRET) < 32:
     raise RuntimeError('JWT_SECRET_KEY must contain at least 32 characters')
 
@@ -89,10 +93,37 @@ FRONTEND_PUBLIC_URL = (
 OAUTH_SESSION_URL = os.environ.get('OAUTH_SESSION_URL', '').strip()
 
 
+def get_boolean_environment_variable(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    normalized = value.strip().lower()
+    if normalized not in {"true", "false"}:
+        raise RuntimeError(f"{name} must be true or false")
+    return normalized == "true"
+
+
+EMAIL_VERIFICATION_REQUIRED = get_boolean_environment_variable(
+    "EMAIL_VERIFICATION_REQUIRED", False
+)
+RATE_LIMITING_ENABLED = get_boolean_environment_variable("RATE_LIMITING_ENABLED", True)
+COOKIE_SECURE = get_boolean_environment_variable("COOKIE_SECURE", True)
+COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "lax").strip().lower()
+if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
+    raise RuntimeError("COOKIE_SAMESITE must be lax, strict, or none")
+if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
+    raise RuntimeError("COOKIE_SECURE must be true when COOKIE_SAMESITE=none")
+if EMAIL_VERIFICATION_REQUIRED and (not SENDGRID_API_KEY or not SENDER_EMAIL):
+    raise RuntimeError(
+        "SENDGRID_API_KEY and SENDER_EMAIL are required when email verification is enforced"
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
+        await synchronize_platform_admin_password()
         logger.info("Multi-tenant migration completed: %s", stats)
         yield
     finally:
@@ -152,15 +183,15 @@ USER_ROLES = list(COMPANY_ROLES)
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
-    first_name: str = ""
-    business_name: str
-    team_size: int = 1
-    services: List[str] = []
+    first_name: str = Field(default="", max_length=100)
+    business_name: str = Field(min_length=1, max_length=200)
+    team_size: int = Field(default=1, ge=1, le=1000)
+    services: List[str] = Field(default_factory=list, max_length=20)
     tax_regime: str = "forfettario_15"
 
 class UserLogin(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
 
 class EmailRequest(BaseModel):
     email: EmailStr
@@ -208,17 +239,17 @@ class UserUpdate(BaseModel):
 
 # Job Models
 class JobCreate(BaseModel):
-    client_name: str
+    client_name: str = Field(min_length=1, max_length=200)
     client_email: Optional[str] = None
-    job_type: str
-    vehicle_type: str
-    vehicle_info: Optional[str] = None
-    quote_amount: float
-    hours_worked: float
-    materials_cost: float
-    waste_percentage: Optional[float] = None
-    lead_source: Optional[str] = None
-    notes: Optional[str] = None
+    job_type: str = Field(max_length=50)
+    vehicle_type: str = Field(max_length=50)
+    vehicle_info: Optional[str] = Field(default=None, max_length=500)
+    quote_amount: float = Field(ge=0)
+    hours_worked: float = Field(ge=0)
+    materials_cost: float = Field(ge=0)
+    waste_percentage: Optional[float] = Field(default=None, ge=0, le=1)
+    lead_source: Optional[str] = Field(default=None, max_length=100)
+    notes: Optional[str] = Field(default=None, max_length=4000)
     is_quote: bool = False  # True = preventivo, False = lavoro completato
 
 class JobResponse(BaseModel):
@@ -247,8 +278,8 @@ class JobResponse(BaseModel):
 # Quote Models
 class QuoteAcceptance(BaseModel):
     accepted: bool
-    client_signature: Optional[str] = None
-    notes: Optional[str] = None
+    client_signature: Optional[str] = Field(default=None, max_length=500)
+    notes: Optional[str] = Field(default=None, max_length=4000)
 
 # Tax Models
 class TaxCalculationRequest(BaseModel):
@@ -306,12 +337,17 @@ class TaxAccrualCreate(BaseModel):
 
 # Client Onboarding Models
 class OnboardingCreate(BaseModel):
-    client_name: str
+    client_name: str = Field(min_length=1, max_length=200)
     client_email: EmailStr
-    vehicle_info: Optional[str] = None
+    vehicle_info: Optional[str] = Field(default=None, max_length=500)
+
+class ChecklistItemUpdate(BaseModel):
+    item: str = Field(min_length=1, max_length=200)
+    completed: bool
+    uploaded_file: Optional[str] = Field(default=None, max_length=1000)
 
 class OnboardingClientUpdate(BaseModel):
-    checklist_items: List[Dict[str, Any]]
+    checklist_items: List[ChecklistItemUpdate] = Field(max_length=50)
 
 # Marketing Effort Models
 class MarketingEffortCreate(BaseModel):
@@ -333,8 +369,11 @@ class AdminUserUpdate(BaseModel):
     is_active: Optional[bool] = None
 
 class AdminChatMessage(BaseModel):
-    user_id: str
-    message: str
+    user_id: str = Field(min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=4000)
+
+class ChatMessageCreate(BaseModel):
+    message: str = Field(min_length=1, max_length=4000)
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -351,9 +390,132 @@ def validate_password_strength(password: str) -> None:
         raise HTTPException(status_code=400, detail="La password deve contenere almeno 10 caratteri")
     if len(password) > 128:
         raise HTTPException(status_code=400, detail="La password è troppo lunga")
+    if not any(character.isalpha() for character in password) or not any(
+        character.isdigit() for character in password
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="La password deve contenere almeno una lettera e un numero",
+        )
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# Keep the unknown-user login path close to the same bcrypt cost as a real user.
+DUMMY_PASSWORD_HASH = bcrypt.hashpw(
+    b"beside-dummy-password-never-used",
+    bcrypt.gensalt(rounds=12),
+).decode()
+
+
+def set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        secure=COOKIE_SECURE,
+        samesite=COOKIE_SAMESITE,
+        max_age=JWT_EXPIRATION_DAYS * 24 * 60 * 60,
+        path="/",
+    )
+
+
+def clear_session_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key="session_token",
+        path="/",
+        secure=COOKIE_SECURE,
+        httponly=True,
+        samesite=COOKIE_SAMESITE,
+    )
+
+
+async def synchronize_platform_admin_password() -> None:
+    """Make the Railway secret authoritative and invalidate older admin passwords."""
+    admin_user = await db.users.find_one(
+        {"email": normalize_email(ADMIN_EMAIL), "platform_role": "super_admin"},
+        {"_id": 0},
+    )
+    if not admin_user:
+        return
+    password_matches = False
+    try:
+        password_matches = verify_password(ADMIN_PASSWORD, admin_user.get("password_hash", ""))
+    except (TypeError, ValueError):
+        password_matches = False
+    if password_matches:
+        return
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"user_id": admin_user["user_id"], "platform_role": "super_admin"},
+        {"$set": {
+            "password_hash": hash_password(ADMIN_PASSWORD),
+            "admin_password_rotated_at": now_iso,
+            "updated_at": now_iso,
+        }},
+    )
+    await db.user_sessions.update_many(
+        {"user_id": admin_user["user_id"], "revoked_at": None},
+        {"$set": {"revoked_at": now_iso}},
+    )
+
+
+def email_verification_blocks_access(user: Dict[str, Any]) -> bool:
+    return bool(
+        EMAIL_VERIFICATION_REQUIRED
+        and not user.get("email_verified", False)
+        and not user.get("email_verification_exempt", False)
+    )
+
+
+def request_client_identifier(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
+
+async def enforce_rate_limit(
+    request: Request,
+    scope: str,
+    *,
+    limit: int,
+    window_seconds: int,
+    identifier: str = "",
+) -> None:
+    """Distributed fixed-window limit stored in MongoDB, without raw PII keys."""
+    if not RATE_LIMITING_ENABLED:
+        return
+    now = datetime.now(timezone.utc)
+    bucket = int(now.timestamp()) // window_seconds
+    raw_key = "|".join(
+        (scope, request_client_identifier(request), identifier.strip().lower(), str(bucket))
+    )
+    key = hmac.new(JWT_SECRET.encode(), raw_key.encode(), hashlib.sha256).hexdigest()
+    expires_at = datetime.fromtimestamp(
+        (bucket + 2) * window_seconds,
+        tz=timezone.utc,
+    )
+    rate_limit = await db.rate_limits.find_one_and_update(
+        {"key": key},
+        {
+            "$inc": {"count": 1},
+            "$setOnInsert": {
+                "scope": scope,
+                "window_started_at": datetime.fromtimestamp(
+                    bucket * window_seconds, tz=timezone.utc
+                ),
+                "expires_at": expires_at,
+            },
+        },
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    if rate_limit and rate_limit.get("count", 0) > limit:
+        retry_after = max(1, int((expires_at - now).total_seconds()) - window_seconds)
+        raise HTTPException(
+            status_code=429,
+            detail="Troppi tentativi. Riprova più tardi.",
+            headers={"Retry-After": str(retry_after)},
+        )
 
 def create_jwt_token(
     user_id: str,
@@ -417,6 +579,7 @@ async def create_authenticated_session(user: Dict[str, Any]) -> str:
         "token_hash": hash_token(token),
         "session_type": "jwt",
         "expires_at": (now + timedelta(days=JWT_EXPIRATION_DAYS)).isoformat(),
+        "expires_at_dt": now + timedelta(days=JWT_EXPIRATION_DAYS),
         "created_at": now.isoformat(),
         "revoked_at": None,
     })
@@ -462,7 +625,10 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
     if session and session.get("session_type") != "jwt":
         if _session_expired(session):
             raise HTTPException(status_code=401, detail="Sessione scaduta")
-        return await _load_active_user(session["user_id"])
+        user = await _load_active_user(session["user_id"])
+        if email_verification_blocks_access(user):
+            raise HTTPException(status_code=403, detail="Verifica l'email prima di continuare")
+        return user
 
     try:
         payload = decode_jwt_token(token)
@@ -473,7 +639,10 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
         if payload.get("jti"):
             if not session or session.get("jti") != payload["jti"] or _session_expired(session):
                 raise HTTPException(status_code=401, detail="Sessione revocata o scaduta")
-        return await _load_active_user(payload["user_id"])
+        user = await _load_active_user(payload["user_id"])
+        if email_verification_blocks_access(user):
+            raise HTTPException(status_code=403, detail="Verifica l'email prima di continuare")
+        return user
     except HTTPException:
         raise
     except Exception:
@@ -507,12 +676,16 @@ async def audit_event(
     request: Optional[Request] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
+    client_identifier = request_client_identifier(request) if request else ""
     await db.audit_logs.insert_one({
         "audit_id": f"audit_{uuid.uuid4().hex[:16]}",
         "event": event,
         "user_id": user_id or (user or {}).get("user_id"),
         "company_id": company_id or (user or {}).get("company_id"),
-        "ip_address": request.client.host if request and request.client else None,
+        "ip_hash": (
+            hmac.new(JWT_SECRET.encode(), client_identifier.encode(), hashlib.sha256).hexdigest()
+            if client_identifier else None
+        ),
         "user_agent": request.headers.get("User-Agent") if request else None,
         "metadata": metadata or {},
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1022,7 +1195,10 @@ async def send_email_sendgrid(to_email: str, subject: str, html_content: str):
 
 async def send_registration_notification(user_email: str, business_name: str, registration_date: str):
     """Send notification email to admin when a new user registers"""
-    subject = f"🎉 Nuova registrazione BESIDE: {business_name}"
+    safe_business_name = html.escape(business_name)
+    safe_user_email = html.escape(user_email)
+    safe_registration_date = html.escape(registration_date)
+    subject = f"Nuova registrazione BESIDE: {business_name[:100]}"
     
     html_content = f"""
     <!DOCTYPE html>
@@ -1048,15 +1224,15 @@ async def send_registration_notification(user_email: str, business_name: str, re
             <div class="content">
                 <div class="field">
                     <div class="label">Nome Attività</div>
-                    <div class="value">{business_name}</div>
+                    <div class="value">{safe_business_name}</div>
                 </div>
                 <div class="field">
                     <div class="label">Email</div>
-                    <div class="value">{user_email}</div>
+                    <div class="value">{safe_user_email}</div>
                 </div>
                 <div class="field">
                     <div class="label">Data Registrazione</div>
-                    <div class="value">{registration_date}</div>
+                    <div class="value">{safe_registration_date}</div>
                 </div>
             </div>
             <div class="footer">
@@ -1108,6 +1284,7 @@ async def create_one_time_token(
         "company_id": user["company_id"],
         "created_at": now.isoformat(),
         "expires_at": (now + lifetime).isoformat(),
+        "expires_at_dt": now + lifetime,
         "used_at": None,
     })
     return token
@@ -1117,8 +1294,16 @@ async def create_one_time_token(
 @api_router.post("/auth/register")
 async def register(user_data: UserCreate, background_tasks: BackgroundTasks, request: Request):
     """Register a new user with email/password"""
+    await enforce_rate_limit(request, "auth_register", limit=5, window_seconds=3600)
     validate_password_strength(user_data.password)
     email = normalize_email(str(user_data.email))
+    business_name = user_data.business_name.strip()
+    if not business_name:
+        raise HTTPException(status_code=400, detail="Nome attività richiesto")
+    if user_data.tax_regime not in TAX_REGIMES:
+        raise HTTPException(status_code=400, detail="Regime fiscale non valido")
+    if not set(user_data.services).issubset({"ppf", "wrap", "tint", "upholstery"}):
+        raise HTTPException(status_code=400, detail="Servizio non valido")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=400, detail="Email già registrata")
@@ -1131,7 +1316,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
 
     company_doc = {
         "company_id": company_id,
-        "name": user_data.business_name.strip(),
+        "name": business_name,
         "owner_user_id": user_id,
         "status": "active",
         "subscription_status": "trialing",
@@ -1150,7 +1335,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         "password_hash": hash_password(user_data.password),
         "first_name": user_data.first_name,
         "full_name": user_data.first_name,
-        "business_name": user_data.business_name,
+        "business_name": business_name,
         "team_size": user_data.team_size,
         "services": user_data.services,
         "tax_regime": user_data.tax_regime,
@@ -1160,13 +1345,20 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         "role": "owner",
         "is_active": True,
         "email_verified": False,
+        "email_verification_exempt": False,
         "created_at": now_iso,
         "updated_at": now_iso,
         "last_login_at": None,
     }
 
     await db.companies.insert_one(company_doc)
-    await db.users.insert_one(user_doc)
+    try:
+        await db.users.insert_one(user_doc)
+    except DuplicateKeyError:
+        # A concurrent registration won the unique-email race. Remove only the
+        # company created by this request, leaving existing data untouched.
+        await db.companies.delete_one({"company_id": company_id, "owner_user_id": user_id})
+        raise HTTPException(status_code=400, detail="Email già registrata")
     verification_token = await create_one_time_token(
         db.email_verification_tokens,
         user_doc,
@@ -1177,7 +1369,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
     background_tasks.add_task(
         send_registration_notification,
         email,
-        user_data.business_name,
+        business_name,
         now_formatted,
     )
     background_tasks.add_task(send_email_verification, email, verification_token)
@@ -1186,10 +1378,11 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         "user_id": user_id,
         "company_id": company_id,
         "email": email,
-        "business_name": user_data.business_name,
+        "business_name": business_name,
         "trial_started_at": company_doc["trial_started_at"],
         "trial_ends_at": company_doc["trial_ends_at"],
         "subscription_status": "trialing",
+        "email_verification_required": EMAIL_VERIFICATION_REQUIRED,
         "message": "Registrazione completata. Controlla la tua email per verificare l'account."
     }
 
@@ -1197,14 +1390,21 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
 async def login(user_data: UserLogin, response: Response, request: Request):
     """Login with email/password"""
     email = normalize_email(str(user_data.email))
+    await enforce_rate_limit(
+        request,
+        "auth_login_email",
+        limit=10,
+        window_seconds=15 * 60,
+        identifier=email,
+    )
+    await enforce_rate_limit(request, "auth_login_ip", limit=30, window_seconds=15 * 60)
     if email == normalize_email(ADMIN_EMAIL):
-        raise HTTPException(
-            status_code=401,
-            detail="Per accedere come admin, usa la pagina /admin"
-        )
+        verify_password(user_data.password, DUMMY_PASSWORD_HASH)
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
 
     user = await db.users.find_one({"email": email}, {"_id": 0})
     if not user:
+        verify_password(user_data.password, DUMMY_PASSWORD_HASH)
         raise HTTPException(status_code=401, detail="Email o password non corretti")
 
     try:
@@ -1213,6 +1413,9 @@ async def login(user_data: UserLogin, response: Response, request: Request):
         password_valid = False
     if not password_valid:
         raise HTTPException(status_code=401, detail="Email o password non corretti")
+
+    if email_verification_blocks_access(user):
+        raise HTTPException(status_code=403, detail="Verifica l'email prima di accedere")
 
     user = await _load_active_user(user["user_id"])
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1224,21 +1427,14 @@ async def login(user_data: UserLogin, response: Response, request: Request):
     token = await create_authenticated_session(user)
     await audit_event("login", user=user, request=request)
 
-    response.set_cookie(
-        key="session_token",
-        value=token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=JWT_EXPIRATION_DAYS * 24 * 60 * 60,
-        path="/"
-    )
+    set_session_cookie(response, token)
 
-    return {"token": token, "user": public_user(user)}
+    return {"user": public_user(user)}
 
 @api_router.post("/auth/session")
 async def process_google_session(request: Request, response: Response):
     """Process Google OAuth session_id and create local session"""
+    await enforce_rate_limit(request, "auth_oauth", limit=10, window_seconds=15 * 60)
     if not OAUTH_SESSION_URL:
         raise HTTPException(status_code=503, detail="Accesso Google non configurato")
     body = await request.json()
@@ -1270,7 +1466,13 @@ async def process_google_session(request: Request, response: Response):
     if user:
         await db.users.update_one(
             {"email": email},
-            {"$set": {"name": name, "full_name": name or user.get("full_name", ""), "picture": picture}}
+            {"$set": {
+                "name": name,
+                "full_name": name or user.get("full_name", ""),
+                "picture": picture,
+                "email_verified": True,
+                "email_verification_exempt": False,
+            }}
         )
         user_id = user["user_id"]
     else:
@@ -1309,6 +1511,7 @@ async def process_google_session(request: Request, response: Response):
             "role": "owner",
             "is_active": True,
             "email_verified": True,
+            "email_verification_exempt": False,
             "created_at": now,
             "updated_at": now,
             "last_login_at": None,
@@ -1325,6 +1528,7 @@ async def process_google_session(request: Request, response: Response):
         "token_hash": hash_token(session_token),
         "session_type": "oauth",
         "expires_at": expires_at.isoformat(),
+        "expires_at_dt": expires_at,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "revoked_at": None,
     })
@@ -1337,17 +1541,9 @@ async def process_google_session(request: Request, response: Response):
         await audit_event("registration", user=user, request=request, metadata={"provider": "oauth"})
     await audit_event("login", user=user, request=request, metadata={"provider": "oauth"})
 
-    response.set_cookie(
-        key="session_token",
-        value=session_token,
-        httponly=True,
-        secure=True,
-        samesite="none",
-        max_age=7 * 24 * 60 * 60,
-        path="/"
-    )
+    set_session_cookie(response, session_token)
     
-    return {"user": public_user(user), "session_token": session_token}
+    return {"user": public_user(user)}
 
 @api_router.get("/auth/me")
 async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
@@ -1391,6 +1587,13 @@ async def update_profile(
 async def forgot_password(data: EmailRequest, background_tasks: BackgroundTasks, request: Request):
     """Always return the same response to prevent account enumeration."""
     email = normalize_email(str(data.email))
+    await enforce_rate_limit(
+        request,
+        "auth_forgot_password",
+        limit=5,
+        window_seconds=30 * 60,
+        identifier=email,
+    )
     user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
     if user and user.get("password_hash") and user.get("company_id"):
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1409,6 +1612,7 @@ async def forgot_password(data: EmailRequest, background_tasks: BackgroundTasks,
 
 @api_router.post("/auth/reset-password")
 async def reset_password(data: PasswordResetRequest, request: Request):
+    await enforce_rate_limit(request, "auth_reset_password", limit=10, window_seconds=30 * 60)
     validate_password_strength(data.password)
     now_iso = datetime.now(timezone.utc).isoformat()
     token_doc = await db.password_reset_tokens.find_one_and_update(
@@ -1442,11 +1646,26 @@ async def reset_password(data: PasswordResetRequest, request: Request):
 
 @api_router.post("/auth/email-verification/request")
 async def request_email_verification(
+    data: EmailRequest,
     background_tasks: BackgroundTasks,
-    current_user: Dict = Depends(get_current_user),
+    request: Request,
 ):
-    if current_user.get("email_verified"):
-        return {"message": "Indirizzo email già verificato."}
+    """Resend generically so unverified users can recover without a session."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(
+        request,
+        "auth_email_verification_request",
+        limit=5,
+        window_seconds=60 * 60,
+        identifier=email,
+    )
+    current_user = await db.users.find_one(
+        {"email": email, "is_active": {"$ne": False}},
+        {"_id": 0},
+    )
+    generic_message = "Se l'indirizzo è registrato e non verificato, riceverai una nuova email."
+    if not current_user or current_user.get("email_verified"):
+        return {"message": generic_message}
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.email_verification_tokens.update_many(
         {
@@ -1462,10 +1681,11 @@ async def request_email_verification(
         timedelta(hours=EMAIL_VERIFICATION_TOKEN_HOURS),
     )
     background_tasks.add_task(send_email_verification, current_user["email"], token)
-    return {"message": "Email di verifica inviata."}
+    return {"message": generic_message}
 
 @api_router.post("/auth/email-verification/verify")
-async def verify_email(data: TokenRequest):
+async def verify_email(data: TokenRequest, request: Request):
+    await enforce_rate_limit(request, "auth_email_verification", limit=10, window_seconds=60 * 60)
     now_iso = datetime.now(timezone.utc).isoformat()
     token_doc = await db.email_verification_tokens.find_one_and_update(
         {
@@ -1480,8 +1700,18 @@ async def verify_email(data: TokenRequest):
         raise HTTPException(status_code=400, detail="Token non valido, già usato o scaduto")
     await db.users.update_one(
         {"user_id": token_doc["user_id"], "company_id": token_doc["company_id"]},
-        {"$set": {"email_verified": True, "updated_at": now_iso}},
+        {"$set": {
+            "email_verified": True,
+            "email_verification_exempt": False,
+            "updated_at": now_iso,
+        }},
     )
+    user = await db.users.find_one(
+        {"user_id": token_doc["user_id"], "company_id": token_doc["company_id"]},
+        {"_id": 0},
+    )
+    if user:
+        await audit_event("email_verified", user=user, request=request)
     return {"message": "Indirizzo email verificato."}
 
 @api_router.post("/auth/logout")
@@ -1499,7 +1729,7 @@ async def logout(request: Request, response: Response):
             {"$set": {"revoked_at": now_iso}, "$unset": {"session_token": ""}},
         )
 
-    response.delete_cookie(key="session_token", path="/", secure=True, samesite="none")
+    clear_session_cookie(response)
     return {"message": "Logout effettuato"}
 
 # ==================== COMPANY & ROLE ENDPOINTS ====================
@@ -1599,14 +1829,14 @@ async def create_job(
     # Generate quote link if it's a quote
     quote_link = None
     if job_data.is_quote:
-        quote_token = uuid.uuid4().hex
-        origin = request.headers.get("origin", "")
-        quote_link = f"{origin}/quote/{quote_token}"
+        quote_token = secrets.token_urlsafe(32)
+        quote_link = f"{FRONTEND_PUBLIC_URL}/quote/{quote_token}"
         await db.quote_tokens.insert_one({
             "token": quote_token,
             "job_id": job_id,
             "company_id": current_user["company_id"],
-            "created_at": now.isoformat()
+            "created_at": now.isoformat(),
+            "expires_at": (now + timedelta(days=PUBLIC_LINK_TOKEN_DAYS)).isoformat(),
         })
 
     job_doc = company_document(current_user, **{
@@ -1647,8 +1877,8 @@ async def create_job(
 
 @api_router.get("/jobs", response_model=List[JobResponse])
 async def get_jobs(
-    limit: int = 50,
-    skip: int = 0,
+    limit: int = Query(default=50, ge=1, le=500),
+    skip: int = Query(default=0, ge=0),
     job_type: Optional[str] = None,
     vehicle_type: Optional[str] = None,
     is_quote: Optional[bool] = None,
@@ -1689,10 +1919,14 @@ async def delete_job(
 
 # Public quote viewing and acceptance
 @api_router.get("/quote/{token}")
-async def get_public_quote(token: str):
+async def get_public_quote(token: str, request: Request):
     """Public endpoint to view a quote"""
+    await enforce_rate_limit(request, "public_quote_view", limit=60, window_seconds=60 * 60)
     quote_token = await db.quote_tokens.find_one({"token": token}, {"_id": 0})
-    if not quote_token:
+    if not quote_token or (
+        quote_token.get("expires_at")
+        and parse_datetime(quote_token["expires_at"]) <= datetime.now(timezone.utc)
+    ):
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
     job = await db.jobs.find_one(
@@ -1725,10 +1959,14 @@ async def get_public_quote(token: str):
     }
 
 @api_router.post("/quote/{token}/accept")
-async def accept_quote(token: str, acceptance: QuoteAcceptance):
+async def accept_quote(token: str, acceptance: QuoteAcceptance, request: Request):
     """Public endpoint to accept or reject a quote"""
+    await enforce_rate_limit(request, "public_quote_accept", limit=20, window_seconds=60 * 60)
     quote_token = await db.quote_tokens.find_one({"token": token}, {"_id": 0})
-    if not quote_token:
+    if not quote_token or (
+        quote_token.get("expires_at")
+        and parse_datetime(quote_token["expires_at"]) <= datetime.now(timezone.utc)
+    ):
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
     job = await db.jobs.find_one(
@@ -2423,11 +2661,10 @@ async def create_onboarding(
 ):
     """Create a new client onboarding"""
     onboarding_id = f"onb_{uuid.uuid4().hex[:12]}"
-    unique_link_token = uuid.uuid4().hex
+    unique_link_token = secrets.token_urlsafe(32)
     now = datetime.now(timezone.utc)
     
-    origin = request.headers.get("origin", "")
-    unique_link = f"{origin}/onboarding/client/{unique_link_token}"
+    unique_link = f"{FRONTEND_PUBLIC_URL}/onboarding/client/{unique_link_token}"
     
     onboarding_doc = {
         "onboarding_id": onboarding_id,
@@ -2440,6 +2677,7 @@ async def create_onboarding(
         "checklist_items": DEFAULT_CHECKLIST.copy(),
         "unique_link": unique_link,
         "unique_link_token": unique_link_token,
+        "link_expires_at": (now + timedelta(days=PUBLIC_LINK_TOKEN_DAYS)).isoformat(),
         "created_at": now.isoformat(),
         "completed_at": None
     }
@@ -2473,28 +2711,51 @@ async def get_onboarding(onboarding_id: str, current_user: Dict = Depends(get_cu
     return onboarding
 
 @api_router.get("/onboarding/client/{token}")
-async def get_client_onboarding(token: str):
+async def get_client_onboarding(token: str, request: Request):
     """Public endpoint for client to view their onboarding checklist"""
+    await enforce_rate_limit(request, "public_onboarding_view", limit=60, window_seconds=60 * 60)
     onboarding = await db.onboardings.find_one(
         {"unique_link_token": token},
         {"_id": 0, "unique_link_token": 0, "user_id": 0, "company_id": 0}
     )
-    if not onboarding:
+    if not onboarding or (
+        onboarding.get("link_expires_at")
+        and parse_datetime(onboarding["link_expires_at"]) <= datetime.now(timezone.utc)
+    ):
         raise HTTPException(status_code=404, detail="Link non valido o scaduto")
     return onboarding
 
 @api_router.put("/onboarding/client/{token}")
-async def update_client_onboarding(token: str, update_data: OnboardingClientUpdate):
+async def update_client_onboarding(token: str, update_data: OnboardingClientUpdate, request: Request):
     """Public endpoint for client to update their onboarding checklist"""
+    await enforce_rate_limit(request, "public_onboarding_update", limit=20, window_seconds=60 * 60)
     onboarding = await db.onboardings.find_one({"unique_link_token": token}, {"_id": 0})
-    if not onboarding:
+    if not onboarding or (
+        onboarding.get("link_expires_at")
+        and parse_datetime(onboarding["link_expires_at"]) <= datetime.now(timezone.utc)
+    ):
         raise HTTPException(status_code=404, detail="Link non valido o scaduto")
-    
-    all_completed = all(item.get("completed", False) for item in update_data.checklist_items)
+
+    original_items = onboarding.get("checklist_items", [])
+    submitted_items = [item.model_dump() for item in update_data.checklist_items]
+    if len(submitted_items) != len(original_items) or any(
+        submitted.get("item") != original.get("item")
+        for submitted, original in zip(submitted_items, original_items)
+    ):
+        raise HTTPException(status_code=400, detail="Checklist non valida")
+    safe_items = [
+        {
+            **original,
+            "completed": submitted["completed"],
+            "uploaded_file": submitted.get("uploaded_file") or original.get("uploaded_file"),
+        }
+        for submitted, original in zip(submitted_items, original_items)
+    ]
+    all_completed = all(item.get("completed", False) for item in safe_items)
     now = datetime.now(timezone.utc)
     
     update_fields = {
-        "checklist_items": [item for item in update_data.checklist_items],
+        "checklist_items": safe_items,
         "status": "complete" if all_completed else "in_progress"
     }
     
@@ -2814,7 +3075,15 @@ async def get_dashboard_metrics(current_user: Dict = Depends(get_current_user)):
 async def admin_login(user_data: UserLogin, response: Response, request: Request):
     """Admin login endpoint"""
     email = normalize_email(str(user_data.email))
+    await enforce_rate_limit(
+        request,
+        "admin_login",
+        limit=5,
+        window_seconds=15 * 60,
+        identifier=email,
+    )
     if email != normalize_email(ADMIN_EMAIL):
+        verify_password(user_data.password, DUMMY_PASSWORD_HASH)
         raise HTTPException(status_code=401, detail="Credenziali non valide")
 
     admin_user = await db.users.find_one({"email": email}, {"_id": 0})
@@ -2824,11 +3093,9 @@ async def admin_login(user_data: UserLogin, response: Response, request: Request
             password_valid = verify_password(user_data.password, admin_user["password_hash"])
         except (TypeError, ValueError):
             password_valid = False
-        if not password_valid:
-            password_valid = hmac.compare_digest(user_data.password, ADMIN_PASSWORD)
     else:
-        # Bootstrap compatibility: the clear credential exists only in the
-        # Railway environment and is immediately persisted as a bcrypt hash.
+        # First bootstrap only. Subsequent logins use the persisted bcrypt hash;
+        # startup synchronizes intentional rotations from the Railway secret.
         password_valid = hmac.compare_digest(user_data.password, ADMIN_PASSWORD)
 
     if not password_valid:
@@ -2862,6 +3129,7 @@ async def admin_login(user_data: UserLogin, response: Response, request: Request
             "role": "admin",
             "platform_role": "super_admin",
             "email_verified": True,
+            "email_verification_exempt": False,
             "is_active": True,
             "created_at": now_iso,
             "updated_at": now_iso,
@@ -2877,6 +3145,7 @@ async def admin_login(user_data: UserLogin, response: Response, request: Request
                 "role": "admin",
                 "platform_role": "super_admin",
                 "email_verified": True,
+                "email_verification_exempt": False,
                 "is_active": True,
                 "last_login_at": now_iso,
                 "updated_at": now_iso,
@@ -2886,21 +3155,23 @@ async def admin_login(user_data: UserLogin, response: Response, request: Request
     admin_user = await _load_active_user(admin_user["user_id"])
     token = await create_authenticated_session(admin_user)
     await audit_event("login", user=admin_user, request=request, metadata={"platform_admin": True})
-    return {"token": token, "user": public_user(admin_user)}
+    set_session_cookie(response, token)
+    return {"user": public_user(admin_user)}
 
 @api_router.get("/admin/users")
 async def admin_get_users(
-    skip: int = 0,
-    limit: int = 50,
-    search: Optional[str] = None,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    search: Optional[str] = Query(default=None, max_length=200),
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Get all users (admin only)"""
     query = {"platform_role": {"$ne": "super_admin"}}
     if search:
+        safe_search = re.escape(search.strip())
         query["$or"] = [
-            {"email": {"$regex": search, "$options": "i"}},
-            {"business_name": {"$regex": search, "$options": "i"}}
+            {"email": {"$regex": safe_search, "$options": "i"}},
+            {"business_name": {"$regex": safe_search, "$options": "i"}}
         ]
     
     users = await db.users.find(query, {"_id": 0, "password_hash": 0}).skip(skip).limit(limit).to_list(limit)
@@ -3047,8 +3318,8 @@ async def admin_get_stats(admin_user: Dict = Depends(get_admin_user)):
 
 @api_router.get("/admin/payments")
 async def admin_get_payments(
-    skip: int = 0,
-    limit: int = 50,
+    skip: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
     admin_user: Dict = Depends(get_admin_user)
 ):
     """Get all payment transactions (admin only)"""
@@ -3115,7 +3386,7 @@ async def get_user_chat_messages(current_user: Dict = Depends(get_current_user))
 
 @api_router.post("/chat/send")
 async def user_send_chat(
-    message: str,
+    message_data: ChatMessageCreate,
     current_user: Dict = Depends(require_company_roles("owner", "admin", "member", "viewer")),
 ):
     """Send a chat message to admin"""
@@ -3128,7 +3399,7 @@ async def user_send_chat(
         "user_id": current_user["user_id"],
         "sender_type": "user",
         "sender_id": current_user["user_id"],
-        "message": message,
+        "message": message_data.message,
         "read": False,
         "created_at": now
     }
@@ -3186,6 +3457,23 @@ async def get_subscription_tiers():
             {"id": "elite", "name": "Elite", "price": 397.00, "features": ["Configuratore white-label", "Chiamata strategica mensile", "Supporto WhatsApp illimitato", "Richieste custom"]}
         ]
     }
+
+
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), payment=()",
+    )
+    response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    response.headers.setdefault("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")
+    if request.url.path.startswith(("/api/auth/", "/api/admin/", "/api/quote/", "/api/onboarding/client/")):
+        response.headers.setdefault("Cache-Control", "no-store")
+    return response
 
 # Include the router in the main app
 app.include_router(api_router)

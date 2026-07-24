@@ -55,6 +55,9 @@ def test_public_api_root_is_available():
 
     assert response.status_code == 200
     assert response.json()["message"].startswith("BESIDE API")
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in response.headers["content-security-policy"]
 
 
 def test_health_check_returns_503_when_database_is_unavailable(monkeypatch):
@@ -229,7 +232,11 @@ def test_cash_plan_summary_warns_gently_on_first_critical_forecast_month():
 
 
 def matches_query(document, query):
+    if "$or" in query and not any(matches_query(document, item) for item in query["$or"]):
+        return False
     for key, expected in query.items():
+        if key == "$or":
+            continue
         actual = document.get(key)
         if isinstance(expected, dict):
             if "$ne" in expected and actual == expected["$ne"]:
@@ -325,11 +332,22 @@ class InMemoryCollection:
                 matched_count += 1
         return SimpleNamespace(matched_count=matched_count, modified_count=matched_count)
 
-    async def find_one_and_update(self, query, update, return_document=None):
+    async def find_one_and_update(self, query, update, return_document=None, upsert=False):
         matching = next((document for document in self.documents if matches_query(document, query)), None)
+        inserted = False
+        if matching is None and upsert:
+            matching = copy.deepcopy(query)
+            self.documents.append(matching)
+            inserted = True
         if matching is None:
             return None
+        if inserted:
+            matching.update(copy.deepcopy(update.get("$setOnInsert", {})))
         matching.update(copy.deepcopy(update.get("$set", {})))
+        for key, amount in update.get("$inc", {}).items():
+            matching[key] = matching.get(key, 0) + amount
+        for key in update.get("$unset", {}):
+            matching.pop(key, None)
         return copy.deepcopy(matching)
 
     async def create_index(self, *args, **kwargs):
@@ -716,3 +734,136 @@ def test_migration_never_escalates_company_admin_to_platform_admin():
     migrated_user = fake_db.users.documents[0]
     assert migrated_user["role"] == "admin"
     assert "platform_role" not in migrated_user
+
+
+def test_migration_never_escalates_legacy_admin_without_company():
+    from multitenancy import migrate_to_company_tenancy
+
+    fake_db = InMemoryDatabase()
+    fake_db.users.documents.append({
+        "user_id": "legacy_company_admin",
+        "email": "legacy-admin@company.test",
+        "business_name": "Legacy Tenant",
+        "role": "admin",
+        "created_at": "2026-01-01T00:00:00+00:00",
+    })
+
+    asyncio.run(migrate_to_company_tenancy(fake_db, "platform-admin@beside.it"))
+
+    migrated_user = fake_db.users.documents[0]
+    assert migrated_user["role"] == "admin"
+    assert "platform_role" not in migrated_user
+    assert migrated_user["company_id"] != server.PLATFORM_COMPANY_ID
+
+
+def test_distributed_rate_limit_uses_hashed_key_and_rejects_excess(monkeypatch):
+    fake_db = InMemoryDatabase()
+    monkeypatch.setattr(server, "db", fake_db)
+    request = make_request("/api/auth/login")
+
+    async def exercise_limit():
+        await server.enforce_rate_limit(
+            request,
+            "test_login",
+            limit=1,
+            window_seconds=60,
+            identifier="Sensitive@Example.Test",
+        )
+        await server.enforce_rate_limit(
+            request,
+            "test_login",
+            limit=1,
+            window_seconds=60,
+            identifier="Sensitive@Example.Test",
+        )
+
+    with pytest.raises(server.HTTPException) as denied:
+        asyncio.run(exercise_limit())
+
+    assert denied.value.status_code == 429
+    stored = fake_db.rate_limits.documents[0]
+    assert stored["count"] == 2
+    assert "sensitive@example.test" not in str(stored).lower()
+    assert len(stored["key"]) == 64
+
+
+def test_email_verification_can_be_enforced_without_locking_legacy_users(monkeypatch):
+    monkeypatch.setattr(server, "EMAIL_VERIFICATION_REQUIRED", True)
+    assert server.email_verification_blocks_access({
+        "email_verified": False,
+        "email_verification_exempt": False,
+    })
+    assert not server.email_verification_blocks_access({
+        "email_verified": False,
+        "email_verification_exempt": True,
+    })
+    assert not server.email_verification_blocks_access({
+        "email_verified": True,
+        "email_verification_exempt": False,
+    })
+
+
+def test_login_uses_httponly_cookie_and_never_returns_bearer_token(monkeypatch):
+    fake_db = InMemoryDatabase()
+    company = {
+        "company_id": "company_cookie",
+        "name": "Cookie Tenant",
+        "owner_user_id": "user_cookie",
+        "status": "active",
+        "subscription_status": "trialing",
+    }
+    user = {
+        "user_id": "user_cookie",
+        "company_id": company["company_id"],
+        "email": "cookie@example.com",
+        "password_hash": server.hash_password("StrongPassword-123"),
+        "role": "owner",
+        "is_active": True,
+        "email_verified": True,
+    }
+    fake_db.companies.documents.append(company)
+    fake_db.users.documents.append(user)
+    monkeypatch.setattr(server, "db", fake_db)
+    response = server.Response()
+
+    result = asyncio.run(server.login(
+        server.UserLogin(email=user["email"], password="StrongPassword-123"),
+        response,
+        make_request("/api/auth/login"),
+    ))
+
+    assert "token" not in result
+    cookie = response.headers["set-cookie"].lower()
+    assert "httponly" in cookie
+    assert "secure" in cookie
+    assert "samesite=lax" in cookie
+
+
+def test_admin_secret_rotation_rehashes_password_and_revokes_sessions(monkeypatch):
+    fake_db = InMemoryDatabase()
+    admin = {
+        "user_id": "admin_rotate",
+        "company_id": server.PLATFORM_COMPANY_ID,
+        "email": server.ADMIN_EMAIL.lower(),
+        "platform_role": "super_admin",
+        "password_hash": server.hash_password("OldAdminPassword-123"),
+    }
+    fake_db.users.documents.append(admin)
+    fake_db.user_sessions.documents.append({
+        "user_id": admin["user_id"],
+        "revoked_at": None,
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "ADMIN_PASSWORD", "NewAdminPassword-456")
+
+    asyncio.run(server.synchronize_platform_admin_password())
+
+    assert server.verify_password(
+        "NewAdminPassword-456",
+        fake_db.users.documents[0]["password_hash"],
+    )
+    assert not server.verify_password(
+        "OldAdminPassword-123",
+        fake_db.users.documents[0]["password_hash"],
+    )
+    assert fake_db.user_sessions.documents[0]["revoked_at"] is not None

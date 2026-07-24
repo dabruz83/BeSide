@@ -80,10 +80,8 @@ def _legacy_role(user: Dict[str, Any]) -> tuple[str, str | None]:
     if old_role == "super_admin":
         return "admin", "super_admin"
     if old_role == "admin":
-        # Existing global admins keep platform access explicitly; newly-created
-        # company admins never receive this flag.
-        platform_role = "super_admin" if not user.get("company_id") else user.get("platform_role")
-        return "admin", platform_role
+        # A company role must never silently become a platform-wide privilege.
+        return "admin", user.get("platform_role")
     if old_role in COMPANY_ROLES:
         return old_role, user.get("platform_role")
     return "owner", user.get("platform_role")
@@ -119,9 +117,14 @@ async def ensure_multitenant_indexes(database: Any) -> None:
     await database.companies.create_index("owner_user_id")
     await database.user_sessions.create_index("token_hash", sparse=True)
     await database.user_sessions.create_index("jti", sparse=True)
+    await database.user_sessions.create_index("expires_at_dt", expireAfterSeconds=0)
     await database.password_reset_tokens.create_index("token_hash", unique=True)
+    await database.password_reset_tokens.create_index("expires_at_dt", expireAfterSeconds=0)
     await database.email_verification_tokens.create_index("token_hash", unique=True)
+    await database.email_verification_tokens.create_index("expires_at_dt", expireAfterSeconds=0)
     await database.audit_logs.create_index([("company_id", 1), ("created_at", -1)])
+    await database.rate_limits.create_index("key", unique=True)
+    await database.rate_limits.create_index("expires_at", expireAfterSeconds=0)
     for collection_name in TENANT_COLLECTIONS:
         await database[collection_name].create_index("company_id")
 
@@ -191,6 +194,14 @@ async def migrate_to_company_tenancy(database: Any, admin_email: str) -> Dict[st
             "full_name": user.get("full_name") or user.get("first_name") or user.get("name") or "",
             "role": role,
             "email_verified": bool(user.get("email_verified", False)),
+            # Existing accounts keep access until verification is deliberately
+            # rolled out; newly-created users explicitly store False here.
+            "email_verification_exempt": bool(
+                user.get(
+                    "email_verification_exempt",
+                    not bool(user.get("email_verified", False)),
+                )
+            ),
             "is_active": bool(user.get("is_active", True)),
             "created_at": created_at,
             "updated_at": user.get("updated_at") or created_at,

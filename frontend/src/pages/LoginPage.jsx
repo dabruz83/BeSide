@@ -14,6 +14,7 @@ export const LoginPage = () => {
   const [formData, setFormData] = useState({ email: "", password: "" });
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [unverifiedEmail, setUnverifiedEmail] = useState("");
   const oauthLoginUrl = (process.env.REACT_APP_OAUTH_LOGIN_URL || "").trim().replace(/\/+$/, "");
 
   const handleSubmit = async (e) => {
@@ -25,13 +26,31 @@ export const LoginPage = () => {
         `${API}/auth/login`,
         formData
       );
-      login(response.data.user, response.data.token);
+      login(response.data.user);
       toast.success("Accesso effettuato!");
       navigate("/dashboard");
     } catch (error) {
+      if (
+        error.response?.status === 403 &&
+        error.response?.data?.detail?.toLowerCase().includes("verifica") &&
+        formData.email
+      ) {
+        setUnverifiedEmail(formData.email);
+      }
       toast.error(error.response?.data?.detail || "Errore durante l'accesso");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const resendVerification = async () => {
+    try {
+      const response = await axios.post(`${API}/auth/email-verification/request`, {
+        email: unverifiedEmail
+      });
+      toast.success(response.data.message);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile inviare l'email di verifica");
     }
   };
 
@@ -109,6 +128,11 @@ export const LoginPage = () => {
             >
               {loading ? "Accesso in corso..." : "Accedi"}
             </Button>
+            {unverifiedEmail && (
+              <Button type="button" variant="outline" className="w-full" onClick={resendVerification}>
+                Reinvia email di verifica
+              </Button>
+            )}
           </form>
 
           {oauthLoginUrl && <div className="relative">

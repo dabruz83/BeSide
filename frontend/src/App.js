@@ -34,20 +34,10 @@ export const API = `${BACKEND_URL}/api`;
 // Configure axios defaults
 axios.defaults.withCredentials = true;
 
-// Add axios interceptor for auth token
-axios.interceptors.request.use((config) => {
-  const token = localStorage.getItem('beside_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
-});
-
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401 && localStorage.getItem('beside_token')) {
-      localStorage.removeItem('beside_token');
+    if (error.response?.status === 401) {
       window.dispatchEvent(new Event('beside:session-expired'));
     }
     return Promise.reject(error);
@@ -72,17 +62,10 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   const checkAuth = useCallback(async () => {
-    const token = localStorage.getItem('beside_token');
-    if (!token) {
-      setUser(null);
-      setLoading(false);
-      return;
-    }
     try {
       const response = await axios.get(`${API}/auth/me`);
       setUser(response.data);
     } catch (error) {
-      localStorage.removeItem('beside_token');
       setUser(null);
     } finally {
       setLoading(false);
@@ -90,6 +73,10 @@ export const AuthProvider = ({ children }) => {
   }, []);
 
   useEffect(() => {
+    // Remove credentials left by older builds. Authentication now uses only
+    // Secure, HttpOnly cookies that JavaScript cannot read.
+    window.localStorage.removeItem('beside_token');
+    window.localStorage.removeItem('beside_admin_token');
     // CRITICAL: If returning from OAuth callback, skip the /me check.
     // AuthCallback will exchange the session_id and establish the session first.
     if (window.location.hash?.includes('session_id=')) {
@@ -105,10 +92,7 @@ export const AuthProvider = ({ children }) => {
     return () => window.removeEventListener('beside:session-expired', handleExpiredSession);
   }, []);
 
-  const login = (userData, token) => {
-    if (token) {
-      localStorage.setItem('beside_token', token);
-    }
+  const login = (userData) => {
     setUser(userData);
   };
 
@@ -118,7 +102,6 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error("Logout error:", error);
     }
-    localStorage.removeItem('beside_token');
     setUser(null);
   };
 
@@ -154,11 +137,7 @@ const AuthCallback = () => {
           `${API}/auth/session`,
           { session_id: sessionId }
         );
-        // Store session token in localStorage for OAuth users
-        if (response.data.session_token) {
-          localStorage.setItem('beside_token', response.data.session_token);
-        }
-        login(response.data.user, response.data.session_token);
+        login(response.data.user);
         navigate('/dashboard', { replace: true, state: { user: response.data.user } });
       } catch (error) {
         console.error("Auth callback error:", error);
