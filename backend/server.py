@@ -663,15 +663,6 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
         {"token_hash": token_digest, "revoked_at": None},
         {"_id": 0},
     )
-    if not session:
-        # Temporary compatibility with pre-migration OAuth sessions. The raw
-        # credential is removed as soon as it is successfully used.
-        session = await db.user_sessions.find_one({"session_token": token}, {"_id": 0})
-        if session:
-            await db.user_sessions.update_one(
-                {"session_token": token},
-                {"$set": {"token_hash": token_digest}, "$unset": {"session_token": ""}},
-            )
 
     if session and session.get("session_type") != "jwt":
         if _session_expired(session):
@@ -1801,10 +1792,6 @@ async def logout(request: Request, response: Response):
         await db.user_sessions.update_many(
             {"token_hash": hash_token(token), "revoked_at": None},
             {"$set": {"revoked_at": now_iso}},
-        )
-        await db.user_sessions.update_many(
-            {"session_token": token},
-            {"$set": {"revoked_at": now_iso}, "$unset": {"session_token": ""}},
         )
 
     clear_session_cookie(response)
