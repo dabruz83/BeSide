@@ -8,6 +8,9 @@ from datetime import datetime
 class BESIDEAPITester:
     def __init__(self, base_url=None):
         configured_url = base_url or os.environ.get("BACKEND_TEST_URL", "http://localhost:8000")
+        from urllib.parse import urlparse
+        if urlparse(configured_url).hostname not in {'localhost', '127.0.0.1', '::1'} or os.environ.get('BESIDE_ALLOW_LEGACY_TESTS') != 'true':
+            raise RuntimeError('Use pytest backend/tests/test_local_stack.py for isolated tests; legacy runner requires explicit local opt-in.')
         self.base_url = configured_url.rstrip("/")
         if not self.base_url.endswith("/api"):
             self.base_url = f"{self.base_url}/api"
@@ -42,12 +45,12 @@ class BESIDEAPITester:
                     try:
                         resp_json = response.json()
                         if len(str(resp_json)) < 200:
-                            print(f"   Response: {resp_json}")
+                            print("   Response received (body omitted)")
                     except:
-                        print(f"   Response (text): {response.text[:100]}...")
+                        print("   Response body omitted")
             else:
                 print(f"❌ Failed - Expected {expected_status}, got {response.status_code}")
-                print(f"   Response: {response.text[:200]}...")
+                print("   Response body omitted")
 
             return success, response.json() if response.text and response.status_code < 400 else {}
 

@@ -1,11 +1,10 @@
 /* eslint-disable no-restricted-globals */
 
-const CACHE_NAME = 'beside-v1';
+const CACHE_NAME = 'beside-recovery-v2';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
-  '/manifest.json',
-  '/favicon.ico'
+  '/manifest.json'
 ];
 
 // Install event - cache static assets
@@ -44,7 +43,7 @@ self.addEventListener('fetch', (event) => {
   }
 
   // Skip API requests - always fetch from network
-  if (event.request.url.includes('/api/')) {
+  if (new URL(event.request.url).origin !== self.location.origin || event.request.url.includes('/api/')) {
     return;
   }
 
@@ -55,7 +54,7 @@ self.addEventListener('fetch', (event) => {
         const responseClone = response.clone();
         
         caches.open(CACHE_NAME).then((cache) => {
-          cache.put(event.request, responseClone);
+          if (response.ok) cache.put(event.request, responseClone);
         });
         
         return response;

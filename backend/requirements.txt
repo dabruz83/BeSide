@@ -11,3 +11,5 @@ pymongo==4.17.0
 python-dotenv==1.2.2
 python-multipart==0.0.31
 uvicorn==0.51.0
+
+stripe==16.0.0

@@ -6,18 +6,6 @@ require("dotenv").config();
 // Craco sets NODE_ENV=development for start, NODE_ENV=production for build
 const isDevServer = process.env.NODE_ENV !== "production";
 
-if (process.env.NODE_ENV === "production") {
-  const backendUrl = process.env.REACT_APP_BACKEND_URL?.trim();
-  if (!backendUrl) {
-    throw new Error("REACT_APP_BACKEND_URL is required for a production build");
-  }
-
-  const parsedBackendUrl = new URL(backendUrl);
-  if (!["http:", "https:"].includes(parsedBackendUrl.protocol)) {
-    throw new Error("REACT_APP_BACKEND_URL must be an HTTP(S) URL");
-  }
-}
-
 // Environment variable overrides
 const config = {
   enableHealthCheck: process.env.ENABLE_HEALTH_CHECK === "true",
@@ -73,6 +61,7 @@ let webpackConfig = {
 };
 
 webpackConfig.devServer = (devServerConfig) => {
+  devServerConfig.proxy = { '/api': { target: process.env.BACKEND_PROXY_URL || 'http://127.0.0.1:8000', changeOrigin: false } };
   // Add health check endpoints if enabled
   if (config.enableHealthCheck && setupHealthEndpoints && healthPluginInstance) {
     const originalSetupMiddlewares = devServerConfig.setupMiddlewares;

@@ -104,6 +104,16 @@ def get_boolean_environment_variable(name: str, default: bool) -> bool:
     return normalized == "true"
 
 
+APP_ENV = os.environ.get("APP_ENV", "production")
+EXTERNAL_SERVICES_ENABLED = get_boolean_environment_variable("EXTERNAL_SERVICES_ENABLED", False)
+if APP_ENV == "local":
+    from urllib.parse import urlparse
+    if urlparse(MONGO_URL).hostname not in {"localhost", "127.0.0.1", "::1"} or not DB_NAME.startswith(("beside_demo", "beside_test_")):
+        raise RuntimeError("Local mode requires a loopback MongoDB and a demo/test database")
+    if EXTERNAL_SERVICES_ENABLED:
+        raise RuntimeError("External services must remain disabled in local demo mode")
+
+
 EMAIL_VERIFICATION_REQUIRED = get_boolean_environment_variable(
     "EMAIL_VERIFICATION_REQUIRED", False
 )
@@ -377,6 +387,11 @@ class ChatMessageCreate(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
 
 # ==================== HELPER FUNCTIONS ====================
+
+def csv_text(value):
+    text = str(value or "")
+    return "'" + text if text.lstrip().startswith(("=", "+", "-", "@", "\t", "\r")) else text
+
 
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt(rounds=12)).decode()
@@ -1195,7 +1210,17 @@ def get_tax_deadlines_by_regime(tax_regime: str) -> List[Dict[str, Any]]:
 # ==================== EMAIL HELPER FUNCTIONS ====================
 
 async def send_email_sendgrid(to_email: str, subject: str, html_content: str):
-    """Send email via SendGrid API"""
+    """Send email, or save it privately in the local-only outbox."""
+    if APP_ENV == "local":
+        outbox = Path(os.environ.get("LOCAL_OUTBOX_DIR", ROOT_DIR.parent / ".local/outbox"))
+        outbox.mkdir(parents=True, exist_ok=True, mode=0o700)
+        import json
+        fd = os.open(outbox / f"{uuid.uuid4().hex}.json", os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            json.dump({"to": to_email, "subject": subject, "html": html_content}, stream)
+        return True
+    if not EXTERNAL_SERVICES_ENABLED:
+        return False
     if not SENDGRID_API_KEY:
         logger.warning("SendGrid API key not configured, skipping email")
         return False
@@ -1223,10 +1248,10 @@ async def send_email_sendgrid(to_email: str, subject: str, html_content: str):
                 logger.info(f"Email sent successfully to {to_email}")
                 return True
             else:
-                logger.error(f"SendGrid error: {response.status_code} - {response.text}")
+                logger.error("SendGrid returned HTTP %s", response.status_code)
                 return False
     except Exception as e:
-        logger.error(f"Failed to send email: {e}")
+        logger.error("Email delivery failed (%s)", type(e).__name__)
         return False
 
 async def send_registration_notification(user_email: str, business_name: str, registration_date: str):
@@ -1477,7 +1502,7 @@ async def login(user_data: UserLogin, response: Response, request: Request):
 async def process_google_session(request: Request, response: Response):
     """Process Google OAuth session_id and create local session"""
     await enforce_rate_limit(request, "auth_oauth", limit=10, window_seconds=15 * 60)
-    if not OAUTH_SESSION_URL:
+    if not EXTERNAL_SERVICES_ENABLED or not OAUTH_SESSION_URL:
         raise HTTPException(status_code=503, detail="Accesso Google non configurato")
     body = await request.json()
     session_id = body.get("session_id")
@@ -1927,6 +1952,20 @@ async def create_job(
         }))
     
     return JobResponse(**{k: v for k, v in job_doc.items() if k != "_id"})
+
+@api_router.post("/jobs/{job_id}/send-quote")
+async def send_saved_quote(job_id: str, current_user: Dict = Depends(require_company_roles("owner", "admin", "member"))):
+    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0})
+    if not job or not job.get("is_quote") or not job.get("quote_link"):
+        raise HTTPException(404, "Preventivo non trovato")
+    if not job.get("client_email"):
+        raise HTTPException(400, "Email cliente mancante")
+    delivered = await send_email_sendgrid(job["client_email"], "Il tuo preventivo BeSide",
+        f'<p>Il preventivo è disponibile: <a href="{html.escape(job["quote_link"], quote=True)}">Visualizza preventivo</a></p>')
+    if not delivered:
+        raise HTTPException(503, "Preventivo salvato nei Lavori; invio email non configurato.")
+    return {"message": "Preventivo salvato; email disponibile nella posta locale." if APP_ENV == "local" else "Preventivo salvato e inviato."}
+
 
 @api_router.get("/jobs", response_model=List[JobResponse])
 async def get_jobs(
@@ -2600,10 +2639,10 @@ async def export_jobs_csv(
         
         writer.writerow([
             completed_date,
-            job.get("client_name", ""),
+            csv_text(job.get("client_name", "")),
             JOB_TYPE_LABELS_IT.get(job.get("job_type", ""), job.get("job_type", "")),
             VEHICLE_TYPE_LABELS_IT.get(job.get("vehicle_type", ""), job.get("vehicle_type", "")),
-            job.get("vehicle_info", ""),
+            csv_text(job.get("vehicle_info", "")),
             str(job.get("quote_amount", 0)).replace(".", ","),
             str(job.get("hours_worked", 0)).replace(".", ","),
             str(job.get("materials_cost", 0)).replace(".", ","),
@@ -2611,8 +2650,8 @@ async def export_jobs_csv(
             str(job.get("net_profit", 0)).replace(".", ","),
             str(job.get("profit_margin", 0)).replace(".", ","),
             str(job.get("hourly_rate", 0)).replace(".", ","),
-            job.get("lead_source", "").replace("_", " ").title(),
-            job.get("notes", "")
+            (job.get("lead_source") or "").replace("_", " ").title(),
+            csv_text(job.get("notes", ""))
         ])
     
     output.seek(0)
@@ -2895,7 +2934,7 @@ async def create_marketing_effort(
     }
     
     await db.marketing_efforts.insert_one(effort_doc)
-    return effort_doc
+    return {k: v for k, v in effort_doc.items() if k != "_id"}
 
 @api_router.get("/marketing/efforts")
 async def get_marketing_efforts(current_user: Dict = Depends(get_current_user)):
@@ -2917,9 +2956,9 @@ async def generate_ai_content(
     from google import genai
     from google.genai import types
     
-    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("EMERGENT_LLM_KEY")
-    if not api_key:
-        raise HTTPException(status_code=500, detail="API key non configurata")
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not EXTERNAL_SERVICES_ENABLED or not api_key:
+        raise HTTPException(status_code=503, detail="Generazione AI non configurata. Configura Gemini per attivarla.")
     
     prompts = {
         "bacino_utenza": """Sei un esperto di marketing per installatori auto (PPF, wrap, oscuramento vetri) in Italia.
@@ -3044,7 +3083,7 @@ Rispondi in italiano."""
         
         return {"content": response, "step": request_data.step}
     except Exception:
-        logger.exception("AI generation error")
+        logger.error("AI generation failed")
         raise HTTPException(status_code=500, detail="Errore nella generazione")
 
 @api_router.get("/marketing/ai/history")
@@ -3527,6 +3566,13 @@ async def add_security_headers(request: Request, call_next):
     if request.url.path.startswith(("/api/auth/", "/api/admin/", "/api/quote/", "/api/onboarding/client/")):
         response.headers.setdefault("Cache-Control", "no-store")
     return response
+
+# Independent payment integration; shares existing tenant-aware authentication.
+from billing import build_billing_router
+app.include_router(build_billing_router(
+    db, get_current_user, require_company_roles, FRONTEND_PUBLIC_URL,
+    lambda: EXTERNAL_SERVICES_ENABLED,
+))
 
 # Include the router in the main app
 app.include_router(api_router)

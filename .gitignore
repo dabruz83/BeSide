@@ -100,3 +100,7 @@ credentials.json
 # Local platform/workspace metadata
 .emergent/
 .gitconfig
+
+# Local recovery runtime, database and private demo access
+.local/
+!**/.env.example

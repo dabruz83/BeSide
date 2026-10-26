@@ -144,6 +144,17 @@ async def ensure_multitenant_indexes(database: Any) -> bool:
         (database.rate_limits, "expires_at", {"expireAfterSeconds": 0}),
     ]
     indexes.extend((database[name], "company_id", {}) for name in TENANT_COLLECTIONS)
+    indexes.extend([
+        (database.users, "user_id", {"unique": True}),
+        (database.jobs, "job_id", {"unique": True}),
+        (database.jobs, [("company_id", 1), ("completed_date", -1)], {}),
+        (database.quote_tokens, "token", {"unique": True}),
+        (database.quote_tokens, "company_id", {}),
+        (database.onboardings, "onboarding_id", {"unique": True}),
+        (database.email_claims, "company_id", {}),
+        (database.payment_transactions, "session_id", {"sparse": True}),
+        (database.cash_plan_entries, [("company_id", 1), ("month", 1)], {}),
+    ])
 
     for collection, keys, options in indexes:
         try:

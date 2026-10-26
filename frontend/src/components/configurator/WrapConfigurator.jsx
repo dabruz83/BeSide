@@ -1,4 +1,7 @@
 import { useState } from 'react';
+import axios from 'axios';
+import { API } from '@/App';
+import { VEHICLES } from './data/vehicles';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronLeft, ChevronRight, RotateCcw, Eye, EyeOff } from 'lucide-react';
 import { toast } from 'sonner';
@@ -43,26 +46,30 @@ export const WrapConfigurator = () => {
     setPreviewView(prev => prev === 'rear' ? 'front' : 'rear');
   };
 
-  // Handle payment
+  const [saving, setSaving] = useState(false);
   const handlePay = async () => {
-    try {
-      // TODO: Integrate with Stripe
-      toast.success('Reindirizzamento al pagamento...');
-      // Simulate payment redirect
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      toast.info('Integrazione Stripe in arrivo!');
-    } catch (error) {
-      toast.error('Errore durante il pagamento');
-    }
+    toast.info('Pagamento del configuratore non ancora attivo. Salva e invia il preventivo per proseguire.');
   };
 
-  // Handle send quote
   const handleSendQuote = async () => {
-    try {
-      toast.success('Preventivo inviato a ' + state.customerEmail);
-    } catch (error) {
-      toast.error('Errore nell\'invio del preventivo');
+    if (saving) return;
+    if (!state.gdprConsent || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(state.customerEmail)) {
+      toast.error('Inserisci una email valida e conferma il consenso.'); return;
     }
+    setSaving(true);
+    try {
+      const { data } = await axios.post(`${API}/jobs`, {
+        client_name: state.customerEmail, client_email: state.customerEmail,
+        job_type: state.film?.includes('ppf') ? 'ppf_partial' : 'wrap_decorative',
+        vehicle_type: 'sedan', vehicle_info: VEHICLES[state.vehicle]?.label || state.vehicle,
+        quote_amount: price, hours_worked: 0, materials_cost: 0, is_quote: true,
+        notes: JSON.stringify({ configurazione: state, appuntamento: 'preferenza da confermare' }),
+      });
+      const sent = await axios.post(`${API}/jobs/${data.job_id}/send-quote`);
+      toast.success(sent.data.message);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || 'Errore nel salvataggio o invio. Verifica la pagina Lavori prima di riprovare.');
+    } finally { setSaving(false); }
   };
 
   // Render current step

@@ -22,13 +22,12 @@ import { QuotePage } from "@/pages/QuotePage";
 import { AdminPage } from "@/pages/AdminPage";
 import { ConfiguratorPage } from "@/pages/ConfiguratorPage";
 
+import { SubscriptionPage } from "@/pages/SubscriptionPage";
+
 // Components
 import { Layout } from "@/components/Layout";
 
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").trim().replace(/\/+$/, "");
-if (!BACKEND_URL) {
-  throw new Error("REACT_APP_BACKEND_URL is required");
-}
 export const API = `${BACKEND_URL}/api`;
 
 // Configure axios defaults
@@ -264,6 +263,8 @@ const AppRouter = () => {
           </ProtectedRoute>
         }
       />
+      <Route path="/subscription" element={<ProtectedRoute><Layout><SubscriptionPage /></Layout></ProtectedRoute>} />
+      <Route path="/subscription/success" element={<ProtectedRoute><Layout><SubscriptionPage /></Layout></ProtectedRoute>} />
       {/* Configurator - Protected route */}
       <Route
         path="/configurator"

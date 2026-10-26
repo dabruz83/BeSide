@@ -1,5 +1,6 @@
 const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const path = require("path");
 const crypto = require("crypto");
 
@@ -50,11 +51,11 @@ const securityHeaders = (buildDirectory) => {
       "object-src 'none'",
       `script-src 'self' https://*.i.posthog.com ${inlineScriptHashes(buildDirectory).join(" ")}`.trim(),
       "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
-      "upgrade-insecure-requests",
+      ...(process.env.NODE_ENV === "production" ? ["upgrade-insecure-requests"] : []),
     ].join("; "),
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
     "Referrer-Policy": "strict-origin-when-cross-origin",
-    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    ...(process.env.NODE_ENV === "production" ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
   };
@@ -90,6 +91,24 @@ const sendFile = (request, response, filePath, headers) => {
 const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => {
   const headers = securityHeaders(buildDirectory);
   return http.createServer((request, response) => {
+    if (request.url && (request.url.startsWith('/api/') || request.url === '/api')) {
+      const target = process.env.BACKEND_PROXY_URL;
+      if (!target) { response.writeHead(503); response.end('API not configured'); return; }
+      const upstream = new URL(target);
+      const proxyHeaders = { ...request.headers, host: upstream.host };
+      // Never forward client-supplied proxy identity to the API.
+      for (const name of ['forwarded', 'x-forwarded-for', 'x-real-ip', 'x-forwarded-host']) delete proxyHeaders[name];
+      const transport = upstream.protocol === 'https:' ? https : http;
+      const proxied = transport.request({ hostname: upstream.hostname, port: upstream.port,
+        path: request.url, method: request.method, headers: proxyHeaders, timeout: 30000 }, (result) => {
+        response.writeHead(result.statusCode, { ...headers, ...result.headers });
+        result.pipe(response);
+      });
+      proxied.on('timeout', () => proxied.destroy());
+      proxied.on('error', () => { if (!response.headersSent) response.writeHead(502); response.end('API unavailable'); });
+      request.pipe(proxied);
+      return;
+    }
     if (!request.url || !["GET", "HEAD"].includes(request.method)) {
       response.writeHead(405, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
       response.end("Method not allowed");
@@ -130,6 +149,9 @@ const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => {
         return;
       }
 
+      if (path.extname(pathname)) {
+        response.writeHead(404, headers); response.end('Not found'); return;
+      }
       sendFile(request, response, path.join(buildDirectory, "index.html"), headers);
     });
   });
@@ -138,7 +160,7 @@ const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => {
 if (require.main === module) {
   const port = Number.parseInt(process.env.PORT || "3000", 10);
   const server = createStaticServer();
-  server.listen(port, "0.0.0.0", () => {
+  server.listen(port, process.env.HOST || "0.0.0.0", () => {
     console.log(`BESIDE frontend listening on port ${port}`);
   });
 }
