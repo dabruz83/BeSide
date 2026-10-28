@@ -146,6 +146,8 @@ async def ensure_multitenant_indexes(database: Any) -> bool:
         (database.email_recovery_tokens, "expires_at_dt", {"expireAfterSeconds": 0}),
         (database.recovery_contacts, "contact_token_hash", {"unique": True, "sparse": True}),
         (database.recovery_contacts, "user_id", {}),
+        (database.mfa_recovery_requests, "request_token_hash", {"unique": True}),
+        (database.mfa_recovery_requests, "user_id", {}),
         (database.audit_logs, [("company_id", 1), ("created_at", -1)], {}),
         (database.rate_limits, "expires_at", {"expireAfterSeconds": 0}),
     ]

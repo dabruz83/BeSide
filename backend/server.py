@@ -105,6 +105,10 @@ TOTP_STEP_SECONDS = 30
 TOTP_PENDING_MINUTES = 10
 MFA_SESSION_MINUTES = 5
 MFA_MAX_ATTEMPTS = 5
+MFA_RECOVERY_REQUEST_MINUTES = 15
+MFA_RECOVERY_MAX_ATTEMPTS = 5
+MFA_RECOVERY_HOLD_HOURS = 24
+MFA_RECOVERY_AUTHORIZATION_MINUTES = 10
 RECOVERY_CONTACT_ROLE = "recovery_contact"
 
 
@@ -225,6 +229,36 @@ class TwoFactorConfirmRequest(TwoFactorPasswordRequest):
     code: str = Field(min_length=6, max_length=6)
 
 class TwoFactorVerifyRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+class TwoFactorRecoveryRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+class TwoFactorRecoveryApprovalRequest(BaseModel):
+    request_token: str = Field(min_length=20, max_length=512)
+    verification_number: str = Field(min_length=8, max_length=8)
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+    code: str = Field(min_length=6, max_length=6)
+
+class TwoFactorRecoveryPrepareRequest(BaseModel):
+    request_token: str = Field(min_length=20, max_length=512)
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+class TwoFactorRecoveryContinuationRequest(BaseModel):
+    continuation_token: str = Field(min_length=20, max_length=512)
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+class TwoFactorRecoveryCancelRequest(TwoFactorRecoveryContinuationRequest):
+    code: str = Field(min_length=6, max_length=6)
+
+class TwoFactorRecoveryTotpSetupRequest(TwoFactorRecoveryContinuationRequest):
+    pass
+
+class TwoFactorRecoveryTotpConfirmRequest(TwoFactorRecoveryContinuationRequest):
     code: str = Field(min_length=6, max_length=6)
 
 class RecoveryEmailSetupRequest(BaseModel):
@@ -954,6 +988,430 @@ async def _consume_current_totp(user: Dict[str, Any], code: str) -> bool:
         {"$set": {"totp_last_used_step": step}},
     )
     return replay_guard.modified_count == 1
+
+@api_router.post("/auth/2fa/recovery/request")
+async def request_two_factor_recovery(
+    data: TwoFactorRecoveryRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Start a short-lived recovery request without issuing an authenticated session."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_request_email", limit=3,
+                             window_seconds=15 * 60, identifier=email)
+    await enforce_rate_limit(request, "auth_2fa_recovery_request_ip", limit=10,
+                             window_seconds=15 * 60)
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if not user:
+        verify_password(data.password, DUMMY_PASSWORD_HASH)
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+    if not user.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="Il recupero 2FA non è disponibile")
+
+    now = datetime.now(timezone.utc)
+    contacts = await db.recovery_contacts.find({
+        "user_id": user["user_id"],
+        "status": {"$in": ["active", "security_period"]},
+        "linked_user_id": {"$exists": True},
+    }, {"_id": 0}).to_list(20)
+    authorized_contact = None
+    for contact in contacts:
+        period_end = parse_datetime(contact.get("security_period_ends_at"), now + timedelta(days=1))
+        if period_end > now:
+            continue
+        linked_contact = await db.users.find_one(
+            {"user_id": contact["linked_user_id"], "is_active": {"$ne": False}},
+            {"_id": 0, "email_verified": 1, "totp_enabled": 1},
+        )
+        if linked_contact and linked_contact.get("email_verified") and linked_contact.get("totp_enabled"):
+            authorized_contact = contact
+            if contact.get("status") == "security_period":
+                await db.recovery_contacts.update_one(
+                    {"contact_id": contact["contact_id"], "status": "security_period"},
+                    {"$set": {"status": "active", "activated_at": now.isoformat(), "updated_at": now.isoformat()}},
+                )
+            break
+    if not authorized_contact:
+        raise HTTPException(status_code=400, detail="Nessun contatto fidato attivo e verificato")
+
+    duplicate = await db.mfa_recovery_requests.find_one(
+        {"user_id": user["user_id"], "status": "pending", "expires_at_dt": {"$gt": now}},
+        {"_id": 1},
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Esiste già una richiesta di recupero in corso")
+
+    request_token = secrets.token_urlsafe(32)
+    verification_number = f"{secrets.randbelow(100_000_000):08d}"
+    expires = now + timedelta(minutes=MFA_RECOVERY_REQUEST_MINUTES)
+    request_id = f"mfa_recovery_{uuid.uuid4().hex[:16]}"
+    await db.mfa_recovery_requests.insert_one({
+        "request_id": request_id,
+        "request_token_hash": hash_token(request_token),
+        "verification_number_hash": hash_token(verification_number),
+        "user_id": user["user_id"],
+        "company_id": user.get("company_id"),
+        "contact_id": authorized_contact["contact_id"],
+        "contact_user_id": authorized_contact["linked_user_id"],
+        "status": "pending",
+        "attempts": 0,
+        "max_attempts": MFA_RECOVERY_MAX_ATTEMPTS,
+        "created_at": now.isoformat(),
+        "expires_at": expires.isoformat(),
+        "expires_at_dt": expires,
+    })
+    await audit_event("2fa_recovery_requested", user=user, request=request,
+                      metadata={"request_id": request_id, "contact_id": authorized_contact["contact_id"]})
+    background_tasks.add_task(send_2fa_recovery_started_notice, user["email"])
+    return {
+        "request_id": request_id,
+        "request_token": request_token,
+        "verification_number": verification_number,
+        "expires_in": MFA_RECOVERY_REQUEST_MINUTES * 60,
+        "message": "Richiesta avviata. Il contatto fidato dovrà completare la verifica prevista.",
+    }
+
+@api_router.get("/auth/2fa/recovery/status")
+async def get_two_factor_recovery_status(request: Request, response: Response):
+    """Read recovery state with a temporary credential, never creating a session."""
+    response.headers["Cache-Control"] = "no-store"
+    credential = request.headers.get("X-Recovery-Credential", "").strip()
+    password = request.headers.get("X-Recovery-Password", "")
+    if not credential or not password:
+        raise HTTPException(status_code=401, detail="Credenziale di recupero e password richieste")
+    await enforce_rate_limit(request, "auth_2fa_recovery_status", limit=20,
+                             window_seconds=15 * 60)
+    credential_hash = hash_token(credential)
+    recovery_request = await db.mfa_recovery_requests.find_one(
+        {"$or": [{"request_token_hash": credential_hash},
+                 {"continuation_token_hash": credential_hash}]},
+        {"_id": 0},
+    )
+    if not recovery_request:
+        raise HTTPException(status_code=401, detail="Credenziale di recupero non valida")
+    user = await db.users.find_one(
+        {"user_id": recovery_request["user_id"], "is_active": {"$ne": False}},
+        {"_id": 0},
+    )
+    if not user or not verify_password(password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Credenziale di recupero non valida")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+
+    now = datetime.now(timezone.utc)
+    raw_status = recovery_request.get("status", "unknown")
+    security_end = recovery_request.get("hold_expires_at")
+    effective_expiry = None
+    status = raw_status
+    if raw_status in {"pending", "approved"}:
+        effective_expiry = parse_datetime(recovery_request.get("expires_at_dt"))
+        if effective_expiry <= now:
+            status = "expired"
+    elif raw_status == "approved_hold":
+        effective_expiry = parse_datetime(recovery_request.get("hold_expires_at"))
+        status = "security_period" if effective_expiry > now else "ready"
+    elif raw_status == "authorization_issued":
+        effective_expiry = parse_datetime(recovery_request.get("authorization_expires_at"))
+        status = "ready" if effective_expiry > now else "expired"
+    elif raw_status == "totp_setup_pending":
+        effective_expiry = parse_datetime(recovery_request.get("authorization_expires_at"))
+        status = "totp_setup_pending" if effective_expiry > now else "expired"
+    elif raw_status == "revoked":
+        status = "cancelled"
+    elif raw_status == "completed":
+        status = "completed"
+
+    return {
+        "status": status,
+        "expires_at": effective_expiry.isoformat() if effective_expiry else None,
+        "security_period_ends_at": security_end.isoformat() if isinstance(security_end, datetime) else security_end,
+        "ready": status == "ready",
+        "expired": status == "expired",
+        "cancelled": status == "cancelled",
+    }
+
+@api_router.post("/auth/2fa/recovery/approve")
+async def approve_two_factor_recovery(
+    data: TwoFactorRecoveryApprovalRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Approve a pending recovery request without granting account access."""
+    contact_email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_approve_email", limit=5,
+                             window_seconds=15 * 60, identifier=contact_email)
+    await enforce_rate_limit(request, "auth_2fa_recovery_approve_ip", limit=15,
+                             window_seconds=15 * 60)
+    now = datetime.now(timezone.utc)
+    recovery_request = await db.mfa_recovery_requests.find_one(
+        {"request_token_hash": hash_token(data.request_token),
+         "verification_number_hash": hash_token(data.verification_number),
+         "status": "pending", "expires_at_dt": {"$gt": now}},
+        {"_id": 0},
+    )
+    if not recovery_request:
+        raise HTTPException(status_code=400, detail="Richiesta non valida, scaduta o già utilizzata")
+    attempted = await db.mfa_recovery_requests.find_one_and_update(
+        {"request_id": recovery_request["request_id"], "status": "pending",
+         "attempts": {"$lt": MFA_RECOVERY_MAX_ATTEMPTS}, "expires_at_dt": {"$gt": now}},
+        {"$inc": {"attempts": 1}}, return_document=ReturnDocument.AFTER,
+    )
+    if not attempted:
+        raise HTTPException(status_code=429, detail="Troppi tentativi per questa richiesta")
+    recovery_request = attempted
+
+    contact_user = await db.users.find_one(
+        {"user_id": recovery_request["contact_user_id"], "is_active": {"$ne": False}},
+        {"_id": 0},
+    )
+    if not contact_user or normalize_email(contact_user.get("email", "")) != contact_email:
+        raise HTTPException(status_code=403, detail="Contatto fidato non autorizzato")
+    if not verify_password(data.password, contact_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if not contact_user.get("email_verified") or not contact_user.get("totp_enabled"):
+        raise HTTPException(status_code=403, detail="Il contatto non ha completato la verifica richiesta")
+    if not await _consume_current_totp(contact_user, data.code):
+        raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+
+    contact = await db.recovery_contacts.find_one(
+        {"contact_id": recovery_request["contact_id"],
+         "user_id": recovery_request["user_id"],
+         "linked_user_id": recovery_request["contact_user_id"]},
+        {"_id": 0},
+    )
+    if not contact:
+        raise HTTPException(status_code=403, detail="Contatto fidato non autorizzato")
+    period_end = parse_datetime(contact.get("security_period_ends_at"), now + timedelta(days=1))
+    if period_end > now or contact.get("status") not in {"active", "security_period"}:
+        raise HTTPException(status_code=403, detail="Contatto fidato non ancora attivo")
+    if contact.get("status") == "security_period":
+        await db.recovery_contacts.update_one(
+            {"contact_id": contact["contact_id"], "status": "security_period"},
+            {"$set": {"status": "active", "activated_at": now.isoformat(), "updated_at": now.isoformat()}},
+        )
+
+    approved_at = now.isoformat()
+    approved = await db.mfa_recovery_requests.find_one_and_update(
+        {"request_id": recovery_request["request_id"], "status": "pending",
+         "expires_at_dt": {"$gt": now}, "contact_user_id": contact_user["user_id"]},
+        {"$set": {"status": "approved", "approved_at": approved_at,
+                  "approved_by_contact_user_id": contact_user["user_id"],
+                  "updated_at": approved_at}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not approved:
+        raise HTTPException(status_code=409, detail="Richiesta già utilizzata o scaduta")
+    owner = await db.users.find_one({"user_id": recovery_request["user_id"]}, {"_id": 0})
+    if owner:
+        await audit_event("2fa_recovery_approved", user=owner, request=request,
+                          metadata={"request_id": recovery_request["request_id"],
+                                    "contact_user_id": contact_user["user_id"]})
+        background_tasks.add_task(send_2fa_recovery_approved_notice, owner["email"])
+    return {"status": "approved", "message": "Richiesta di recupero approvata dal contatto fidato."}
+
+@api_router.post("/auth/2fa/recovery/prepare")
+async def prepare_two_factor_recovery(
+    data: TwoFactorRecoveryPrepareRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Start the separate 24-hour hold after owner continuity verification."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_prepare", limit=3,
+                             window_seconds=15 * 60, identifier=email)
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+    now = datetime.now(timezone.utc)
+    continuation_token = secrets.token_urlsafe(32)
+    hold_expires = now + timedelta(hours=MFA_RECOVERY_HOLD_HOURS)
+    prepared = await db.mfa_recovery_requests.find_one_and_update(
+        {"request_token_hash": hash_token(data.request_token), "user_id": user["user_id"],
+         "status": "approved", "expires_at_dt": {"$gt": now},
+         "approved_by_contact_user_id": {"$exists": True}},
+        {"$set": {"status": "approved_hold", "hold_started_at": now.isoformat(),
+                  "hold_expires_at": hold_expires, "owner_verified_at": now.isoformat(),
+                  "continuation_token_hash": hash_token(continuation_token), "updated_at": now.isoformat()},
+         "$unset": {"request_token_hash": "", "verification_number_hash": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Richiesta non valida, scaduta o già preparata")
+    await audit_event("2fa_recovery_hold_started", user=user, request=request,
+                      metadata={"request_id": prepared["request_id"]})
+    return {"status": "approved_hold", "continuation_token": continuation_token,
+            "hold_expires_at": hold_expires.isoformat(),
+            "message": "Verifica completata. È iniziato il periodo di sicurezza di 24 ore."}
+
+@api_router.post("/auth/2fa/recovery/authorize-totp")
+async def authorize_two_factor_recovery(
+    data: TwoFactorRecoveryContinuationRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Issue only a one-time TOTP configuration authorization after the hold."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_authorize", limit=3,
+                             window_seconds=15 * 60, identifier=email)
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+    now = datetime.now(timezone.utc)
+    authorization_token = secrets.token_urlsafe(32)
+    authorization_expires = now + timedelta(minutes=MFA_RECOVERY_AUTHORIZATION_MINUTES)
+    authorized = await db.mfa_recovery_requests.find_one_and_update(
+        {"continuation_token_hash": hash_token(data.continuation_token), "user_id": user["user_id"],
+         "status": "approved_hold", "hold_expires_at": {"$lte": now}},
+        {"$set": {"status": "authorization_issued", "authorization_issued_at": now.isoformat(),
+                  "authorization_expires_at": authorization_expires,
+                  "authorization_token_hash": hash_token(authorization_token),
+                  "updated_at": now.isoformat()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not authorized:
+        raise HTTPException(status_code=400, detail="Periodo di sicurezza non concluso o autorizzazione già utilizzata")
+    await audit_event("2fa_recovery_authorization_issued", user=user, request=request,
+                      metadata={"request_id": authorized["request_id"]})
+    background_tasks.add_task(send_2fa_recovery_usable_notice, user["email"])
+    return {"status": "authorization_issued", "totp_authorization_token": authorization_token,
+            "expires_in": MFA_RECOVERY_AUTHORIZATION_MINUTES * 60,
+            "message": "Autorizzazione temporanea pronta per la futura configurazione TOTP."}
+
+@api_router.post("/auth/2fa/recovery/cancel")
+async def cancel_two_factor_recovery(
+    data: TwoFactorRecoveryCancelRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Cancel recovery with a strong password + current TOTP proof."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_cancel", limit=5,
+                             window_seconds=15 * 60, identifier=email)
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+    if not await _consume_current_totp(user, data.code):
+        raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    cancelled = await db.mfa_recovery_requests.find_one_and_update(
+        {"continuation_token_hash": hash_token(data.continuation_token), "user_id": user["user_id"],
+         "status": {"$in": ["approved_hold", "authorization_issued"]}},
+        {"$set": {"status": "revoked", "revoked_at": now_iso, "updated_at": now_iso}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not cancelled:
+        raise HTTPException(status_code=400, detail="Procedura non disponibile o già conclusa")
+    await audit_event("2fa_recovery_revoked", user=user, request=request,
+                      metadata={"request_id": cancelled["request_id"]})
+    background_tasks.add_task(send_2fa_recovery_cancelled_notice, user["email"])
+    return {"status": "revoked", "message": "Procedura di recupero annullata."}
+
+@api_router.post("/auth/2fa/recovery/setup-totp")
+async def setup_recovery_totp(
+    data: TwoFactorRecoveryTotpSetupRequest,
+    request: Request,
+):
+    """Prepare a replacement secret without changing the active authenticator."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_totp_setup", limit=3,
+                             window_seconds=15 * 60, identifier=email)
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+    pending_secret = generate_totp_secret()
+    now = datetime.now(timezone.utc)
+    prepared = await db.mfa_recovery_requests.find_one_and_update(
+        {"authorization_token_hash": hash_token(data.continuation_token), "user_id": user["user_id"],
+         "status": "authorization_issued", "authorization_expires_at": {"$gt": now}},
+        {"$set": {"status": "totp_setup_pending", "recovery_pending_totp_secret_enc": encrypt_totp_secret(pending_secret),
+                  "totp_setup_started_at": now.isoformat(), "updated_at": now.isoformat()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not prepared:
+        raise HTTPException(status_code=400, detail="Autorizzazione non valida, scaduta o già utilizzata")
+    label = f"{TOTP_ISSUER}:{user['email']}"
+    uri = (f"otpauth://totp/{label}?secret={pending_secret}&issuer={TOTP_ISSUER}"
+           f"&algorithm=SHA1&digits=6&period={TOTP_STEP_SECONDS}")
+    return {"otpauth_uri": uri, "secret": pending_secret,
+            "message": "Configura il nuovo Authenticator e conferma il codice generato."}
+
+@api_router.post("/auth/2fa/recovery/confirm-totp")
+async def confirm_recovery_totp(
+    data: TwoFactorRecoveryTotpConfirmRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Atomically replace TOTP only after the new code is proven valid."""
+    email = normalize_email(str(data.email))
+    await enforce_rate_limit(request, "auth_2fa_recovery_totp_confirm", limit=5,
+                             window_seconds=15 * 60, identifier=email)
+    user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
+    if not user or not verify_password(data.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email o password non corretti")
+    if user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Recupero automatico non disponibile per gli amministratori principali")
+    recovery_request = await db.mfa_recovery_requests.find_one(
+        {"authorization_token_hash": hash_token(data.continuation_token), "user_id": user["user_id"],
+         "status": "totp_setup_pending", "authorization_expires_at": {"$gt": datetime.now(timezone.utc)}},
+        {"_id": 0},
+    )
+    if not recovery_request:
+        raise HTTPException(status_code=400, detail="Autorizzazione non valida, scaduta o già utilizzata")
+    new_secret = decrypt_totp_secret(recovery_request["recovery_pending_totp_secret_enc"])
+    if verify_totp_code(new_secret, data.code) is None:
+        raise HTTPException(status_code=400, detail="Codice del nuovo Authenticator non valido")
+    now = datetime.now(timezone.utc)
+    locked = await db.mfa_recovery_requests.find_one_and_update(
+        {"request_id": recovery_request["request_id"], "status": "totp_setup_pending",
+         "authorization_expires_at": {"$gt": now}},
+        {"$set": {"status": "completing", "updated_at": now.isoformat()}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not locked:
+        raise HTTPException(status_code=409, detail="Configurazione già in corso o conclusa")
+    recovery_codes = generate_recovery_codes()
+    now_iso = now.isoformat()
+    updated = await db.users.update_one(
+        {"user_id": user["user_id"], "is_active": {"$ne": False}},
+        {"$set": {"totp_secret_enc": encrypt_totp_secret(new_secret), "totp_enabled": True,
+                  "totp_enabled_at": now_iso, "totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes],
+                  "updated_at": now_iso},
+         "$unset": {"totp_last_used_step": ""}},
+    )
+    if updated.modified_count != 1:
+        await db.mfa_recovery_requests.update_one(
+            {"request_id": recovery_request["request_id"], "status": "completing"},
+            {"$set": {"status": "totp_setup_pending", "updated_at": now_iso}},
+        )
+        raise HTTPException(status_code=409, detail="Sostituzione non completata; il vecchio Authenticator resta attivo")
+    await db.mfa_recovery_requests.update_one(
+        {"request_id": recovery_request["request_id"], "status": "completing"},
+        {"$set": {"status": "completed", "completed_at": now_iso, "updated_at": now_iso},
+         "$unset": {"authorization_token_hash": "", "recovery_pending_totp_secret_enc": ""}},
+    )
+    await db.user_sessions.update_many(
+        {"user_id": user["user_id"], "revoked_at": None},
+        {"$set": {"revoked_at": now_iso}},
+    )
+    await audit_event("2fa_recovery_totp_replaced", user=user, request=request,
+                      metadata={"request_id": recovery_request["request_id"]})
+    background_tasks.add_task(send_2fa_recovery_totp_replaced_notice, user["email"])
+    return {"status": "completed", "recovery_codes": recovery_codes,
+            "email_delivery_configured": email_delivery_configured(),
+            "production_ready": email_delivery_configured(),
+            "message": "Authenticator sostituito. Esegui un nuovo login completo."}
 
 
 @api_router.post("/auth/2fa/setup")
@@ -1703,6 +2161,48 @@ async def send_recovery_contact_notice(primary_email: str, contact_email: str, e
         "Modifica contatto fidato BESIDE",
         f"<p>{labels.get(event, 'È cambiata la configurazione del contatto fidato.')}</p><p>Indirizzo: {safe_contact}</p>",
     )
+
+async def send_2fa_recovery_started_notice(user_email: str) -> bool:
+    return await send_email_sendgrid(
+        user_email,
+        "Richiesta di recupero 2FA BESIDE",
+        "<p>È stata avviata una richiesta di recupero dell'autenticazione a due fattori.</p>"
+        "<p>La richiesta scade tra 15 minuti e non modifica ancora il tuo 2FA.</p>",
+    )
+
+async def send_2fa_recovery_approved_notice(user_email: str) -> bool:
+    return await send_email_sendgrid(
+        user_email,
+        "Approvazione recupero 2FA BESIDE",
+        "<p>Il tuo contatto fidato ha approvato la richiesta di recupero 2FA.</p>"
+        "<p>Il secondo fattore non è stato disattivato né sostituito.</p>",
+    )
+
+async def send_2fa_recovery_usable_notice(user_email: str) -> bool:
+    return await send_email_sendgrid(
+        user_email,
+        "Recupero 2FA pronto per la configurazione",
+        "<p>Il periodo di sicurezza della richiesta di recupero 2FA è terminato.</p>"
+        "<p>È disponibile solo un'autorizzazione temporanea per configurare un nuovo TOTP.</p>",
+    )
+
+async def send_2fa_recovery_cancelled_notice(user_email: str) -> bool:
+    return await send_email_sendgrid(
+        user_email,
+        "Recupero 2FA annullato",
+        "<p>La procedura di recupero 2FA è stata annullata tramite una verifica forte.</p>",
+    )
+
+async def send_2fa_recovery_totp_replaced_notice(user_email: str) -> bool:
+    return await send_email_sendgrid(
+        user_email,
+        "Authenticator BESIDE sostituito",
+        "<p>Il vecchio Authenticator è stato sostituito dopo una procedura di recupero autorizzata.</p>"
+        "<p>Tutte le sessioni precedenti sono state revocate: esegui un nuovo accesso completo.</p>",
+    )
+
+def email_delivery_configured() -> bool:
+    return APP_ENV == "local" or bool(EXTERNAL_SERVICES_ENABLED and SENDGRID_API_KEY and SENDER_EMAIL)
 
 async def send_password_reset_email(user_email: str, token: str) -> bool:
     reset_url = f"{FRONTEND_PUBLIC_URL}/reset-password?token={token}"

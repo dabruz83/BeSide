@@ -13,6 +13,8 @@ import { ResetPasswordPage } from "@/pages/ResetPasswordPage";
 import { VerifyEmailPage } from "@/pages/VerifyEmailPage";
 import { RecoveryEmailVerifyPage } from "@/pages/RecoveryEmailVerifyPage";
 import { RecoveryContactAcceptPage } from "@/pages/RecoveryContactAcceptPage";
+import { Recovery2FARequestPage } from "@/pages/Recovery2FARequestPage";
+import { Recovery2FAApprovePage } from "@/pages/Recovery2FAApprovePage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { FinancePage } from "@/pages/FinancePage";
@@ -202,6 +204,8 @@ const AppRouter = () => {
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/verify-recovery-email" element={<RecoveryEmailVerifyPage />} />
       <Route path="/recovery-contact/accept" element={<RecoveryContactAcceptPage />} />
+      <Route path="/recovery-2fa" element={<Recovery2FARequestPage />} />
+      <Route path="/recovery-2fa/approve" element={<Recovery2FAApprovePage />} />
       <Route path="/onboarding/client/:token" element={<ClientOnboardingPage />} />
       <Route path="/quote/:token" element={<QuotePage />} />
       <Route path="/admin" element={<AdminPage />} />

@@ -179,6 +179,12 @@ export const LoginPage = () => {
               <Button type="submit" className="w-full" disabled={loading || twoFactorCode.length !== 6}>
                 {loading ? "Verifica..." : "Verifica codice"}
               </Button>
+              <Link
+                to={`/recovery-2fa?email=${encodeURIComponent(formData.email)}`}
+                className="block text-center text-sm text-primary hover:underline"
+              >
+                Non hai più accesso al tuo Authenticator?
+              </Link>
             </form>
           )}
 
