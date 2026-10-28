@@ -21,6 +21,9 @@ import csv
 import io
 import html
 import re
+import base64
+import struct
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
@@ -71,6 +74,10 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
 PASSWORD_RESET_TOKEN_MINUTES = 30
 EMAIL_VERIFICATION_TOKEN_HOURS = 24
+RECOVERY_EMAIL_TOKEN_HOURS = 1
+RECOVERY_CONTACT_INVITE_HOURS = 24
+RECOVERY_CONTACT_SECURITY_DAYS = 7
+RECOVERY_CONTACT_MAX_ATTEMPTS = 5
 PUBLIC_LINK_TOKEN_DAYS = 30
 if len(JWT_SECRET) < 32:
     raise RuntimeError('JWT_SECRET_KEY must contain at least 32 characters')
@@ -92,6 +99,13 @@ FRONTEND_PUBLIC_URL = (
     os.environ.get('FRONTEND_PUBLIC_URL', '').strip().rstrip('/') or CORS_ORIGINS[0]
 )
 OAUTH_SESSION_URL = os.environ.get('OAUTH_SESSION_URL', '').strip()
+TOTP_ENCRYPTION_KEY = os.environ.get('TOTP_ENCRYPTION_KEY', '').strip()
+TOTP_ISSUER = "BeSide"
+TOTP_STEP_SECONDS = 30
+TOTP_PENDING_MINUTES = 10
+MFA_SESSION_MINUTES = 5
+MFA_MAX_ATTEMPTS = 5
+RECOVERY_CONTACT_ROLE = "recovery_contact"
 
 
 def get_boolean_environment_variable(name: str, default: bool) -> bool:
@@ -204,11 +218,45 @@ class UserLogin(BaseModel):
     email: EmailStr
     password: str = Field(min_length=1, max_length=128)
 
+class TwoFactorPasswordRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=128)
+
+class TwoFactorConfirmRequest(TwoFactorPasswordRequest):
+    code: str = Field(min_length=6, max_length=6)
+
+class TwoFactorVerifyRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=6)
+
+class RecoveryEmailSetupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+    code: Optional[str] = Field(default=None, min_length=6, max_length=6)
+
 class EmailRequest(BaseModel):
     email: EmailStr
 
 class TokenRequest(BaseModel):
     token: str = Field(min_length=20, max_length=512)
+
+class RecoveryEmailVerifyRequest(TokenRequest):
+    pass
+
+class RecoveryContactInviteRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+    code: Optional[str] = Field(default=None, min_length=6, max_length=6)
+
+class RecoveryContactAcceptRequest(TokenRequest):
+    acceptance_code: str = Field(min_length=6, max_length=6)
+
+class RecoveryContactLinkRequest(BaseModel):
+    contact_id: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=128)
+    code: Optional[str] = Field(default=None, min_length=6, max_length=6)
+
+class RecoveryContactAccountCreateRequest(TokenRequest):
+    acceptance_code: str = Field(min_length=6, max_length=6)
+    password: str = Field(min_length=10, max_length=128)
 
 class PasswordResetRequest(TokenRequest):
     password: str = Field(min_length=10, max_length=128)
@@ -418,6 +466,63 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def _totp_cipher() -> AESGCM:
+    if not TOTP_ENCRYPTION_KEY:
+        raise HTTPException(status_code=503, detail="2FA non configurato")
+    return AESGCM(hashlib.sha256(TOTP_ENCRYPTION_KEY.encode("utf-8")).digest())
+
+
+def encrypt_totp_secret(secret: str) -> str:
+    nonce = secrets.token_bytes(12)
+    encrypted = _totp_cipher().encrypt(nonce, secret.encode("ascii"), None)
+    return base64.urlsafe_b64encode(nonce + encrypted).decode("ascii")
+
+
+def decrypt_totp_secret(value: str) -> str:
+    try:
+        raw = base64.urlsafe_b64decode(value.encode("ascii"))
+        return _totp_cipher().decrypt(raw[:12], raw[12:], None).decode("ascii")
+    except (ValueError, TypeError, UnicodeError):
+        raise HTTPException(status_code=503, detail="Segreto 2FA non disponibile")
+
+
+def generate_totp_secret() -> str:
+    return base64.b32encode(secrets.token_bytes(20)).decode("ascii").rstrip("=")
+
+
+def totp_code(secret: str, timestamp: Optional[int] = None, offset: int = 0) -> str:
+    timestamp = int(timestamp if timestamp is not None else datetime.now(timezone.utc).timestamp())
+    counter = max(0, timestamp // TOTP_STEP_SECONDS + offset)
+    digest = hmac.new(
+        base64.b32decode(secret + "=" * (-len(secret) % 8), casefold=True),
+        struct.pack(">Q", counter),
+        hashlib.sha1,
+    ).digest()
+    index = digest[-1] & 0x0F
+    value = (struct.unpack(">I", digest[index:index + 4])[0] & 0x7FFFFFFF) % 1_000_000
+    return f"{value:06d}"
+
+
+def verify_totp_code(secret: str, code: str, timestamp: Optional[int] = None) -> Optional[int]:
+    if not re.fullmatch(r"\d{6}", code or ""):
+        return None
+    now = int(timestamp if timestamp is not None else datetime.now(timezone.utc).timestamp())
+    current_step = now // TOTP_STEP_SECONDS
+    for offset in (-1, 0, 1):
+        if hmac.compare_digest(totp_code(secret, now, offset), code):
+            return current_step + offset
+    return None
+
+
+def generate_recovery_codes(count: int = 10) -> List[str]:
+    """Generate one-time recovery secrets; callers only return them once."""
+    return [secrets.token_hex(16) for _ in range(count)]
+
+
+def hash_recovery_code(code: str) -> str:
+    return hmac.new(JWT_SECRET.encode("utf-8"), code.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
 # Keep the unknown-user login path close to the same bcrypt cost as a real user.
 DUMMY_PASSWORD_HASH = bcrypt.hashpw(
     b"beside-dummy-password-never-used",
@@ -574,6 +679,8 @@ def create_jwt_token(
     role: str = "member",
     company_id: str = "",
     jti: Optional[str] = None,
+    token_type: str = "access",
+    expires_delta: Optional[timedelta] = None,
 ) -> str:
     now = datetime.now(timezone.utc)
     payload = {
@@ -581,10 +688,10 @@ def create_jwt_token(
         "email": email,
         "role": role,
         "company_id": company_id,
-        "type": "access",
+        "type": token_type,
         "jti": jti or uuid.uuid4().hex,
         "iat": now,
-        "exp": now + timedelta(days=JWT_EXPIRATION_DAYS),
+        "exp": now + (expires_delta or timedelta(days=JWT_EXPIRATION_DAYS)),
     }
     return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
@@ -636,12 +743,39 @@ async def create_authenticated_session(user: Dict[str, Any]) -> str:
     })
     return token
 
+
+async def create_mfa_pending_session(user: Dict[str, Any]) -> str:
+    jti = uuid.uuid4().hex
+    lifetime = timedelta(minutes=MFA_SESSION_MINUTES)
+    token = create_jwt_token(
+        user["user_id"], user["email"], user.get("role", "member"),
+        user.get("company_id", ""), jti, "mfa_pending", lifetime,
+    )
+    now = datetime.now(timezone.utc)
+    await db.user_sessions.insert_one({
+        "session_id": f"mfa_{uuid.uuid4().hex[:16]}",
+        "user_id": user["user_id"],
+        "company_id": user.get("company_id"),
+        "jti": jti,
+        "token_hash": hash_token(token),
+        "session_type": "mfa_pending",
+        "expires_at": (now + lifetime).isoformat(),
+        "expires_at_dt": now + lifetime,
+        "created_at": now.isoformat(),
+        "revoked_at": None,
+        "mfa_attempts": 0,
+    })
+    return token
+
 async def _load_active_user(user_id: str) -> Dict[str, Any]:
     user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="Utente non trovato")
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="Account disattivato")
+    if user.get("role") == RECOVERY_CONTACT_ROLE:
+        user["company"] = {}
+        return user
     if not user.get("company_id"):
         raise HTTPException(status_code=403, detail="Account non associato a un'azienda")
 
@@ -652,6 +786,17 @@ async def _load_active_user(user_id: str) -> Dict[str, Any]:
         raise HTTPException(status_code=403, detail="Azienda non attiva")
     user["company"] = company
     return user
+
+def _ensure_recovery_contact_scope(request: Request, user: Dict[str, Any]) -> None:
+    """Recovery accounts may use only their own authentication endpoints."""
+    if user.get("role") != RECOVERY_CONTACT_ROLE:
+        return
+    allowed = {
+        "/api/auth/me", "/api/auth/logout", "/api/auth/2fa/setup",
+        "/api/auth/2fa/confirm", "/api/auth/2fa/verify",
+    }
+    if request.url.path not in allowed:
+        raise HTTPException(status_code=403, detail="Account contatto limitato all'autenticazione")
 
 async def get_current_user(request: Request) -> Dict[str, Any]:
     token = _extract_request_token(request)
@@ -665,9 +810,14 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
     )
 
     if session and session.get("session_type") != "jwt":
+        if session.get("session_type") == "mfa_pending":
+            raise HTTPException(status_code=401, detail="Secondo fattore richiesto")
         if _session_expired(session):
             raise HTTPException(status_code=401, detail="Sessione scaduta")
         user = await _load_active_user(session["user_id"])
+        _ensure_recovery_contact_scope(request, user)
+        if user.get("totp_enabled"):
+            raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
             raise HTTPException(status_code=403, detail="Verifica l'email prima di continuare")
         return user
@@ -682,6 +832,9 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
             if not session or session.get("jti") != payload["jti"] or _session_expired(session):
                 raise HTTPException(status_code=401, detail="Sessione revocata o scaduta")
         user = await _load_active_user(payload["user_id"])
+        _ensure_recovery_contact_scope(request, user)
+        if user.get("totp_enabled"):
+            raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
             raise HTTPException(status_code=403, detail="Verifica l'email prima di continuare")
         return user
@@ -754,11 +907,201 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "trial_ends_at": company.get("trial_ends_at"),
         "role": user.get("role", "member"),
         "email_verified": bool(user.get("email_verified", False)),
+        "totp_enabled": bool(user.get("totp_enabled", False)),
+        "recovery_email": user.get("recovery_email") if user.get("recovery_email_verified") else None,
+        "recovery_email_verified": bool(user.get("recovery_email_verified", False)),
         "is_active": bool(user.get("is_active", True)),
         "created_at": user.get("created_at", ""),
         "updated_at": user.get("updated_at", ""),
         "last_login_at": user.get("last_login_at"),
     }
+
+
+async def _verify_totp_or_recovery(user: Dict[str, Any], code: str) -> bool:
+    secret_value = user.get("totp_secret_enc")
+    if secret_value:
+        step = verify_totp_code(decrypt_totp_secret(secret_value), code)
+        if step is not None:
+            replay_guard = await db.users.update_one(
+                {"user_id": user["user_id"], "$or": [
+                    {"totp_last_used_step": {"$lt": step}},
+                    {"totp_last_used_step": {"$exists": False}},
+                ]},
+                {"$set": {"totp_last_used_step": step}},
+            )
+            return replay_guard.modified_count == 1
+    recovery_hash = hash_recovery_code(code)
+    consumed = await db.users.update_one(
+        {"user_id": user["user_id"], "totp_recovery_codes": recovery_hash},
+        {"$pull": {"totp_recovery_codes": recovery_hash}},
+    )
+    return consumed.modified_count == 1
+
+
+async def _consume_current_totp(user: Dict[str, Any], code: str) -> bool:
+    """Validate and atomically reserve the current TOTP step."""
+    secret_value = user.get("totp_secret_enc")
+    if not secret_value:
+        return False
+    step = verify_totp_code(decrypt_totp_secret(secret_value), code)
+    if step is None:
+        return False
+    replay_guard = await db.users.update_one(
+        {"user_id": user["user_id"], "$or": [
+            {"totp_last_used_step": {"$lt": step}},
+            {"totp_last_used_step": {"$exists": False}},
+        ]},
+        {"$set": {"totp_last_used_step": step}},
+    )
+    return replay_guard.modified_count == 1
+
+
+@api_router.post("/auth/2fa/setup")
+async def setup_two_factor(
+    data: TwoFactorPasswordRequest,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Prepare TOTP enrollment; activation requires a fresh code confirmation."""
+    await enforce_rate_limit(request, "auth_2fa_setup", limit=5, window_seconds=15 * 60,
+                             identifier=current_user["user_id"])
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    if current_user.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA già attivo")
+    secret = generate_totp_secret()
+    await db.users.update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": {
+            "totp_pending_secret_enc": encrypt_totp_secret(secret),
+            "totp_pending_created_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    label = f"{TOTP_ISSUER}:{current_user['email']}"
+    uri = (
+        f"otpauth://totp/{label}?secret={secret}&issuer={TOTP_ISSUER}"
+        f"&algorithm=SHA1&digits=6&period={TOTP_STEP_SECONDS}"
+    )
+    return {"secret": secret, "otpauth_uri": uri, "message": "Conferma con un codice dall'app di autenticazione."}
+
+
+@api_router.post("/auth/2fa/confirm")
+async def confirm_two_factor(
+    data: TwoFactorConfirmRequest,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    await enforce_rate_limit(request, "auth_2fa_confirm", limit=5, window_seconds=15 * 60,
+                             identifier=current_user["user_id"])
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    pending = current_user.get("totp_pending_secret_enc")
+    if not pending:
+        raise HTTPException(status_code=400, detail="Predisposizione 2FA non trovata")
+    pending_created_raw = current_user.get("totp_pending_created_at")
+    if not pending_created_raw:
+        raise HTTPException(status_code=400, detail="Predisposizione 2FA scaduta")
+    pending_created = parse_datetime(pending_created_raw)
+    if pending_created + timedelta(minutes=TOTP_PENDING_MINUTES) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Predisposizione 2FA scaduta")
+    secret = decrypt_totp_secret(pending)
+    if verify_totp_code(secret, data.code) is None:
+        raise HTTPException(status_code=400, detail="Codice 2FA non valido")
+    recovery_codes = generate_recovery_codes()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"user_id": current_user["user_id"], "totp_pending_secret_enc": pending},
+        {"$set": {"totp_enabled": True, "totp_enabled_at": now_iso,
+                  "totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes]},
+         "$unset": {"totp_pending_secret_enc": "", "totp_pending_created_at": ""}},
+    )
+    await _start_recovery_contact_security_period(current_user["user_id"])
+    await db.user_sessions.update_many(
+        {"user_id": current_user["user_id"], "revoked_at": None},
+        {"$set": {"revoked_at": now_iso}},
+    )
+    await audit_event("2fa_enabled", user=current_user, request=request)
+    return {"enabled": True, "recovery_codes": recovery_codes}
+
+
+@api_router.post("/auth/2fa/verify")
+async def verify_two_factor(data: TwoFactorVerifyRequest, response: Response, request: Request):
+    token = _extract_request_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
+    session = await db.user_sessions.find_one(
+        {"token_hash": hash_token(token), "session_type": "mfa_pending", "revoked_at": None},
+        {"_id": 0},
+    )
+    if not session or _session_expired(session):
+        raise HTTPException(status_code=401, detail="Verifica 2FA scaduta")
+    updated = await db.user_sessions.find_one_and_update(
+        {"session_id": session["session_id"], "mfa_attempts": {"$lt": MFA_MAX_ATTEMPTS}},
+        {"$inc": {"mfa_attempts": 1}}, return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=429, detail="Troppi tentativi 2FA")
+    user = await _load_active_user(session["user_id"])
+    if not await _verify_totp_or_recovery(user, data.code):
+        raise HTTPException(status_code=401, detail="Codice 2FA non valido")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.user_sessions.update_one(
+        {"session_id": session["session_id"], "revoked_at": None},
+        {"$set": {"revoked_at": now_iso}},
+    )
+    user["last_login_at"] = now_iso
+    await db.users.update_one({"user_id": user["user_id"]}, {"$set": {"last_login_at": now_iso, "updated_at": now_iso}})
+    access_token = await create_authenticated_session(user)
+    await audit_event("login", user=user, request=request, metadata={"mfa": True})
+    set_session_cookie(response, access_token)
+    return {"user": public_user(user)}
+
+
+@api_router.post("/auth/2fa/recovery-codes/regenerate")
+async def regenerate_recovery_codes(
+    data: TwoFactorConfirmRequest,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Replace all recovery codes after password plus a fresh TOTP check."""
+    await enforce_rate_limit(request, "auth_2fa_recovery_regenerate", limit=3,
+                             window_seconds=15 * 60, identifier=current_user["user_id"])
+    if not current_user.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA non attivo")
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    if not await _consume_current_totp(current_user, data.code):
+        raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    recovery_codes = generate_recovery_codes()
+    await db.users.update_one(
+        {"user_id": current_user["user_id"], "totp_enabled": True},
+        {"$set": {"totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes],
+                  "totp_recovery_codes_rotated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await audit_event("2fa_recovery_codes_regenerated", user=current_user, request=request)
+    return {"recovery_codes": recovery_codes}
+
+
+@api_router.post("/auth/2fa/disable")
+async def disable_two_factor(
+    data: TwoFactorConfirmRequest,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    if not current_user.get("totp_enabled"):
+        raise HTTPException(status_code=400, detail="2FA non attivo")
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    if not await _verify_totp_or_recovery(current_user, data.code):
+        raise HTTPException(status_code=401, detail="Codice 2FA non valido")
+    await db.users.update_one(
+        {"user_id": current_user["user_id"]},
+        {"$set": {"totp_enabled": False}, "$unset": {
+            "totp_secret_enc": "", "totp_recovery_codes": "", "totp_last_used_step": "",
+        }},
+    )
+    await audit_event("2fa_disabled", user=current_user, request=request)
+    return {"enabled": False}
 
 def calculate_tax(
     revenue: float,
@@ -1309,6 +1652,58 @@ async def send_email_verification(user_email: str, token: str) -> bool:
         ),
     )
 
+async def send_recovery_email_verification(user_email: str, token: str) -> bool:
+    verification_url = f"{FRONTEND_PUBLIC_URL}/verify-recovery-email?token={token}"
+    return await send_email_sendgrid(
+        user_email,
+        "Configura l'email di recupero BESIDE",
+        (
+            "<p>È stata richiesta la configurazione di questo indirizzo come email di recupero BESIDE.</p>"
+            f'<p><a href="{verification_url}">Conferma email di recupero</a></p>'
+            f"<p>Il link scade tra {RECOVERY_EMAIL_TOKEN_HOURS} ora ed è monouso.</p>"
+        ),
+    )
+
+async def send_recovery_email_security_notice(primary_email: str, recovery_email: str) -> bool:
+    safe_recovery_email = html.escape(recovery_email)
+    return await send_email_sendgrid(
+        primary_email,
+        "Modifica della sicurezza dell'account BESIDE",
+        (
+            "<p>È stata richiesta la configurazione di un'email secondaria di recupero.</p>"
+            f"<p>Indirizzo interessato: {safe_recovery_email}</p>"
+            "<p>Se non sei stato tu, accedi al tuo account e contatta il supporto.</p>"
+        ),
+    )
+
+async def send_recovery_contact_invite(contact_email: str, token: str, acceptance_code: str) -> bool:
+    invite_url = f"{FRONTEND_PUBLIC_URL}/recovery-contact/accept?token={token}"
+    return await send_email_sendgrid(
+        contact_email,
+        "Invito come contatto fidato BESIDE",
+        (
+            "<p>Sei stato invitato come contatto fidato per un account BESIDE.</p>"
+            f'<p><a href="{invite_url}">Apri l\'invito</a></p>'
+            f"<p>Per confermare inserisci anche il codice di accettazione: <strong>{html.escape(acceptance_code)}</strong></p>"
+            f"<p>L'invito scade tra {RECOVERY_CONTACT_INVITE_HOURS} ore. Dopo l'accettazione è previsto un periodo di sicurezza di "
+            f"{RECOVERY_CONTACT_SECURITY_DAYS} giorni.</p>"
+        ),
+    )
+
+async def send_recovery_contact_notice(primary_email: str, contact_email: str, event: str) -> bool:
+    safe_contact = html.escape(contact_email)
+    labels = {
+        "invited": "È stato inviato un invito a un nuovo contatto fidato.",
+        "accepted": "Il contatto fidato ha accettato l'invito.",
+        "linked": "Il contatto fidato ha completato l'associazione del proprio account.",
+        "revoked": "Il contatto fidato è stato revocato.",
+    }
+    return await send_email_sendgrid(
+        primary_email,
+        "Modifica contatto fidato BESIDE",
+        f"<p>{labels.get(event, 'È cambiata la configurazione del contatto fidato.')}</p><p>Indirizzo: {safe_contact}</p>",
+    )
+
 async def send_password_reset_email(user_email: str, token: str) -> bool:
     reset_url = f"{FRONTEND_PUBLIC_URL}/reset-password?token={token}"
     return await send_email_sendgrid(
@@ -1475,10 +1870,18 @@ async def login(user_data: UserLogin, response: Response, request: Request):
     if email_verification_blocks_access(user):
         raise HTTPException(status_code=403, detail="Verifica l'email prima di accedere")
 
+    if user.get("role") == RECOVERY_CONTACT_ROLE and not user.get("email_verified"):
+        raise HTTPException(status_code=403, detail="Verifica l'email prima di accedere")
+
     user = await _load_active_user(user["user_id"])
+    if user.get("totp_enabled"):
+        pending_token = await create_mfa_pending_session(user)
+        set_session_cookie(response, pending_token)
+        await audit_event("login_password_verified", user=user, request=request, metadata={"mfa_required": True})
+        return {"mfa_required": True, "expires_in": MFA_SESSION_MINUTES * 60}
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.users.update_one(
-        {"user_id": user["user_id"], "company_id": user["company_id"]},
+        {"user_id": user["user_id"], "company_id": user.get("company_id")},
         {"$set": {"last_login_at": now_iso, "updated_at": now_iso}},
     )
     user["last_login_at"] = now_iso
@@ -1589,6 +1992,12 @@ async def process_google_session(request: Request, response: Response):
         user = user_doc
 
     user = await _load_active_user(user_id)
+    if user.get("totp_enabled"):
+        pending_token = await create_mfa_pending_session(user)
+        set_session_cookie(response, pending_token)
+        await audit_event("login_password_verified", user=user, request=request,
+                          metadata={"provider": "oauth", "mfa_required": True})
+        return {"mfa_required": True, "expires_in": MFA_SESSION_MINUTES * 60}
     expires_at = datetime.now(timezone.utc) + timedelta(days=7)
     await db.user_sessions.insert_one({
         "session_id": f"session_{uuid.uuid4().hex[:16]}",
@@ -1651,6 +2060,369 @@ async def update_profile(
 
     updated_user = await _load_active_user(current_user["user_id"])
     return public_user(updated_user)
+
+@api_router.post("/auth/recovery-email/setup")
+async def setup_recovery_email(
+    data: RecoveryEmailSetupRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Start secondary-email enrollment; this never changes MFA state."""
+    await enforce_rate_limit(request, "auth_recovery_email_setup", limit=3,
+                             window_seconds=60 * 60, identifier=current_user["user_id"])
+    target_email = normalize_email(str(data.email))
+    if target_email == normalize_email(current_user["email"]):
+        raise HTTPException(status_code=400, detail="L'email di recupero deve essere diversa da quella principale")
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    if current_user.get("totp_enabled"):
+        if not data.code or not await _consume_current_totp(current_user, data.code):
+            raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    occupied = await db.users.find_one(
+        {"recovery_email": target_email, "user_id": {"$ne": current_user["user_id"]}},
+        {"_id": 1},
+    )
+    if occupied:
+        raise HTTPException(status_code=400, detail="Email di recupero già associata a un account")
+    now = datetime.now(timezone.utc)
+    await db.email_recovery_tokens.update_many(
+        {"user_id": current_user["user_id"], "used_at": None},
+        {"$set": {"used_at": now.isoformat(), "invalidated_reason": "replaced"}},
+    )
+    token = secrets.token_urlsafe(32)
+    await db.email_recovery_tokens.insert_one({
+        "token_id": f"recovery_email_{uuid.uuid4().hex[:16]}",
+        "token_hash": hash_token(token),
+        "user_id": current_user["user_id"],
+        "company_id": current_user["company_id"],
+        "recovery_email": target_email,
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=RECOVERY_EMAIL_TOKEN_HOURS)).isoformat(),
+        "expires_at_dt": now + timedelta(hours=RECOVERY_EMAIL_TOKEN_HOURS),
+        "used_at": None,
+    })
+    background_tasks.add_task(send_recovery_email_verification, target_email, token)
+    background_tasks.add_task(send_recovery_email_security_notice, current_user["email"], target_email)
+    return {"message": "Controlla l'email secondaria per completare la verifica."}
+
+@api_router.post("/auth/recovery-email/verify")
+async def verify_recovery_email(
+    data: RecoveryEmailVerifyRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    await enforce_rate_limit(request, "auth_recovery_email_verify", limit=10,
+                             window_seconds=60 * 60)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    token_doc = await db.email_recovery_tokens.find_one_and_update(
+        {"token_hash": hash_token(data.token), "used_at": None,
+         "expires_at": {"$gt": now_iso}},
+        {"$set": {"used_at": now_iso}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Link non valido, già usato o scaduto")
+    user = await db.users.find_one({"user_id": token_doc["user_id"], "is_active": {"$ne": False}}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=400, detail="Account non disponibile")
+    occupied = await db.users.find_one(
+        {"recovery_email": token_doc["recovery_email"], "user_id": {"$ne": user["user_id"]}},
+        {"_id": 1},
+    )
+    if occupied:
+        raise HTTPException(status_code=400, detail="Email di recupero già associata a un account")
+    try:
+        await db.users.update_one(
+            {"user_id": user["user_id"]},
+            {"$set": {"recovery_email": token_doc["recovery_email"],
+                      "recovery_email_verified": True,
+                      "recovery_email_verified_at": now_iso,
+                      "updated_at": now_iso}},
+        )
+    except DuplicateKeyError:
+        raise HTTPException(status_code=400, detail="Email di recupero già associata a un account")
+    background_tasks.add_task(
+        send_recovery_email_security_notice,
+        user["email"],
+        token_doc["recovery_email"],
+    )
+    await audit_event("recovery_email_verified", user=user, request=request)
+    return {"message": "Email di recupero verificata."}
+
+async def _refresh_recovery_contact_status(contact: Dict[str, Any]) -> Dict[str, Any]:
+    """Promote a verified contact after the mandatory seven-day hold."""
+    if contact.get("status") == "security_period" and contact.get("linked_user_id"):
+        end = parse_datetime(contact.get("security_period_ends_at"))
+        if end <= datetime.now(timezone.utc):
+            now_iso = datetime.now(timezone.utc).isoformat()
+            updated = await db.recovery_contacts.find_one_and_update(
+                {"contact_id": contact["contact_id"], "status": "security_period"},
+                {"$set": {"status": "active", "activated_at": now_iso, "updated_at": now_iso}},
+                return_document=ReturnDocument.AFTER,
+            )
+            if updated:
+                contact = updated
+    return contact
+
+async def _start_recovery_contact_security_period(user_id: str) -> None:
+    """Start the hold only after a recovery account has email + TOTP verified."""
+    user = await db.users.find_one({"user_id": user_id}, {"_id": 0})
+    if not user or user.get("role") != RECOVERY_CONTACT_ROLE:
+        return
+    if not user.get("email_verified") or not user.get("totp_enabled"):
+        return
+    now = datetime.now(timezone.utc)
+    await db.recovery_contacts.update_one(
+        {"linked_user_id": user_id, "status": "verified", "linked_account_type": "recovery_contact"},
+        {"$set": {"status": "security_period", "account_verified_at": now.isoformat(),
+                  "security_period_ends_at": (now + timedelta(days=RECOVERY_CONTACT_SECURITY_DAYS)).isoformat(),
+                  "updated_at": now.isoformat()}},
+    )
+
+@api_router.get("/auth/recovery-contact")
+async def get_recovery_contact(current_user: Dict = Depends(get_current_user)):
+    contact = await db.recovery_contacts.find_one(
+        {"user_id": current_user["user_id"], "status": {"$ne": "revoked"}},
+        {"_id": 0, "contact_id": 1, "contact_email": 1, "status": 1, "created_at": 1,
+         "accepted_at": 1, "security_period_ends_at": 1, "activated_at": 1, "linked_user_id": 1},
+        sort=[("created_at", -1)],
+    )
+    if not contact:
+        return {"contact": None}
+    contact = await _refresh_recovery_contact_status(contact)
+    return {"contact": contact}
+
+@api_router.post("/auth/recovery-contact/invite")
+async def invite_recovery_contact(
+    data: RecoveryContactInviteRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Create a pending trusted-contact invitation; this never changes MFA state."""
+    await enforce_rate_limit(request, "auth_recovery_contact_invite", limit=3,
+                             window_seconds=60 * 60, identifier=current_user["user_id"])
+    contact_email = normalize_email(str(data.email))
+    if contact_email == normalize_email(current_user["email"]):
+        raise HTTPException(status_code=400, detail="Il contatto deve avere un indirizzo diverso dal tuo")
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    if current_user.get("totp_enabled"):
+        if not data.code or not await _consume_current_totp(current_user, data.code):
+            raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    occupied = await db.recovery_contacts.find_one(
+        {"contact_email": contact_email, "status": {"$ne": "revoked"}, "user_id": {"$ne": current_user["user_id"]}},
+        {"_id": 1},
+    )
+    if occupied:
+        raise HTTPException(status_code=400, detail="Email già associata a un contatto fidato")
+    now = datetime.now(timezone.utc)
+    token = secrets.token_urlsafe(32)
+    acceptance_code = f"{secrets.randbelow(1_000_000):06d}"
+    await db.recovery_contacts.insert_one({
+        "contact_id": f"recovery_contact_{uuid.uuid4().hex[:16]}",
+        "contact_token_hash": hash_token(token),
+        "acceptance_code_hash": hash_token(acceptance_code),
+        "user_id": current_user["user_id"],
+        "company_id": current_user["company_id"],
+        "contact_email": contact_email,
+        "status": "pending_invitation",
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(hours=RECOVERY_CONTACT_INVITE_HOURS)).isoformat(),
+        "expires_at_dt": now + timedelta(hours=RECOVERY_CONTACT_INVITE_HOURS),
+        "acceptance_attempts": 0,
+        "used_at": None,
+    })
+    background_tasks.add_task(send_recovery_contact_invite, contact_email, token, acceptance_code)
+    background_tasks.add_task(send_recovery_contact_notice, current_user["email"], contact_email, "invited")
+    await audit_event("recovery_contact_invited", user=current_user, request=request)
+    return {"message": "Invito del contatto fidato inviato.", "status": "pending_invitation"}
+
+@api_router.post("/auth/recovery-contact/accept")
+async def accept_recovery_contact(
+    data: RecoveryContactAcceptRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Accept an invite with both the one-time link and a separate code."""
+    await enforce_rate_limit(request, "auth_recovery_contact_accept", limit=5,
+                             window_seconds=60 * 60)
+    token_hash = hash_token(data.token)
+    now = datetime.now(timezone.utc)
+    doc = await db.recovery_contacts.find_one({"contact_token_hash": token_hash}, {"_id": 0})
+    if not doc or doc.get("status") != "pending_invitation" or parse_datetime(doc.get("expires_at")) <= now:
+        raise HTTPException(status_code=400, detail="Invito non valido, già usato o scaduto")
+    if doc.get("acceptance_attempts", 0) >= RECOVERY_CONTACT_MAX_ATTEMPTS:
+        raise HTTPException(status_code=429, detail="Troppi tentativi di accettazione")
+    if not hmac.compare_digest(doc.get("acceptance_code_hash", ""), hash_token(data.acceptance_code)):
+        await db.recovery_contacts.update_one(
+            {"contact_id": doc["contact_id"], "status": "pending_invitation"},
+            {"$inc": {"acceptance_attempts": 1}},
+        )
+        raise HTTPException(status_code=401, detail="Codice di accettazione non valido")
+    now_iso = now.isoformat()
+    accepted = await db.recovery_contacts.find_one_and_update(
+        {"contact_id": doc["contact_id"], "status": "pending_invitation",
+         "contact_token_hash": token_hash, "acceptance_code_hash": hash_token(data.acceptance_code),
+         "acceptance_attempts": {"$lt": RECOVERY_CONTACT_MAX_ATTEMPTS}},
+        {"$set": {"status": "verified", "accepted_at": now_iso,
+                  "contact_verified_at": now_iso,
+                  "updated_at": now_iso}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not accepted:
+        raise HTTPException(status_code=400, detail="Invito non più disponibile")
+    await db.recovery_contacts.update_many(
+        {"user_id": accepted["user_id"], "contact_id": {"$ne": accepted["contact_id"]},
+         "status": {"$in": ["pending_invitation", "security_period", "active"]}},
+        {"$set": {"status": "revoked", "revoked_at": now_iso, "updated_at": now_iso,
+                  "revoked_reason": "replaced"}},
+    )
+    user = await db.users.find_one({"user_id": accepted["user_id"]}, {"_id": 0})
+    if user:
+        background_tasks.add_task(send_recovery_contact_notice, user["email"], accepted["contact_email"], "accepted")
+        await audit_event("recovery_contact_accepted", user=user, request=request)
+    return {"message": "Contatto verificato. Ora deve completare l'associazione di un account.",
+            "status": "verified", "contact_id": accepted["contact_id"]}
+
+@api_router.post("/auth/recovery-contact/create-account")
+async def create_recovery_contact_account(
+    data: RecoveryContactAccountCreateRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Create a password account only from a verified trusted-contact invite."""
+    await enforce_rate_limit(request, "auth_recovery_contact_create", limit=5,
+                             window_seconds=60 * 60)
+    validate_password_strength(data.password)
+    token_hash = hash_token(data.token)
+    contact = await db.recovery_contacts.find_one({
+        "contact_token_hash": token_hash,
+        "status": "verified",
+        "linked_user_id": {"$exists": False},
+    }, {"_id": 0})
+    if not contact or contact.get("acceptance_attempts", 0) >= RECOVERY_CONTACT_MAX_ATTEMPTS:
+        raise HTTPException(status_code=400, detail="Invito non valido o già associato")
+    if not hmac.compare_digest(contact.get("acceptance_code_hash", ""), hash_token(data.acceptance_code)):
+        await db.recovery_contacts.update_one(
+            {"contact_id": contact["contact_id"], "status": "verified"},
+            {"$inc": {"acceptance_attempts": 1}},
+        )
+        raise HTTPException(status_code=400, detail="Invito non valido o già associato")
+    email = normalize_email(contact["contact_email"])
+    if await db.users.find_one({"email": email}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Esiste già un account per questo indirizzo; usa il collegamento account")
+    now = datetime.now(timezone.utc)
+    user_id = f"user_recovery_{uuid.uuid4().hex[:12]}"
+    user_doc = {
+        "user_id": user_id,
+        "company_id": None,
+        "email": email,
+        "password_hash": hash_password(data.password),
+        "first_name": "",
+        "full_name": "",
+        "role": RECOVERY_CONTACT_ROLE,
+        "is_active": True,
+        "email_verified": False,
+        "email_verification_exempt": False,
+        "totp_enabled": False,
+        "created_at": now.isoformat(),
+        "updated_at": now.isoformat(),
+        "last_login_at": None,
+    }
+    verification_token = await create_one_time_token(
+        db.email_verification_tokens, user_doc, timedelta(hours=EMAIL_VERIFICATION_TOKEN_HOURS)
+    )
+    try:
+        await db.users.insert_one(user_doc)
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Esiste già un account per questo indirizzo")
+    linked = await db.recovery_contacts.find_one_and_update(
+        {"contact_id": contact["contact_id"], "status": "verified", "linked_user_id": {"$exists": False},
+         "contact_token_hash": token_hash, "acceptance_code_hash": hash_token(data.acceptance_code)},
+        {"$set": {"linked_user_id": user_id, "linked_account_type": "recovery_contact",
+                  "account_linked_at": now.isoformat(), "activation_pending": True, "updated_at": now.isoformat()},
+         "$unset": {"contact_token_hash": "", "acceptance_code_hash": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not linked:
+        await db.users.delete_one({"user_id": user_id, "role": RECOVERY_CONTACT_ROLE})
+        raise HTTPException(status_code=409, detail="Invito già associato")
+    background_tasks.add_task(send_email_verification, email, verification_token)
+    owner = await db.users.find_one({"user_id": contact["user_id"]}, {"_id": 0})
+    if owner:
+        background_tasks.add_task(send_recovery_contact_notice, owner["email"], email, "linked")
+        await audit_event("recovery_contact_account_created", user=owner, request=request,
+                          metadata={"contact_account_id": user_id})
+    return {"user_id": user_id, "email": email, "role": RECOVERY_CONTACT_ROLE,
+            "email_verification_required": True, "totp_required": True,
+            "message": "Account creato. Verifica l'email e attiva il tuo Authenticator."}
+
+@api_router.post("/auth/recovery-contact/link-account")
+async def link_recovery_contact_account(
+    data: RecoveryContactLinkRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Link an already authenticated BeSide account to a verified invite."""
+    await enforce_rate_limit(request, "auth_recovery_contact_link", limit=3,
+                             window_seconds=60 * 60, identifier=current_user["user_id"])
+    if not verify_password(data.password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    if current_user.get("totp_enabled"):
+        if not data.code or not await _consume_current_totp(current_user, data.code):
+            raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    contact = await db.recovery_contacts.find_one({
+        "contact_id": data.contact_id,
+        "status": "verified",
+        "linked_user_id": {"$exists": False},
+    }, {"_id": 0})
+    if not contact or normalize_email(current_user["email"]) != normalize_email(contact["contact_email"]):
+        raise HTTPException(status_code=403, detail="Invito non associabile a questo account")
+    if current_user["user_id"] == contact["user_id"]:
+        raise HTTPException(status_code=400, detail="Il contatto deve essere un account distinto")
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    security_end = (now + timedelta(days=RECOVERY_CONTACT_SECURITY_DAYS)).isoformat()
+    linked = await db.recovery_contacts.find_one_and_update(
+        {"contact_id": data.contact_id, "status": "verified", "linked_user_id": {"$exists": False}},
+        {"$set": {"status": "security_period", "linked_user_id": current_user["user_id"],
+                  "linked_account_type": "existing", "account_linked_at": now_iso,
+                  "security_period_ends_at": security_end, "updated_at": now_iso},
+         "$unset": {"contact_token_hash": "", "acceptance_code_hash": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not linked:
+        raise HTTPException(status_code=409, detail="Invito già associato")
+    owner = await db.users.find_one({"user_id": linked["user_id"]}, {"_id": 0})
+    if owner:
+        background_tasks.add_task(send_recovery_contact_notice, owner["email"], linked["contact_email"], "linked")
+        await audit_event("recovery_contact_account_linked", user=owner, request=request,
+                          metadata={"contact_account_id": current_user["user_id"]})
+    return {"message": "Account del contatto associato. Il periodo di sicurezza è iniziato.",
+            "status": "security_period", "security_period_ends_at": security_end}
+
+@api_router.post("/auth/recovery-contact/revoke")
+async def revoke_recovery_contact(
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    await enforce_rate_limit(request, "auth_recovery_contact_revoke", limit=5,
+                             window_seconds=60 * 60, identifier=current_user["user_id"])
+    now_iso = datetime.now(timezone.utc).isoformat()
+    revoked = await db.recovery_contacts.find_one_and_update(
+        {"user_id": current_user["user_id"], "status": {"$in": ["pending_invitation", "security_period", "active"]}},
+        {"$set": {"status": "revoked", "revoked_at": now_iso, "updated_at": now_iso}},
+        sort=[("created_at", -1)], return_document=ReturnDocument.AFTER,
+    )
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Nessun contatto fidato attivo")
+    background_tasks.add_task(send_recovery_contact_notice, current_user["email"], revoked["contact_email"], "revoked")
+    await audit_event("recovery_contact_revoked", user=current_user, request=request)
+    return {"message": "Contatto fidato revocato.", "status": "revoked"}
 
 @api_router.post("/auth/forgot-password")
 async def forgot_password(data: EmailRequest, background_tasks: BackgroundTasks, request: Request):
@@ -1780,6 +2552,7 @@ async def verify_email(data: TokenRequest, request: Request):
         {"_id": 0},
     )
     if user:
+        await _start_recovery_contact_security_period(user["user_id"])
         await audit_event("email_verified", user=user, request=request)
     return {"message": "Indirizzo email verificato."}
 
@@ -3166,16 +3939,13 @@ async def admin_login(user_data: UserLogin, response: Response, request: Request
         raise HTTPException(status_code=401, detail="Credenziali non valide")
 
     admin_user = await db.users.find_one({"email": email}, {"_id": 0})
-    password_valid = False
-    if admin_user and admin_user.get("password_hash"):
-        try:
-            password_valid = verify_password(user_data.password, admin_user["password_hash"])
-        except (TypeError, ValueError):
-            password_valid = False
-    else:
-        # First bootstrap only. Subsequent logins use the persisted bcrypt hash;
-        # startup synchronizes intentional rotations from the Railway secret.
-        password_valid = hmac.compare_digest(user_data.password, ADMIN_PASSWORD)
+    if not admin_user or not admin_user.get("password_hash"):
+        verify_password(user_data.password, DUMMY_PASSWORD_HASH)
+        raise HTTPException(status_code=401, detail="Credenziali non valide")
+    try:
+        password_valid = verify_password(user_data.password, admin_user["password_hash"])
+    except (TypeError, ValueError):
+        password_valid = False
 
     if not password_valid:
         raise HTTPException(status_code=401, detail="Credenziali non valide")
@@ -3197,41 +3967,27 @@ async def admin_login(user_data: UserLogin, response: Response, request: Request
             "created_at": now_iso,
             "updated_at": now_iso,
         })
-    if not admin_user:
-        admin_user = {
-            "user_id": "admin_super",
+    await db.users.update_one(
+        {"user_id": admin_user["user_id"]},
+        {"$set": {
             "company_id": PLATFORM_COMPANY_ID,
-            "email": email,
-            "password_hash": hash_password(user_data.password),
-            "full_name": "BESIDE Admin",
-            "business_name": "BESIDE",
             "role": "admin",
             "platform_role": "super_admin",
             "email_verified": True,
             "email_verification_exempt": False,
             "is_active": True,
-            "created_at": now_iso,
-            "updated_at": now_iso,
             "last_login_at": now_iso,
-        }
-        await db.users.insert_one(admin_user)
-    else:
-        await db.users.update_one(
-            {"user_id": admin_user["user_id"]},
-            {"$set": {
-                "company_id": PLATFORM_COMPANY_ID,
-                "password_hash": admin_user.get("password_hash") or hash_password(user_data.password),
-                "role": "admin",
-                "platform_role": "super_admin",
-                "email_verified": True,
-                "email_verification_exempt": False,
-                "is_active": True,
-                "last_login_at": now_iso,
-                "updated_at": now_iso,
-            }},
-        )
+            "updated_at": now_iso,
+        }},
+    )
 
     admin_user = await _load_active_user(admin_user["user_id"])
+    if admin_user.get("totp_enabled"):
+        pending_token = await create_mfa_pending_session(admin_user)
+        set_session_cookie(response, pending_token)
+        await audit_event("login_password_verified", user=admin_user, request=request,
+                          metadata={"platform_admin": True, "mfa_required": True})
+        return {"mfa_required": True, "expires_in": MFA_SESSION_MINUTES * 60}
     token = await create_authenticated_session(admin_user)
     await audit_event("login", user=admin_user, request=request, metadata={"platform_admin": True})
     set_session_cookie(response, token)

@@ -22,9 +22,11 @@ import {
   MapPin,
   Phone,
   Search,
-  Loader2
+  Loader2,
+  ShieldCheck
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { QRCodeSVG } from "qrcode.react";
 
 const TAX_REGIMES = [
   { value: "forfettario_5", label: "Forfettario 5%" },
@@ -52,6 +54,20 @@ export const ProfilePage = () => {
   const [saving, setSaving] = useState(false);
   const [searchingCompany, setSearchingCompany] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [twoFactorPassword, setTwoFactorPassword] = useState("");
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [twoFactorSetup, setTwoFactorSetup] = useState(null);
+  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [twoFactorBusy, setTwoFactorBusy] = useState(false);
+  const [recoveryEmail, setRecoveryEmail] = useState(user?.recovery_email || "");
+  const [recoveryEmailPassword, setRecoveryEmailPassword] = useState("");
+  const [recoveryEmailCode, setRecoveryEmailCode] = useState("");
+  const [recoveryEmailBusy, setRecoveryEmailBusy] = useState(false);
+  const [recoveryContact, setRecoveryContact] = useState(null);
+  const [recoveryContactEmail, setRecoveryContactEmail] = useState("");
+  const [recoveryContactPassword, setRecoveryContactPassword] = useState("");
+  const [recoveryContactCode, setRecoveryContactCode] = useState("");
+  const [recoveryContactBusy, setRecoveryContactBusy] = useState(false);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -86,6 +102,12 @@ export const ProfilePage = () => {
         ...user.business_info
       }));
     }
+  }, [user]);
+
+  useEffect(() => {
+    axios.get(`${API}/auth/recovery-contact`)
+      .then((response) => setRecoveryContact(response.data.contact))
+      .catch(() => setRecoveryContact(null));
   }, [user]);
 
   const handleServiceToggle = (serviceId) => {
@@ -134,6 +156,105 @@ export const ProfilePage = () => {
   const handleLogout = async () => {
     await logout();
     navigate("/");
+  };
+
+  const handleTwoFactorSetup = async () => {
+    if (!twoFactorPassword) {
+      toast.error("Inserisci la password per confermare la tua identità");
+      return;
+    }
+    setTwoFactorBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/2fa/setup`, { password: twoFactorPassword });
+      setTwoFactorSetup(response.data);
+      setTwoFactorCode("");
+      toast.success("Scansiona il QR e inserisci il codice generato");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile predisporre il 2FA");
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  };
+
+  const handleTwoFactorConfirm = async () => {
+    if (!twoFactorSetup || !/^\d{6}$/.test(twoFactorCode)) {
+      toast.error("Inserisci un codice TOTP di 6 cifre");
+      return;
+    }
+    setTwoFactorBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/2fa/confirm`, {
+        password: twoFactorPassword,
+        code: twoFactorCode,
+      });
+      setRecoveryCodes(response.data.recovery_codes || []);
+      setTwoFactorSetup(null);
+      setTwoFactorPassword("");
+      setTwoFactorCode("");
+      toast.success("Autenticazione a due fattori attivata");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Codice non valido o scaduto");
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  };
+
+  const handleRecoveryEmailSetup = async () => {
+    if (!recoveryEmail || !recoveryEmailPassword || (user?.totp_enabled && recoveryEmailCode.length !== 6)) {
+      toast.error(user?.totp_enabled ? "Inserisci email, password e codice TOTP" : "Inserisci email e password");
+      return;
+    }
+    setRecoveryEmailBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/recovery-email/setup`, {
+        email: recoveryEmail,
+        password: recoveryEmailPassword,
+        ...(user?.totp_enabled ? { code: recoveryEmailCode } : {}),
+      });
+      toast.success(response.data.message);
+      setRecoveryEmailPassword("");
+      setRecoveryEmailCode("");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile configurare l'email di recupero");
+    } finally {
+      setRecoveryEmailBusy(false);
+    }
+  };
+
+  const handleRecoveryContactInvite = async () => {
+    if (!recoveryContactEmail || !recoveryContactPassword || (user?.totp_enabled && recoveryContactCode.length !== 6)) {
+      toast.error(user?.totp_enabled ? "Inserisci email, password e codice TOTP" : "Inserisci email e password");
+      return;
+    }
+    setRecoveryContactBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/recovery-contact/invite`, {
+        email: recoveryContactEmail,
+        password: recoveryContactPassword,
+        ...(user?.totp_enabled ? { code: recoveryContactCode } : {}),
+      });
+      setRecoveryContact({ contact_email: recoveryContactEmail, status: response.data.status });
+      setRecoveryContactPassword("");
+      setRecoveryContactCode("");
+      toast.success(response.data.message);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile inviare l'invito");
+    } finally {
+      setRecoveryContactBusy(false);
+    }
+  };
+
+  const handleRecoveryContactRevoke = async () => {
+    setRecoveryContactBusy(true);
+    try {
+      await axios.post(`${API}/auth/recovery-contact/revoke`);
+      setRecoveryContact(null);
+      toast.success("Contatto fidato revocato");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile revocare il contatto");
+    } finally {
+      setRecoveryContactBusy(false);
+    }
   };
 
   const getInitials = (name) => {
@@ -531,6 +652,127 @@ export const ProfilePage = () => {
 
         {/* Sidebar */}
         <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5 text-secondary" />
+                Sicurezza account
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {user?.totp_enabled ? (
+                <p className="text-sm text-success">Autenticazione a due fattori attiva.</p>
+              ) : recoveryCodes.length > 0 ? (
+                <div className="space-y-3">
+                  <p className="text-sm font-medium">Salva questi codici di recupero. Saranno mostrati una sola volta.</p>
+                  <div className="grid grid-cols-2 gap-2 rounded-md bg-muted p-3 font-mono text-xs">
+                    {recoveryCodes.map((code) => <span key={code}>{code}</span>)}
+                  </div>
+                  <p className="text-xs text-muted-foreground">Per completare l'attivazione, accedi di nuovo.</p>
+                </div>
+              ) : !twoFactorSetup ? (
+                <div className="space-y-3">
+                  <p className="text-sm text-muted-foreground">Proteggi l'accesso con Google Authenticator o Microsoft Authenticator.</p>
+                  <Label htmlFor="two-factor-password">Password attuale</Label>
+                  <Input
+                    id="two-factor-password"
+                    type="password"
+                    value={twoFactorPassword}
+                    onChange={(event) => setTwoFactorPassword(event.target.value)}
+                    autoComplete="current-password"
+                  />
+                  <Button onClick={handleTwoFactorSetup} disabled={twoFactorBusy} className="w-full">
+                    {twoFactorBusy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <ShieldCheck className="w-4 h-4 mr-2" />}
+                    Attiva autenticazione a due fattori
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-sm">Scansiona il QR code, oppure inserisci manualmente la chiave nell'app.</p>
+                  <div className="flex justify-center rounded-md bg-white p-3">
+                    <QRCodeSVG value={twoFactorSetup.otpauth_uri} size={180} includeMargin />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="two-factor-secret">Chiave di configurazione</Label>
+                    <Input id="two-factor-secret" value={twoFactorSetup.secret} readOnly className="font-mono text-xs" />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="two-factor-code">Codice TOTP (6 cifre)</Label>
+                    <Input
+                      id="two-factor-code"
+                      inputMode="numeric"
+                      maxLength={6}
+                      value={twoFactorCode}
+                      onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                      autoComplete="one-time-code"
+                    />
+                  </div>
+                  <Button onClick={handleTwoFactorConfirm} disabled={twoFactorBusy || twoFactorCode.length !== 6} className="w-full">
+                    {twoFactorBusy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                    Conferma attivazione
+                  </Button>
+                </div>
+              )}
+              <div className="border-t border-border pt-4 space-y-3">
+                <div>
+                  <p className="font-medium">Email di recupero</p>
+                  <p className="text-xs text-muted-foreground">Riceverai un link di verifica; non sostituisce il secondo fattore.</p>
+                </div>
+                {user?.recovery_email_verified && (
+                  <p className="text-sm text-success">{user.recovery_email}</p>
+                )}
+                <Input
+                  type="email"
+                  placeholder="recupero@esempio.it"
+                  value={recoveryEmail}
+                  onChange={(event) => setRecoveryEmail(event.target.value)}
+                  autoComplete="email"
+                />
+                <Input
+                  type="password"
+                  placeholder="Password attuale"
+                  value={recoveryEmailPassword}
+                  onChange={(event) => setRecoveryEmailPassword(event.target.value)}
+                  autoComplete="current-password"
+                />
+                {user?.totp_enabled && (
+                  <Input
+                    inputMode="numeric"
+                    maxLength={6}
+                    placeholder="Codice TOTP (6 cifre)"
+                    value={recoveryEmailCode}
+                    onChange={(event) => setRecoveryEmailCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                    autoComplete="one-time-code"
+                  />
+                )}
+                <Button onClick={handleRecoveryEmailSetup} disabled={recoveryEmailBusy} variant="outline" className="w-full">
+                  {recoveryEmailBusy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  Invia verifica email di recupero
+                </Button>
+              </div>
+              <div className="border-t border-border pt-4 space-y-3">
+                <div>
+                  <p className="font-medium">Contatto di recupero</p>
+                  <p className="text-xs text-muted-foreground">Il contatto non accede all'account. L'attivazione richiede accettazione e 7 giorni di sicurezza.</p>
+                </div>
+                {recoveryContact && (
+                  <div className="rounded-md bg-muted p-3 text-sm space-y-1">
+                    <p>{recoveryContact.contact_email}</p>
+                    <p className="text-xs text-muted-foreground">Stato: {recoveryContact.status}</p>
+                    <Button onClick={handleRecoveryContactRevoke} disabled={recoveryContactBusy} variant="ghost" size="sm" className="px-0 text-destructive">Revoca contatto</Button>
+                  </div>
+                )}
+                <Input type="email" placeholder="persona-fidata@esempio.it" value={recoveryContactEmail} onChange={(event) => setRecoveryContactEmail(event.target.value)} autoComplete="email" />
+                <Input type="password" placeholder="Password attuale" value={recoveryContactPassword} onChange={(event) => setRecoveryContactPassword(event.target.value)} autoComplete="current-password" />
+                {user?.totp_enabled && <Input inputMode="numeric" maxLength={6} placeholder="Codice TOTP (6 cifre)" value={recoveryContactCode} onChange={(event) => setRecoveryContactCode(event.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" />}
+                <Button onClick={handleRecoveryContactInvite} disabled={recoveryContactBusy} variant="outline" className="w-full">
+                  {recoveryContactBusy && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                  Invia invito contatto fidato
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">

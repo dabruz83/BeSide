@@ -10,6 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
+
+const getErrorMessage = (error, fallback) => {
+  const detail = error.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((item) => item?.msg).filter(Boolean).join("; ") || fallback;
+  return fallback;
+};
 import { 
   Users, 
   CreditCard,
@@ -55,6 +62,8 @@ export const AdminPage = () => {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [twoFactorRequired, setTwoFactorRequired] = useState(false);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
   
   // Data state
   const [stats, setStats] = useState(null);
@@ -88,15 +97,34 @@ export const AdminPage = () => {
     setLoginLoading(true);
     
     try {
-      await axios.post(`${API}/admin/login`, {
+      const response = await axios.post(`${API}/admin/login`, {
         email: loginEmail,
         password: loginPassword
       });
+      if (response.data.mfa_required) {
+        setTwoFactorRequired(true);
+        toast.success("Inserisci il codice della tua app Authenticator");
+        return;
+      }
       setIsLoggedIn(true);
       toast.success("Accesso admin effettuato");
     } catch (error) {
       console.error("Admin login error:", error);
-      toast.error(error.response?.data?.detail || "Errore durante l'accesso");
+      toast.error(getErrorMessage(error, "Errore durante l'accesso"));
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const verifyTwoFactor = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    try {
+      await axios.post(`${API}/auth/2fa/verify`, { code: twoFactorCode });
+      setIsLoggedIn(true);
+      toast.success("Accesso admin effettuato");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Codice 2FA non valido o scaduto"));
     } finally {
       setLoginLoading(false);
     }
@@ -232,6 +260,23 @@ export const AdminPage = () => {
                 {loginLoading ? "Accesso..." : "Accedi"}
               </Button>
             </form>
+            {twoFactorRequired && (
+              <form onSubmit={verifyTwoFactor} className="mt-4 space-y-3 rounded-lg border p-4">
+                <Label htmlFor="admin-two-factor-code">Codice di verifica (6 cifre)</Label>
+                <Input
+                  id="admin-two-factor-code"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  autoComplete="one-time-code"
+                  autoFocus
+                />
+                <Button type="submit" className="w-full" disabled={loginLoading || twoFactorCode.length !== 6}>
+                  {loginLoading ? "Verifica..." : "Verifica codice"}
+                </Button>
+              </form>
+            )}
           </CardContent>
         </Card>
       </div>
