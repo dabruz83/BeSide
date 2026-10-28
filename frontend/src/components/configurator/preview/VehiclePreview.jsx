@@ -11,8 +11,39 @@ export const VehiclePreview = ({
   filmColor = null,
   selectedZones = [],
   onZoneClick,
-  interactive = false
+  interactive = false,
+  assets = null,
+  overlays = [],
 }) => {
+  const viewAsset = assets?.[view];
+  if (!viewAsset) {
+    return (
+      <div className="flex h-full min-h-64 w-full flex-col items-center justify-center gap-2 bg-white text-center text-[#555]">
+        <span className="text-sm">Vista {view === 'front' ? 'anteriore' : 'posteriore'}</span>
+        <span className="text-xs">Asset veicolo e maschere in attesa di importazione</span>
+      </div>
+    );
+  }
+  return (
+    <div className="relative h-full w-full overflow-hidden bg-white">
+      <img
+        src={viewAsset}
+        alt={`Vista ${view === 'front' ? 'anteriore' : 'posteriore'} del veicolo`}
+        className="absolute inset-0 h-full w-full object-contain"
+      />
+      {overlays.map((overlay) => (
+        <img
+          key={`${view}-${overlay}`}
+          src={overlay}
+          alt=""
+          aria-hidden="true"
+          className="absolute inset-0 h-full w-full object-contain"
+        />
+      ))}
+    </div>
+  );
+
+  /* Rendering SVG legacy mantenuto per la successiva integrazione delle maschere reali. */
   // Determina il colore per ogni zona
   const getZoneColor = (zoneId) => {
     if (selectedZones.includes(zoneId) && filmColor) {

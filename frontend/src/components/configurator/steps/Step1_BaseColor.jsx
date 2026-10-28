@@ -19,15 +19,15 @@ export const Step1_BaseColor = ({ selectedColor, onSelect }) => {
         </p>
       </div>
 
-      <div className="bg-[#1A1A2E] rounded-xl p-6 border border-[#2A2A3E]">
-        <div className="flex flex-wrap justify-center gap-6">
+      <div className="rounded-xl border border-[#2A2A3E] bg-[#1A1A2E] p-4 lg:p-5">
+        <div className="grid grid-cols-3 justify-items-center gap-x-3 gap-y-4 lg:grid-cols-2 lg:gap-x-5 lg:gap-y-5">
           {BASE_COLORS.map((color) => (
             <ColorSwatch
               key={color.id}
               color={color}
               isSelected={selectedColor?.id === color.id}
               onClick={() => onSelect(color)}
-              size="lg"
+              size="sm"
             />
           ))}
         </div>

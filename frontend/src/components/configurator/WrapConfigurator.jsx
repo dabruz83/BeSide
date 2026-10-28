@@ -21,12 +21,24 @@ import { Step0_Vehicle } from './steps/Step0_Vehicle';
 import { Step1_BaseColor } from './steps/Step1_BaseColor';
 import { Step2_Film } from './steps/Step2_Film';
 import { Step3_Zones } from './steps/Step3_Zones';
+import { Personalize } from './steps/Personalize';
 import { Step4_Tinting } from './steps/Step4_Tinting';
 import { Step5_Booking } from './steps/Step5_Booking';
 import { Step6_Summary } from './steps/Step6_Summary';
+import { CITY_CAR_BASE_COLORS } from './data/cityCarInteractiveAssets';
 
 export const WrapConfigurator = () => {
   const { state, price, canProceed, actions } = useConfigurator();
+  const isVehicleSelection = state.step === 0;
+  const isBaseColorStep = state.step === 1;
+  const isPersonalizeStep = state.step === 2;
+  const selectedVehicleAssets = state.vehicle ? VEHICLES[state.vehicle]?.assets : null;
+  const selectedBaseAsset = state.vehicle === 'city_car'
+    ? CITY_CAR_BASE_COLORS.find((color) => color.id === state.baseColor?.id)
+    : null;
+  const previewAssets = selectedVehicleAssets
+    ? { ...selectedVehicleAssets, ...(selectedBaseAsset?.front ? { front: selectedBaseAsset.front } : {}), ...(selectedBaseAsset?.rear ? { rear: selectedBaseAsset.rear } : {}) }
+    : null;
   const [previewView, setPreviewView] = useState('rear');
   const [showPreview, setShowPreview] = useState(true);
 
@@ -90,24 +102,25 @@ export const WrapConfigurator = () => {
           />
         );
       case 2:
-        return (
-          <Step2_Film
-            selectedFilm={state.film}
-            selectedColor={state.filmColor}
-            onSelectFilm={actions.setFilm}
-            onSelectColor={actions.setFilmColor}
-          />
-        );
+        return <Personalize
+          vehicle={state.vehicle}
+          view={previewView}
+          assets={previewAssets}
+          zoneSelections={state.zoneSelections}
+          activeZone="specchietti"
+          selectedFilm={state.film}
+          selectedColor={state.filmColor}
+          onViewChange={setPreviewView}
+          onZoneChange={() => {}}
+          onFilmChange={actions.setFilm}
+          onColorChange={(variant) => {
+            actions.setFilm('lucida');
+            actions.setZoneSelection('specchietti', variant);
+          }}
+          onResetZone={actions.resetZone}
+          onResetAll={actions.resetCustomization}
+        />;
       case 3:
-        return (
-          <Step3_Zones
-            selectedZones={state.zones}
-            vehicle={state.vehicle}
-            film={state.film}
-            onToggleZone={actions.toggleZone}
-          />
-        );
-      case 4:
         return (
           <Step4_Tinting
             selectedVetri={state.tinting.vetri}
@@ -117,7 +130,7 @@ export const WrapConfigurator = () => {
             onSkip={handleNext}
           />
         );
-      case 5:
+      case 4:
         return (
           <Step5_Booking
             selectedDate={state.booking.date}
@@ -126,7 +139,7 @@ export const WrapConfigurator = () => {
             onSelectTime={actions.setBookingTime}
           />
         );
-      case 6:
+      case 5:
         return (
           <Step6_Summary
             state={state}
@@ -177,9 +190,11 @@ export const WrapConfigurator = () => {
 
       {/* Main content */}
       <main className="max-w-7xl mx-auto px-4 py-6">
-        <div className="flex flex-col lg:flex-row gap-6">
+        <div className={isVehicleSelection ? '' : isPersonalizeStep ? '' : isBaseColorStep
+          ? 'grid grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(260px,1fr)]'
+          : 'flex flex-col gap-6 lg:flex-row'}>
           {/* Preview section - Left side on desktop, top on mobile */}
-          <div className="lg:w-1/2 lg:sticky lg:top-40 lg:self-start">
+          {!isVehicleSelection && !isPersonalizeStep && <div className={isBaseColorStep ? 'w-full lg:col-span-1' : 'lg:w-1/2 lg:sticky lg:top-40 lg:self-start'}>
             {/* Mobile toggle */}
             <div className="lg:hidden flex items-center justify-between mb-3">
               <span className="text-sm text-[#AAA]">Anteprima</span>
@@ -198,31 +213,39 @@ export const WrapConfigurator = () => {
                   initial={{ opacity: 0, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
-                  className="bg-[#0A0A12] rounded-2xl border border-[#1A1A2E] overflow-hidden"
+                  className={`rounded-2xl border overflow-hidden ${isBaseColorStep
+                    ? 'border-[#D9D9D9] bg-white shadow-[0_16px_40px_rgba(0,0,0,0.22)]'
+                    : 'border-[#1A1A2E] bg-[#0A0A12]'}`}
                 >
                   {/* Preview container */}
-                  <div className="relative aspect-[16/10] flex items-center justify-center p-4">
+                  <div className={`relative flex items-center justify-center ${isBaseColorStep
+                    ? 'aspect-[4/3] min-h-[360px] p-2 lg:aspect-[16/10] lg:min-h-[470px] lg:p-3'
+                    : 'aspect-[16/10] p-4'}`}>
                     <VehiclePreview
                       vehicleType={state.vehicle || 'seg_c'}
                       view={previewView}
                       baseColor={state.baseColor?.hex || '#AAAAAA'}
                       filmColor={state.filmColor?.hex}
                       selectedZones={state.zones}
+                      assets={previewAssets}
                       onZoneClick={state.step === 3 ? actions.toggleZone : undefined}
                       interactive={state.step === 3}
                     />
                   </div>
 
                   {/* Preview controls */}
-                  <div className="flex items-center justify-between px-4 py-3 bg-[#13131F] border-t border-[#1A1A2E]">
-                    <span className="text-xs text-[#555]">
+                  <div className={`flex items-center justify-between border-t px-4 py-3 ${isBaseColorStep
+                    ? 'border-[#E6E6E6] bg-white text-[#333]'
+                    : 'border-[#1A1A2E] bg-[#13131F]'}`}>
+                    <span className={`text-xs ${isBaseColorStep ? 'text-[#555]' : 'text-[#AAA]'}`}>
                       Vista: {previewView === 'rear' ? '3/4 Posteriore' : '3/4 Anteriore'}
                     </span>
                     
                     <motion.button
                       onClick={togglePreviewView}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#1A1A2E] 
-                                 text-[#AAA] text-sm hover:text-white transition-colors"
+                      className={`flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors ${isBaseColorStep
+                        ? 'bg-[#F3F3F3] text-[#333] hover:bg-[#E0B840]/20'
+                        : 'bg-[#1A1A2E] text-[#AAA] hover:text-white'}`}
                       whileHover={{ scale: 1.05 }}
                       whileTap={{ scale: 0.95 }}
                     >
@@ -233,11 +256,13 @@ export const WrapConfigurator = () => {
                 </motion.div>
               )}
             </AnimatePresence>
-          </div>
+          </div>}
 
           {/* Configuration panel - Right side on desktop, bottom on mobile */}
-          <div className="lg:w-1/2">
-            <div className="bg-[#13131F] rounded-2xl border border-[#1A1A2E] p-6">
+          <div className={isVehicleSelection || isPersonalizeStep ? 'w-full' : isBaseColorStep ? 'w-full lg:col-span-1 lg:flex lg:flex-col' : 'lg:w-1/2'}>
+            <div style={isBaseColorStep ? { width: '100%' } : undefined} className={`w-full rounded-2xl border p-6 ${isBaseColorStep
+              ? 'border-[#2A2A3E] bg-[#13131F] lg:mt-auto'
+              : 'border-[#1A1A2E] bg-[#13131F]'}`}>
               <AnimatePresence mode="wait">
                 <motion.div
                   key={state.step}
@@ -252,7 +277,7 @@ export const WrapConfigurator = () => {
             </div>
 
             {/* Navigation buttons */}
-            {state.step < 6 && (
+            {state.step < 5 && (
               <div className="flex items-center justify-between mt-6 gap-4">
                 <motion.button
                   onClick={handlePrev}
