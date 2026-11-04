@@ -81,7 +81,14 @@ ADMIN_PASSWORD = get_required_environment_variable('ADMIN_PASSWORD')
 if len(ADMIN_PASSWORD) < 12:
     raise RuntimeError('ADMIN_PASSWORD must contain at least 12 characters')
 
-# SendGrid Configuration
+# Transactional email configuration. Resend is opt-in and independent from
+# the other external integrations.
+RESEND_API_KEY = os.environ.get('RESEND_API_KEY', '').strip()
+RESEND_FROM_EMAIL = (
+    os.environ.get('RESEND_FROM_EMAIL', '').strip()
+    or 'Beside <notify@mybeside.pro>'
+)
+RESEND_API_URL = os.environ.get('RESEND_API_URL', 'https://api.resend.com/emails').strip()
 SENDGRID_API_KEY = os.environ.get('SENDGRID_API_KEY', '').strip()
 SENDER_EMAIL = os.environ.get('SENDER_EMAIL', '').strip()
 ADMIN_NOTIFICATION_EMAIL = os.environ.get('ADMIN_NOTIFICATION_EMAIL', '').strip()
@@ -107,6 +114,7 @@ def get_boolean_environment_variable(name: str, default: bool) -> bool:
 EMAIL_VERIFICATION_REQUIRED = get_boolean_environment_variable(
     "EMAIL_VERIFICATION_REQUIRED", False
 )
+RESEND_ENABLED = get_boolean_environment_variable("RESEND_ENABLED", False)
 RATE_LIMITING_ENABLED = get_boolean_environment_variable("RATE_LIMITING_ENABLED", True)
 COOKIE_SECURE = get_boolean_environment_variable("COOKIE_SECURE", True)
 COOKIE_SAMESITE = os.environ.get("COOKIE_SAMESITE", "lax").strip().lower()
@@ -114,9 +122,9 @@ if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     raise RuntimeError("COOKIE_SAMESITE must be lax, strict, or none")
 if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
     raise RuntimeError("COOKIE_SECURE must be true when COOKIE_SAMESITE=none")
-if EMAIL_VERIFICATION_REQUIRED and (not SENDGRID_API_KEY or not SENDER_EMAIL):
+if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RESEND_FROM_EMAIL):
     raise RuntimeError(
-        "SENDGRID_API_KEY and SENDER_EMAIL are required when email verification is enforced"
+        "RESEND_ENABLED, RESEND_API_KEY and RESEND_FROM_EMAIL are required when email verification is enforced"
     )
 
 
@@ -1194,40 +1202,40 @@ def get_tax_deadlines_by_regime(tax_regime: str) -> List[Dict[str, Any]]:
 
 # ==================== EMAIL HELPER FUNCTIONS ====================
 
-async def send_email_sendgrid(to_email: str, subject: str, html_content: str):
-    """Send email via SendGrid API"""
-    if not SENDGRID_API_KEY:
-        logger.warning("SendGrid API key not configured, skipping email")
+async def send_email(to_email: str, subject: str, html_content: str) -> bool:
+    """Send transactional email through Resend when explicitly enabled."""
+    if not RESEND_ENABLED:
         return False
-    if not SENDER_EMAIL or not to_email:
-        logger.warning("SendGrid sender or recipient email not configured, skipping email")
+    if not to_email or not RESEND_API_KEY or not RESEND_FROM_EMAIL:
+        logger.warning("Resend email configuration or recipient is missing, skipping email")
         return False
-    
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                "https://api.sendgrid.com/v3/mail/send",
+                RESEND_API_URL,
                 headers={
-                    "Authorization": f"Bearer {SENDGRID_API_KEY}",
-                    "Content-Type": "application/json"
+                    "Authorization": f"Bearer {RESEND_API_KEY}",
+                    "Content-Type": "application/json",
                 },
                 json={
-                    "personalizations": [{"to": [{"email": to_email}]}],
-                    "from": {"email": SENDER_EMAIL, "name": "BESIDE"},
+                    "from": RESEND_FROM_EMAIL,
+                    "to": [to_email],
                     "subject": subject,
-                    "content": [{"type": "text/html", "value": html_content}]
+                    "html": html_content,
                 },
-                timeout=30.0
+                timeout=30.0,
             )
-            if response.status_code in [200, 202]:
-                logger.info(f"Email sent successfully to {to_email}")
+            if response.status_code in [200, 201, 202]:
+                logger.info("Transactional email accepted by Resend")
                 return True
-            else:
-                logger.error(f"SendGrid error: {response.status_code} - {response.text}")
-                return False
-    except Exception as e:
-        logger.error(f"Failed to send email: {e}")
+            logger.error("Resend returned HTTP %s", response.status_code)
+            return False
+    except Exception as exc:
+        logger.error("Email delivery failed (%s)", type(exc).__name__)
         return False
+
+
+send_email_sendgrid = send_email
 
 async def send_registration_notification(user_email: str, business_name: str, registration_date: str):
     """Send notification email to admin when a new user registers"""
@@ -1280,6 +1288,18 @@ async def send_registration_notification(user_email: str, business_name: str, re
     """
     
     return await send_email_sendgrid(ADMIN_NOTIFICATION_EMAIL, subject, html_content)
+
+async def send_welcome_email(user_email: str, business_name: str) -> bool:
+    safe_business_name = html.escape(business_name)
+    return await send_email(
+        user_email,
+        "Benvenuto in BESIDE",
+        (
+            f"<p>Benvenuto in BESIDE, {safe_business_name}.</p>"
+            "<p>Il tuo account è stato creato. Completa la verifica dell'indirizzo email "
+            "seguendo il messaggio ricevuto.</p>"
+        ),
+    )
 
 async def send_email_verification(user_email: str, token: str) -> bool:
     verification_url = f"{FRONTEND_PUBLIC_URL}/verify-email?token={token}"
@@ -1414,6 +1434,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         business_name,
         now_formatted,
     )
+    background_tasks.add_task(send_welcome_email, email, business_name)
     background_tasks.add_task(send_email_verification, email, verification_token)
 
     return {
