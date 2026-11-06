@@ -180,6 +180,9 @@ SUBSCRIPTION_PRICES = {"essential": 97.00, "professional": 197.00, "elite": 397.
 # Onboarding Status
 ONBOARDING_STATUS = ["pending", "in_progress", "complete", "overdue"]
 ONBOARDING_FEATURE_ENABLED = get_boolean_environment_variable("ONBOARDING_FEATURE_ENABLED", False)
+TERMS_VERSION = os.getenv("TERMS_VERSION", "draft-2026-11")
+PRIVACY_NOTICE_VERSION = os.getenv("PRIVACY_NOTICE_VERSION", "draft-2026-11")
+CONSENT_VERSION = os.getenv("CONSENT_VERSION", "v1")
 
 # Default waste percentages
 DEFAULT_WASTE = {"ppf": 0.20, "vinyl": 0.12}
@@ -198,6 +201,9 @@ class UserCreate(BaseModel):
     team_size: int = Field(default=1, ge=1, le=1000)
     services: List[str] = Field(default_factory=list, max_length=20)
     tax_regime: str = "forfettario_15"
+    terms_accepted: bool = False
+    marketing_emails_opt_in: bool = False
+    marketing_profiling_opt_in: bool = False
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -246,6 +252,12 @@ class UserUpdate(BaseModel):
     services: Optional[List[str]] = None
     tax_regime: Optional[str] = None
     business_info: Optional[BusinessInfo] = None
+    marketing_emails_opt_in: Optional[bool] = None
+    marketing_profiling_opt_in: Optional[bool] = None
+
+class PrivacyPreferencesUpdate(BaseModel):
+    email_opt_in: bool = False
+    profiling_opt_in: bool = False
 
 class OnboardingProfileUpdate(BaseModel):
     first_name: Optional[str] = Field(default=None, max_length=100)
@@ -783,6 +795,8 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "last_login_at": user.get("last_login_at"),
         "onboarding_enabled": ONBOARDING_FEATURE_ENABLED,
         "onboarding_complete": bool(user.get("onboarding_completed_at")),
+        "legal_consents": user.get("legal_consents", {}),
+        "marketing_preferences": user.get("marketing_preferences", {"email_opt_in": False, "profiling_opt_in": False}),
     }
 
 def calculate_tax(
@@ -1374,6 +1388,8 @@ async def create_one_time_token(
 async def register(user_data: UserCreate, background_tasks: BackgroundTasks, request: Request):
     """Register a new user with email/password"""
     await enforce_rate_limit(request, "auth_register", limit=5, window_seconds=3600)
+    if not user_data.terms_accepted:
+        raise HTTPException(status_code=422, detail="È necessario accettare i Termini e condizioni")
     validate_password_strength(user_data.password)
     email = normalize_email(str(user_data.email))
     business_name = user_data.business_name.strip()
@@ -1428,6 +1444,16 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         "created_at": now_iso,
         "updated_at": now_iso,
         "last_login_at": None,
+        "legal_consents": {
+            "terms": {"accepted": True, "version": TERMS_VERSION, "accepted_at": now_iso},
+            "privacy_notice": {"version": PRIVACY_NOTICE_VERSION, "acknowledged_at": now_iso},
+        },
+        "marketing_preferences": {
+            "email_opt_in": bool(user_data.marketing_emails_opt_in),
+            "profiling_opt_in": bool(user_data.marketing_profiling_opt_in),
+            "version": CONSENT_VERSION,
+            "updated_at": now_iso,
+        },
     }
 
     await reserve_email_claim(email, user_id, company_id)
@@ -1669,6 +1695,14 @@ async def update_profile(
         update_fields["tax_regime"] = update_data.tax_regime
     if update_data.business_info is not None:
         update_fields["business_info"] = update_data.business_info.model_dump()
+    if update_data.marketing_emails_opt_in is not None or update_data.marketing_profiling_opt_in is not None:
+        preferences = (current_user.get("marketing_preferences") or {}).copy()
+        if update_data.marketing_emails_opt_in is not None:
+            preferences["email_opt_in"] = update_data.marketing_emails_opt_in
+        if update_data.marketing_profiling_opt_in is not None:
+            preferences["profiling_opt_in"] = update_data.marketing_profiling_opt_in
+        preferences.update({"version": CONSENT_VERSION, "updated_at": datetime.now(timezone.utc).isoformat()})
+        update_fields["marketing_preferences"] = preferences
     
     if update_fields:
         update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -1679,6 +1713,23 @@ async def update_profile(
 
     updated_user = await _load_active_user(current_user["user_id"])
     return public_user(updated_user)
+
+@api_router.put("/auth/privacy-preferences")
+async def update_privacy_preferences(
+    preferences: PrivacyPreferencesUpdate,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    now_iso = datetime.now(timezone.utc).isoformat()
+    saved = {"email_opt_in": preferences.email_opt_in, "profiling_opt_in": preferences.profiling_opt_in,
+             "version": CONSENT_VERSION, "updated_at": now_iso}
+    await db.users.update_one(
+        {"user_id": current_user["user_id"], "company_id": current_user["company_id"]},
+        {"$set": {"marketing_preferences": saved}},
+    )
+    await audit_event("privacy_preferences_updated", user=current_user, request=request,
+                      metadata={"email_opt_in": preferences.email_opt_in, "profiling_opt_in": preferences.profiling_opt_in})
+    return {"marketing_preferences": saved}
 
 @api_router.post("/auth/forgot-password")
 async def forgot_password(data: EmailRequest, background_tasks: BackgroundTasks, request: Request):

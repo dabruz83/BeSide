@@ -21,6 +21,8 @@ import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
 import { QuotePage } from "@/pages/QuotePage";
 import { AdminPage } from "@/pages/AdminPage";
 import { ConfiguratorPage } from "@/pages/ConfiguratorPage";
+import { LegalTermsPage } from "@/pages/LegalTermsPage";
+import { LegalPrivacyPage } from "@/pages/LegalPrivacyPage";
 import { OnboardingWizardPage } from "@/pages/OnboardingWizardPage";
 
 // Components
@@ -197,6 +199,8 @@ const AppRouter = () => {
       <Route path="/" element={<LandingPage />} />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      <Route path="/termini" element={<LegalTermsPage />} />
+      <Route path="/privacy" element={<LegalPrivacyPage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route path="/verify-email" element={<VerifyEmailPage />} />
