@@ -21,6 +21,7 @@ import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
 import { QuotePage } from "@/pages/QuotePage";
 import { AdminPage } from "@/pages/AdminPage";
 import { ConfiguratorPage } from "@/pages/ConfiguratorPage";
+import { OnboardingWizardPage } from "@/pages/OnboardingWizardPage";
 
 // Components
 import { Layout } from "@/components/Layout";
@@ -201,6 +202,7 @@ const AppRouter = () => {
       <Route path="/verify-email" element={<VerifyEmailPage />} />
       <Route path="/onboarding/client/:token" element={<ClientOnboardingPage />} />
       <Route path="/quote/:token" element={<QuotePage />} />
+      <Route path="/personalizza" element={<ProtectedRoute><OnboardingWizardPage /></ProtectedRoute>} />
       <Route path="/admin" element={<AdminPage />} />
       
       {/* Protected Routes */}

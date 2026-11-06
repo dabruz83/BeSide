@@ -179,6 +179,7 @@ SUBSCRIPTION_PRICES = {"essential": 97.00, "professional": 197.00, "elite": 397.
 
 # Onboarding Status
 ONBOARDING_STATUS = ["pending", "in_progress", "complete", "overdue"]
+ONBOARDING_FEATURE_ENABLED = get_boolean_environment_variable("ONBOARDING_FEATURE_ENABLED", False)
 
 # Default waste percentages
 DEFAULT_WASTE = {"ppf": 0.20, "vinyl": 0.12}
@@ -245,6 +246,26 @@ class UserUpdate(BaseModel):
     services: Optional[List[str]] = None
     tax_regime: Optional[str] = None
     business_info: Optional[BusinessInfo] = None
+
+class OnboardingProfileUpdate(BaseModel):
+    first_name: Optional[str] = Field(default=None, max_length=100)
+    last_name: Optional[str] = Field(default=None, max_length=100)
+    role: Optional[str] = Field(default=None, max_length=100)
+    location_general: Optional[str] = Field(default=None, max_length=160)
+    business_status: Optional[str] = Field(default=None, max_length=60)
+    legal_form: Optional[str] = Field(default=None, max_length=60)
+    tax_regime: Optional[str] = Field(default=None, max_length=60)
+    sector: Optional[str] = Field(default=None, max_length=120)
+    customer_type: Optional[str] = Field(default=None, max_length=30)
+    revenue_band: Optional[str] = Field(default=None, max_length=40)
+    employees_band: Optional[str] = Field(default=None, max_length=40)
+    needs: List[str] = Field(default_factory=list, max_length=12)
+    interested_modules: List[str] = Field(default_factory=list, max_length=12)
+    monthly_quotes_band: Optional[str] = Field(default=None, max_length=40)
+    marketing_emails_opt_in: Optional[bool] = None
+    marketing_profiling_opt_in: Optional[bool] = None
+    step: int = Field(default=1, ge=1, le=3)
+    complete: bool = False
 
 # Job Models
 class JobCreate(BaseModel):
@@ -760,6 +781,8 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "created_at": user.get("created_at", ""),
         "updated_at": user.get("updated_at", ""),
         "last_login_at": user.get("last_login_at"),
+        "onboarding_enabled": ONBOARDING_FEATURE_ENABLED,
+        "onboarding_complete": bool(user.get("onboarding_completed_at")),
     }
 
 def calculate_tax(
@@ -1787,6 +1810,86 @@ async def verify_email(data: TokenRequest, request: Request):
     if user:
         await audit_event("email_verified", user=user, request=request)
     return {"message": "Indirizzo email verificato."}
+
+@api_router.get("/auth/onboarding-profile")
+async def get_onboarding_profile(current_user: Dict = Depends(get_current_user)):
+    company = current_user.get("company") or {}
+    return {
+        "enabled": ONBOARDING_FEATURE_ENABLED,
+        "complete": bool(current_user.get("onboarding_completed_at")),
+        "completed_at": current_user.get("onboarding_completed_at"),
+        "personal": current_user.get("onboarding_profile", {}),
+        "organization": company.get("onboarding_profile", {}),
+    }
+
+@api_router.put("/auth/onboarding-profile")
+async def update_onboarding_profile(
+    data: OnboardingProfileUpdate,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    if not ONBOARDING_FEATURE_ENABLED:
+        raise HTTPException(status_code=404, detail="Onboarding personalizzato non attivo")
+    allowed_needs = {"acquisizione_clienti", "organizzazione", "preventivi", "finanza", "marketing"}
+    allowed_modules = {"configuratore", "lavori", "preventivi", "finanza", "marketing"}
+    if not set(data.needs).issubset(allowed_needs) or not set(data.interested_modules).issubset(allowed_modules):
+        raise HTTPException(status_code=400, detail="Preferenza onboarding non valida")
+    if data.tax_regime is not None and data.tax_regime not in TAX_REGIMES and data.tax_regime not in {"non_so", "preferisco_non_rispondere"}:
+        raise HTTPException(status_code=400, detail="Regime fiscale non valido")
+    if data.legal_form in {"societa_persone", "societa_capitali"} and data.tax_regime in {"forfettario_5", "forfettario_15"}:
+        raise HTTPException(status_code=422, detail="Regime fiscale non compatibile con la forma giuridica")
+    if data.customer_type is not None and data.customer_type not in {"b2b", "b2c", "b2b_b2c", "non_so", "preferisco_non_rispondere"}:
+        raise HTTPException(status_code=400, detail="Tipologia clientela non valida")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    personal_fields = {key: value for key, value in {
+        "first_name": data.first_name, "last_name": data.last_name, "role": data.role,
+        "location_general": data.location_general, "step": data.step,
+    }.items() if value is not None}
+    privacy_values = {key: value for key, value in {
+        "marketing_emails": data.marketing_emails_opt_in,
+        "marketing_profiling": data.marketing_profiling_opt_in,
+    }.items() if value is not None}
+    if privacy_values:
+        privacy = (current_user.get("privacy_preferences") or {}).copy()
+        privacy.update(privacy_values)
+        privacy.update({"version": "v1", "updated_at": now_iso})
+        personal_fields["privacy_preferences"] = privacy
+    organization_fields = {key: value for key, value in {
+        "business_status": data.business_status, "legal_form": data.legal_form,
+        "tax_regime": data.tax_regime, "sector": data.sector, "customer_type": data.customer_type,
+        "revenue_band": data.revenue_band, "employees_band": data.employees_band,
+        "needs": data.needs, "interested_modules": data.interested_modules,
+        "monthly_quotes_band": data.monthly_quotes_band, "step": data.step,
+    }.items() if value is not None}
+    if personal_fields:
+        await db.users.update_one(
+            {"user_id": current_user["user_id"], "company_id": current_user["company_id"]},
+            {"$set": {f"onboarding_profile.{key}": value for key, value in personal_fields.items()}},
+        )
+    if organization_fields:
+        if current_user.get("role") not in {"owner", "admin"}:
+            raise HTTPException(status_code=403, detail="Solo il titolare o un amministratore può modificare il profilo aziendale")
+        await db.companies.update_one(
+            {"company_id": current_user["company_id"]},
+            {"$set": {f"onboarding_profile.{key}": value for key, value in organization_fields.items()}},
+        )
+    if data.complete:
+        if not (data.first_name or current_user.get("first_name") or data.last_name or current_user.get("last_name")):
+            raise HTTPException(status_code=422, detail="Inserisci almeno il nome o il cognome")
+        await db.users.update_one(
+            {"user_id": current_user["user_id"], "company_id": current_user["company_id"]},
+            {"$set": {"onboarding_completed_at": now_iso}},
+        )
+    await audit_event("onboarding_profile_saved", user=current_user, request=request,
+                      metadata={"step": data.step, "complete": data.complete})
+    updated_user = await db.users.find_one({"user_id": current_user["user_id"], "company_id": current_user["company_id"]}, {"_id": 0})
+    updated_company = await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0})
+    return {
+        "enabled": True, "complete": bool(updated_user.get("onboarding_completed_at")),
+        "completed_at": updated_user.get("onboarding_completed_at"),
+        "personal": updated_user.get("onboarding_profile", {}),
+        "organization": (updated_company or {}).get("onboarding_profile", {}),
+    }
 
 @api_router.post("/auth/logout")
 async def logout(request: Request, response: Response):

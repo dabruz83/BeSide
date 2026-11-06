@@ -16,7 +16,7 @@ import {
   Calculator,
   MessageSquare
 } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('it-IT', {
@@ -49,12 +49,20 @@ const LEAD_SOURCE_LABELS = {
 
 export const DashboardPage = () => {
   const { user } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchMetrics();
   }, []);
+
+  useEffect(() => {
+    if (user?.onboarding_enabled && !user?.onboarding_complete && !location.state?.onboardingDismissed) {
+      navigate("/personalizza", { replace: true });
+    }
+  }, [user, location.state, navigate]);
 
   const fetchMetrics = async () => {
     try {
@@ -110,6 +118,9 @@ export const DashboardPage = () => {
 
   return (
     <div className="space-y-6">
+      {user?.onboarding_enabled && !user?.onboarding_complete && (
+        <Card className="border-primary/30 bg-primary/5"><CardContent className="flex items-center justify-between gap-3 p-5"><div><p className="font-semibold text-primary">Personalizza la tua esperienza</p><p className="text-sm text-muted-foreground">Completa il breve profilo per ordinare suggerimenti e funzionalità.</p></div><Link to="/personalizza"><Button>Inizia</Button></Link></CardContent></Card>
+      )}
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
