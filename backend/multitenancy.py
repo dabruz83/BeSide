@@ -32,6 +32,7 @@ TENANT_COLLECTIONS = (
     "admin_chat",
     "payment_transactions",
     "user_sessions",
+    "recovery_contacts",
 )
 
 
@@ -130,6 +131,7 @@ async def ensure_multitenant_indexes(database: Any) -> bool:
     """
     indexes = [
         (database.users, "email", {"unique": True}),
+        (database.users, "recovery_email", {"unique": True, "sparse": True}),
         (database.users, "company_id", {}),
         (database.companies, "company_id", {"unique": True}),
         (database.companies, "owner_user_id", {}),
@@ -140,10 +142,27 @@ async def ensure_multitenant_indexes(database: Any) -> bool:
         (database.password_reset_tokens, "expires_at_dt", {"expireAfterSeconds": 0}),
         (database.email_verification_tokens, "token_hash", {"unique": True}),
         (database.email_verification_tokens, "expires_at_dt", {"expireAfterSeconds": 0}),
+        (database.email_recovery_tokens, "token_hash", {"unique": True}),
+        (database.email_recovery_tokens, "expires_at_dt", {"expireAfterSeconds": 0}),
+        (database.recovery_contacts, "contact_token_hash", {"unique": True, "sparse": True}),
+        (database.recovery_contacts, "user_id", {}),
+        (database.mfa_recovery_requests, "request_token_hash", {"unique": True}),
+        (database.mfa_recovery_requests, "user_id", {}),
         (database.audit_logs, [("company_id", 1), ("created_at", -1)], {}),
         (database.rate_limits, "expires_at", {"expireAfterSeconds": 0}),
     ]
     indexes.extend((database[name], "company_id", {}) for name in TENANT_COLLECTIONS)
+    indexes.extend([
+        (database.users, "user_id", {"unique": True}),
+        (database.jobs, "job_id", {"unique": True}),
+        (database.jobs, [("company_id", 1), ("completed_date", -1)], {}),
+        (database.quote_tokens, "token", {"unique": True}),
+        (database.quote_tokens, "company_id", {}),
+        (database.onboardings, "onboarding_id", {"unique": True}),
+        (database.email_claims, "company_id", {}),
+        (database.payment_transactions, "session_id", {"sparse": True}),
+        (database.cash_plan_entries, [("company_id", 1), ("month", 1)], {}),
+    ])
 
     for collection, keys, options in indexes:
         try:

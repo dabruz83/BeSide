@@ -10,6 +10,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
+import { QRCodeSVG } from "qrcode.react";
+
+const getErrorMessage = (error, fallback) => {
+  const detail = error.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((item) => item?.msg).filter(Boolean).join("; ") || fallback;
+  return fallback;
+};
 import { 
   Users, 
   CreditCard,
@@ -55,12 +63,21 @@ export const AdminPage = () => {
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
+  const [twoFactorRequired, setTwoFactorRequired] = useState(false);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [mfaSetupRequired, setMfaSetupRequired] = useState(false);
+  const [mfaActivationCode, setMfaActivationCode] = useState("");
+  const [mfaSetup, setMfaSetup] = useState(null);
   
   // Data state
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [payments, setPayments] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [supportFilters, setSupportFilters] = useState({ category: "", status: "", priority: "", search: "", created_from: "", created_to: "" });
+  const [selectedSupportTicket, setSelectedSupportTicket] = useState(null);
+  const [supportReply, setSupportReply] = useState("");
   
   // Dialog state
   const [selectedUser, setSelectedUser] = useState(null);
@@ -88,15 +105,73 @@ export const AdminPage = () => {
     setLoginLoading(true);
     
     try {
-      await axios.post(`${API}/admin/login`, {
+      const response = await axios.post(`${API}/admin/login`, {
         email: loginEmail,
         password: loginPassword
       });
+      if (response.data.mfa_required) {
+        setTwoFactorRequired(true);
+        toast.success("Inserisci il codice della tua app Authenticator");
+        return;
+      }
+      if (response.data.mfa_setup_required) {
+        setMfaSetupRequired(true);
+        setTwoFactorRequired(false);
+        setLoginPassword("");
+        toast.success("Controlla l'email verificata per iniziare la configurazione MFA");
+        return;
+      }
       setIsLoggedIn(true);
       toast.success("Accesso admin effettuato");
     } catch (error) {
       console.error("Admin login error:", error);
-      toast.error(error.response?.data?.detail || "Errore durante l'accesso");
+      toast.error(getErrorMessage(error, "Errore durante l'accesso"));
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const verifyMfaActivationEmail = async (event) => {
+    event.preventDefault();
+    setLoginLoading(true);
+    try {
+      const response = await axios.post(`${API}/admin/mfa/activation/verify-email`, { code: mfaActivationCode });
+      setMfaSetup(response.data);
+      setMfaActivationCode("");
+      toast.success("Email verificata. Scansiona il QR code con Authenticator");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Codice email non valido o scaduto"));
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const confirmMfaActivation = async (event) => {
+    event.preventDefault();
+    setLoginLoading(true);
+    try {
+      await axios.post(`${API}/admin/mfa/activation/confirm`, { code: twoFactorCode });
+      setIsLoggedIn(true);
+      setMfaSetup(null);
+      setMfaSetupRequired(false);
+      setTwoFactorCode("");
+      toast.success("MFA attivata. Accesso amministratore completato");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Codice TOTP non valido o procedura scaduta"));
+    } finally {
+      setLoginLoading(false);
+    }
+  };
+
+  const verifyTwoFactor = async (e) => {
+    e.preventDefault();
+    setLoginLoading(true);
+    try {
+      await axios.post(`${API}/auth/2fa/verify`, { code: twoFactorCode });
+      setIsLoggedIn(true);
+      toast.success("Accesso admin effettuato");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Codice 2FA non valido o scaduto"));
     } finally {
       setLoginLoading(false);
     }
@@ -114,15 +189,17 @@ export const AdminPage = () => {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, usersRes, paymentsRes] = await Promise.all([
+      const [statsRes, usersRes, paymentsRes, supportRes] = await Promise.all([
         axios.get(`${API}/admin/stats`),
         axios.get(`${API}/admin/users`),
-        axios.get(`${API}/admin/payments`)
+        axios.get(`${API}/admin/payments`),
+        axios.get(`${API}/admin/support/tickets`)
       ]);
       
       setStats(statsRes.data);
       setUsers(usersRes.data.users);
       setPayments(paymentsRes.data.payments);
+      setSupportTickets(supportRes.data.tickets || []);
     } catch (error) {
       if (error.response?.status === 403 || error.response?.status === 401) {
         setIsLoggedIn(false);
@@ -130,6 +207,31 @@ export const AdminPage = () => {
       }
     }
   }, []);
+
+  const fetchSupportTickets = async () => {
+    try {
+      const params = Object.fromEntries(Object.entries(supportFilters).filter(([, value]) => value));
+      const response = await axios.get(`${API}/admin/support/tickets`, { params });
+      setSupportTickets(response.data.tickets || []);
+      if (selectedSupportTicket) {
+        setSelectedSupportTicket((response.data.tickets || []).find((ticket) => ticket.ticket_id === selectedSupportTicket.ticket_id) || null);
+      }
+    } catch (error) {
+      toast.error("Errore nel caricamento dei ticket");
+    }
+  };
+
+  const updateSupportTicket = async (updates) => {
+    if (!selectedSupportTicket) return;
+    try {
+      await axios.patch(`${API}/admin/support/tickets/${selectedSupportTicket.ticket_id}`, updates);
+      setSupportReply("");
+      await fetchSupportTickets();
+      toast.success("Ticket aggiornato");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Errore nell'aggiornamento del ticket"));
+    }
+  };
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -232,6 +334,40 @@ export const AdminPage = () => {
                 {loginLoading ? "Accesso..." : "Accedi"}
               </Button>
             </form>
+            {twoFactorRequired && (
+              <form onSubmit={verifyTwoFactor} className="mt-4 space-y-3 rounded-lg border p-4">
+                <Label htmlFor="admin-two-factor-code">Codice di verifica (6 cifre)</Label>
+                <Input
+                  id="admin-two-factor-code"
+                  inputMode="numeric"
+                  maxLength={6}
+                  value={twoFactorCode}
+                  onChange={(e) => setTwoFactorCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  autoComplete="one-time-code"
+                  autoFocus
+                />
+                <Button type="submit" className="w-full" disabled={loginLoading || twoFactorCode.length !== 6}>
+                  {loginLoading ? "Verifica..." : "Verifica codice"}
+                </Button>
+              </form>
+            )}
+            {mfaSetupRequired && !mfaSetup && (
+              <form onSubmit={verifyMfaActivationEmail} className="mt-4 space-y-3 rounded-lg border border-amber-300 p-4">
+                <p className="text-sm font-medium">Configura autenticazione a due fattori</p>
+                <p className="text-xs text-muted-foreground">Inserisci il codice monouso inviato all'email verificata dell'amministratore.</p>
+                <Input inputMode="numeric" maxLength={8} placeholder="Codice email (8 cifre)" value={mfaActivationCode} onChange={(event) => setMfaActivationCode(event.target.value.replace(/\D/g, "").slice(0, 8))} autoComplete="one-time-code" autoFocus />
+                <Button type="submit" className="w-full" disabled={loginLoading || mfaActivationCode.length !== 8}>{loginLoading ? "Verifica..." : "Verifica codice email"}</Button>
+              </form>
+            )}
+            {mfaSetup && (
+              <form onSubmit={confirmMfaActivation} className="mt-4 space-y-3 rounded-lg border border-amber-300 p-4">
+                <p className="text-sm font-medium">Configura autenticazione a due fattori</p>
+                <div className="flex justify-center rounded-md bg-white p-3"><QRCodeSVG value={mfaSetup.otpauth_uri} size={190} includeMargin /></div>
+                <p className="break-all text-xs text-muted-foreground">Chiave manuale: {mfaSetup.secret}</p>
+                <Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator (6 cifre)" value={twoFactorCode} onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" autoFocus />
+                <Button type="submit" className="w-full" disabled={loginLoading || twoFactorCode.length !== 6}>{loginLoading ? "Attivazione..." : "Attiva MFA e accedi"}</Button>
+              </form>
+            )}
           </CardContent>
         </Card>
       </div>
@@ -325,6 +461,10 @@ export const AdminPage = () => {
             <TabsTrigger value="payments">
               <CreditCard className="w-4 h-4 mr-2" />
               Pagamenti
+            </TabsTrigger>
+            <TabsTrigger value="support">
+              <MessageSquare className="w-4 h-4 mr-2" />
+              Support Center
             </TabsTrigger>
             <TabsTrigger value="stats">
               <BarChart3 className="w-4 h-4 mr-2" />
@@ -420,6 +560,39 @@ export const AdminPage = () => {
                     </tbody>
                   </table>
                 </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* Support Center Tab */}
+          <TabsContent value="support">
+            <Card>
+              <CardHeader>
+                <CardTitle>Centro assistenza</CardTitle>
+                <div className="grid gap-2 md:grid-cols-4 lg:grid-cols-6">
+                  <Select value={supportFilters.category || "all"} onValueChange={(value) => setSupportFilters({ ...supportFilters, category: value === "all" ? "" : value })}>
+                    <SelectTrigger><SelectValue placeholder="Categoria" /></SelectTrigger>
+                    <SelectContent><SelectItem value="all">Tutte le categorie</SelectItem>{["password", "authentication", "privacy", "billing", "technical", "other"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Select value={supportFilters.status || "all"} onValueChange={(value) => setSupportFilters({ ...supportFilters, status: value === "all" ? "" : value })}>
+                    <SelectTrigger><SelectValue placeholder="Stato" /></SelectTrigger>
+                    <SelectContent><SelectItem value="all">Tutti gli stati</SelectItem>{["open", "pending", "closed"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Select value={supportFilters.priority || "all"} onValueChange={(value) => setSupportFilters({ ...supportFilters, priority: value === "all" ? "" : value })}>
+                    <SelectTrigger><SelectValue placeholder="Priorità" /></SelectTrigger>
+                    <SelectContent><SelectItem value="all">Tutte le priorità</SelectItem>{["low", "normal", "high", "urgent"].map((value) => <SelectItem key={value} value={value}>{value}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Input type="date" aria-label="Ticket da data" value={supportFilters.created_from} onChange={(event) => setSupportFilters({ ...supportFilters, created_from: event.target.value })} />
+                  <Input type="date" aria-label="Ticket fino a data" value={supportFilters.created_to} onChange={(event) => setSupportFilters({ ...supportFilters, created_to: event.target.value })} />
+                  <div className="flex gap-2"><Input placeholder="Cerca ticket, cliente..." value={supportFilters.search} onChange={(event) => setSupportFilters({ ...supportFilters, search: event.target.value })} /><Button onClick={fetchSupportTickets}><Search className="w-4 h-4" /></Button></div>
+                </div>
+              </CardHeader>
+              <CardContent className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+                <div className="space-y-2 max-h-[32rem] overflow-y-auto">
+                  {supportTickets.length === 0 && <p className="text-sm text-muted-foreground">Nessun ticket trovato.</p>}
+                  {supportTickets.map((ticket) => <button type="button" key={ticket.ticket_id} onClick={() => setSelectedSupportTicket(ticket)} className={`w-full rounded-lg border p-3 text-left ${selectedSupportTicket?.ticket_id === ticket.ticket_id ? "border-primary bg-primary/5" : "hover:bg-muted/50"}`}><div className="flex items-center justify-between gap-2"><span className="font-mono text-sm">{ticket.ticket_id}</span><span className="text-xs uppercase text-muted-foreground">{ticket.status}</span></div><p className="font-medium">{ticket.subject}</p><p className="text-xs text-muted-foreground">{ticket.category} · {new Date(ticket.created_at).toLocaleString("it-IT")}</p></button>)}
+                </div>
+                {selectedSupportTicket ? <div className="space-y-3 rounded-lg border p-4"><div><p className="font-semibold">{selectedSupportTicket.subject}</p><p className="text-xs text-muted-foreground">{selectedSupportTicket.requester_email || "Richiesta non autenticata"} · {selectedSupportTicket.company_id || "nessuna azienda associata"}</p></div><div className="max-h-64 space-y-2 overflow-y-auto">{(selectedSupportTicket.messages || []).map((message, index) => <div key={`${message.created_at}-${index}`} className="rounded bg-muted/50 p-2 text-sm"><p>{message.message}</p><p className="mt-1 text-xs text-muted-foreground">{message.author_type} · {new Date(message.created_at).toLocaleString("it-IT")}</p></div>)}</div><Textarea rows={3} placeholder="Risposta senza password o token" value={supportReply} onChange={(event) => setSupportReply(event.target.value)} /><div className="flex flex-wrap gap-2"><Button onClick={() => updateSupportTicket({ message: supportReply, status: "pending" })} disabled={!supportReply.trim()}>Rispondi</Button><Button variant="outline" onClick={() => updateSupportTicket({ status: "open" })}>Riapri</Button><Button variant="outline" onClick={() => updateSupportTicket({ status: "closed" })}>Chiudi</Button></div></div> : <p className="text-sm text-muted-foreground">Seleziona un ticket per visualizzarne la cronologia.</p>}
               </CardContent>
             </Card>
           </TabsContent>

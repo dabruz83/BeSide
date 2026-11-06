@@ -18,7 +18,11 @@ export const VerifyEmailPage = () => {
       })
       .catch((error) => {
         setStatus("error");
-        setMessage(error.response?.data?.detail || "Link non valido o scaduto");
+        if (!error.response) {
+          setMessage("Impossibile contattare il servizio di verifica. Controlla la connessione e riprova.");
+        } else {
+          setMessage(error.response?.data?.detail || "Link non valido o scaduto");
+        }
       });
   }, [token]);
 
@@ -28,9 +32,8 @@ export const VerifyEmailPage = () => {
         <Link to="/" className="text-3xl font-bold text-primary">BESIDE</Link>
         <h1 className="text-2xl font-semibold">Verifica email</h1>
         <p className={status === "error" ? "text-destructive" : "text-muted-foreground"}>{message}</p>
-        {status !== "loading" && (
-          <Link to="/login" className="text-primary hover:underline">Vai al login</Link>
-        )}
+        {status === "success" && <Link to="/login" className="text-primary hover:underline">Vai al login</Link>}
+        {status === "error" && <Link to="/verify-email/pending" className="text-primary hover:underline">Richiedi un nuovo link</Link>}
       </div>
     </div>
   );

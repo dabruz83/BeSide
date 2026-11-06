@@ -10,7 +10,8 @@ import {
   LogOut,
   Menu,
   X,
-  Palette
+  Palette,
+  MessageSquare
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -19,11 +20,13 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 const navItems = [
   { path: "/dashboard", label: "Bacheca", icon: LayoutDashboard },
   { path: "/jobs", label: "Lavori", icon: Wrench },
-  // { path: "/configurator", label: "Configuratore", icon: Palette }, // TODO: Riattivare quando pronto
+  { path: "/configurator", label: "Configuratore", icon: Palette },
   { path: "/finance", label: "Finanza", icon: Euro },
   { path: "/marketing", label: "Marketing", icon: Megaphone },
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
+  { path: "/subscription", label: "Abbonamento", icon: Euro },
   { path: "/profile", label: "Profilo", icon: UserCog },
+  { path: "/support", label: "Assistenza", icon: MessageSquare },
 ];
 
 export const Layout = ({ children }) => {

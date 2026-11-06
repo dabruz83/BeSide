@@ -8,6 +8,13 @@ import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
 
+const getErrorMessage = (error, fallback) => {
+  const detail = error.response?.data?.detail;
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((item) => item?.msg).filter(Boolean).join("; ") || fallback;
+  return fallback;
+};
+
 export const LoginPage = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
@@ -15,6 +22,8 @@ export const LoginPage = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [unverifiedEmail, setUnverifiedEmail] = useState("");
+  const [twoFactorRequired, setTwoFactorRequired] = useState(false);
+  const [twoFactorCode, setTwoFactorCode] = useState("");
   const oauthLoginUrl = (process.env.REACT_APP_OAUTH_LOGIN_URL || "").trim().replace(/\/+$/, "");
 
   const handleSubmit = async (e) => {
@@ -26,18 +35,38 @@ export const LoginPage = () => {
         `${API}/auth/login`,
         formData
       );
+      if (response.data.mfa_required) {
+        setTwoFactorRequired(true);
+        toast.success("Inserisci il codice della tua app Authenticator");
+        return;
+      }
       login(response.data.user);
       toast.success("Accesso effettuato!");
       navigate("/dashboard");
     } catch (error) {
+      const message = getErrorMessage(error, "Errore durante l'accesso");
       if (
         error.response?.status === 403 &&
-        error.response?.data?.detail?.toLowerCase().includes("verifica") &&
+        message.toLowerCase().includes("verifica") &&
         formData.email
       ) {
         setUnverifiedEmail(formData.email);
       }
-      toast.error(error.response?.data?.detail || "Errore durante l'accesso");
+      toast.error(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const verifyTwoFactor = async (event) => {
+    event.preventDefault();
+    setLoading(true);
+    try {
+      const response = await axios.post(`${API}/auth/2fa/verify`, { code: twoFactorCode });
+      login(response.data.user);
+      navigate("/dashboard");
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Codice 2FA non valido o scaduto"));
     } finally {
       setLoading(false);
     }
@@ -50,7 +79,7 @@ export const LoginPage = () => {
       });
       toast.success(response.data.message);
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Impossibile inviare l'email di verifica");
+      toast.error(getErrorMessage(error, "Impossibile inviare l'email di verifica"));
     }
   };
 
@@ -134,6 +163,30 @@ export const LoginPage = () => {
               </Button>
             )}
           </form>
+
+          {twoFactorRequired && (
+            <form onSubmit={verifyTwoFactor} className="space-y-3 rounded-lg border p-4">
+              <Label htmlFor="login-two-factor-code">Codice di verifica (6 cifre)</Label>
+              <Input
+                id="login-two-factor-code"
+                inputMode="numeric"
+                maxLength={6}
+                value={twoFactorCode}
+                onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                autoComplete="one-time-code"
+                autoFocus
+              />
+              <Button type="submit" className="w-full" disabled={loading || twoFactorCode.length !== 6}>
+                {loading ? "Verifica..." : "Verifica codice"}
+              </Button>
+              <Link
+                to={`/recovery-2fa?email=${encodeURIComponent(formData.email)}`}
+                className="block text-center text-sm text-primary hover:underline"
+              >
+                Non hai più accesso al tuo Authenticator?
+              </Link>
+            </form>
+          )}
 
           {oauthLoginUrl && <div className="relative">
             <div className="absolute inset-0 flex items-center">

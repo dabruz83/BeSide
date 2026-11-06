@@ -82,7 +82,7 @@ export const RegisterPage = () => {
 
       if (response.data.email_verification_required) {
         toast.success("Registrazione completata. Controlla la tua email prima di accedere.");
-        navigate("/login", { replace: true });
+        navigate("/verify-email/pending", { replace: true, state: { email: formData.email } });
         return;
       }
 
@@ -300,10 +300,19 @@ export const RegisterPage = () => {
                 </div>
 
                 <div className="space-y-3 rounded-md border p-3 text-sm">
-                  <label className="flex items-start gap-2"><Checkbox checked={formData.terms_accepted} onCheckedChange={(value) => setFormData({ ...formData, terms_accepted: value === true })} /><span>Accetto i <Link className="text-primary underline" to="/termini">Termini e condizioni</Link> (obbligatorio).</span></label>
-                  <label className="flex items-start gap-2"><Checkbox checked={formData.marketing_emails_opt_in} onCheckedChange={(value) => setFormData({ ...formData, marketing_emails_opt_in: value === true })} /><span>Desidero ricevere comunicazioni commerciali via email (facoltativo).</span></label>
-                  <label className="flex items-start gap-2"><Checkbox checked={formData.marketing_profiling_opt_in} onCheckedChange={(value) => setFormData({ ...formData, marketing_profiling_opt_in: value === true })} /><span>Acconsento alla profilazione per offerte personalizzate (facoltativo).</span></label>
-                  <p className="text-xs text-muted-foreground">Consulta l'<Link className="text-primary underline" to="/privacy">Informativa privacy</Link>. I dati necessari per account e personalizzazione del servizio sono trattati per l'erogazione di Beside e non richiedono un consenso marketing.</p>
+                  <label className="flex items-start gap-2">
+                    <Checkbox checked={formData.terms_accepted} onCheckedChange={(value) => setFormData({ ...formData, terms_accepted: value === true })} />
+                    <span>Accetto i <Link className="text-primary underline" to="/termini">Termini e condizioni</Link> (obbligatorio).</span>
+                  </label>
+                  <label className="flex items-start gap-2">
+                    <Checkbox checked={formData.marketing_emails_opt_in} onCheckedChange={(value) => setFormData({ ...formData, marketing_emails_opt_in: value === true })} />
+                    <span>Desidero ricevere comunicazioni commerciali via email (facoltativo).</span>
+                  </label>
+                  <label className="flex items-start gap-2">
+                    <Checkbox checked={formData.marketing_profiling_opt_in} onCheckedChange={(value) => setFormData({ ...formData, marketing_profiling_opt_in: value === true })} />
+                    <span>Acconsento alla profilazione per offerte personalizzate (facoltativo).</span>
+                  </label>
+                  <p className="text-xs text-muted-foreground">Consulta l'<Link className="text-primary underline" to="/privacy">Informativa privacy</Link>. I dati necessari per account e servizio sono trattati per l'erogazione di Beside e non richiedono un consenso marketing.</p>
                 </div>
 
                 <div className="flex gap-3">
