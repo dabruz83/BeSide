@@ -180,6 +180,12 @@ SUBSCRIPTION_PRICES = {"essential": 97.00, "professional": 197.00, "elite": 397.
 # Onboarding Status
 ONBOARDING_STATUS = ["pending", "in_progress", "complete", "overdue"]
 ONBOARDING_FEATURE_ENABLED = get_boolean_environment_variable("ONBOARDING_FEATURE_ENABLED", False)
+BETA_MODE_ENABLED = get_boolean_environment_variable("BETA_MODE_ENABLED", False)
+BETA_ALLOWED_EMAILS = {
+    normalize_email(value.strip())
+    for value in os.getenv("BETA_ALLOWED_EMAILS", "").split(",")
+    if value.strip()
+}
 TERMS_VERSION = os.getenv("TERMS_VERSION", "draft-2026-11")
 PRIVACY_NOTICE_VERSION = os.getenv("PRIVACY_NOTICE_VERSION", "draft-2026-11")
 CONSENT_VERSION = os.getenv("CONSENT_VERSION", "v1")
@@ -1392,6 +1398,8 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         raise HTTPException(status_code=422, detail="È necessario accettare i Termini e condizioni")
     validate_password_strength(user_data.password)
     email = normalize_email(str(user_data.email))
+    if BETA_MODE_ENABLED and (not BETA_ALLOWED_EMAILS or email not in BETA_ALLOWED_EMAILS):
+        raise HTTPException(status_code=403, detail="Registrazione beta riservata")
     business_name = user_data.business_name.strip()
     if not business_name:
         raise HTTPException(status_code=400, detail="Nome attività richiesto")
