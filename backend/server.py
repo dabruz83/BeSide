@@ -1510,6 +1510,8 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
 async def login(user_data: UserLogin, response: Response, request: Request):
     """Login with email/password"""
     email = normalize_email(str(user_data.email))
+    if BETA_MODE_ENABLED and BETA_ALLOWED_EMAILS and email not in BETA_ALLOWED_EMAILS and email != normalize_email(ADMIN_EMAIL):
+        raise HTTPException(status_code=403, detail="Accesso beta riservato")
     await enforce_rate_limit(
         request,
         "auth_login_email",
