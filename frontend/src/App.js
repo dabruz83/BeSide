@@ -36,8 +36,13 @@ import { SubscriptionPage } from "@/pages/SubscriptionPage";
 // Components
 import { Layout } from "@/components/Layout";
 
+// Keep browser requests same-origin in production so Safari does not need to
+// accept a third-party session cookie. The frontend server proxies /api to the
+// configured backend; Vite does the same in local development.
 const BACKEND_URL = (process.env.REACT_APP_BACKEND_URL || "").trim().replace(/\/+$/, "");
-export const API = `${BACKEND_URL}/api`;
+export const API = process.env.REACT_APP_DIRECT_BACKEND === "true"
+  ? `${BACKEND_URL}/api`
+  : "/api";
 
 // Configure axios defaults
 axios.defaults.withCredentials = true;

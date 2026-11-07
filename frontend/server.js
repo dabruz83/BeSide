@@ -24,6 +24,34 @@ const getBackendOrigin = () => {
   }
 };
 
+const proxyApiRequest = (request, response, headers) => {
+  let backend;
+  try {
+    backend = new URL(process.env.REACT_APP_BACKEND_URL || "");
+  } catch (_error) {
+    response.writeHead(503, { ...headers, "Content-Type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ detail: "Backend non configurato" }));
+    return;
+  }
+
+  const target = new URL(request.url, backend);
+  const proxyHeaders = { ...request.headers, host: target.host };
+  const upstream = http.request(target, { method: request.method, headers: proxyHeaders }, (upstreamResponse) => {
+    response.writeHead(upstreamResponse.statusCode || 502, {
+      ...headers,
+      ...upstreamResponse.headers,
+    });
+    upstreamResponse.pipe(response);
+  });
+  upstream.on("error", () => {
+    if (!response.headersSent) {
+      response.writeHead(502, { ...headers, "Content-Type": "application/json; charset=utf-8" });
+    }
+    response.end(JSON.stringify({ detail: "Backend non raggiungibile" }));
+  });
+  request.pipe(upstream);
+};
+
 const inlineScriptHashes = (buildDirectory) => {
   try {
     const html = fs.readFileSync(path.join(buildDirectory, "index.html"), "utf8");
@@ -90,6 +118,10 @@ const sendFile = (request, response, filePath, headers) => {
 const createStaticServer = (buildDirectory = DEFAULT_BUILD_DIRECTORY) => {
   const headers = securityHeaders(buildDirectory);
   return http.createServer((request, response) => {
+    if (request.url?.startsWith("/api")) {
+      proxyApiRequest(request, response, headers);
+      return;
+    }
     if (!request.url || !["GET", "HEAD"].includes(request.method)) {
       response.writeHead(405, { ...headers, "Content-Type": "text/plain; charset=utf-8" });
       response.end("Method not allowed");
