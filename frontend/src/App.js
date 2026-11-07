@@ -17,6 +17,7 @@ import { RecoveryEmailVerifyPage } from "@/pages/RecoveryEmailVerifyPage";
 import { RecoveryContactAcceptPage } from "@/pages/RecoveryContactAcceptPage";
 import { Recovery2FARequestPage } from "@/pages/Recovery2FARequestPage";
 import { Recovery2FAApprovePage } from "@/pages/Recovery2FAApprovePage";
+import { MfaSetupPage } from "@/pages/MfaSetupPage";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { FinancePage } from "@/pages/FinancePage";
@@ -220,6 +221,7 @@ const AppRouter = () => {
       <Route path="/recovery-contact/accept" element={<RecoveryContactAcceptPage />} />
       <Route path="/recovery-2fa" element={<Recovery2FARequestPage />} />
       <Route path="/recovery-2fa/approve" element={<Recovery2FAApprovePage />} />
+      <Route path="/mfa/setup" element={<MfaSetupPage />} />
       <Route path="/onboarding/client/:token" element={<ClientOnboardingPage />} />
       <Route path="/personalizza" element={<ProtectedRoute><OnboardingWizardPage /></ProtectedRoute>} />
       <Route path="/quote/:token" element={<QuotePage />} />

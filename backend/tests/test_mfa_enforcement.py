@@ -1,0 +1,91 @@
+import asyncio
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_deployment import InMemoryDatabase, make_request, server  # noqa: E402
+
+
+def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollment(monkeypatch):
+    fake_db = InMemoryDatabase()
+    company = {
+        "company_id": "company_mfa",
+        "name": "MFA tenant",
+        "owner_user_id": "user_mfa",
+        "status": "active",
+    }
+    user = {
+        "user_id": "user_mfa",
+        "company_id": "company_mfa",
+        "email": "mfa@example.com",
+        "password_hash": server.hash_password("StrongPassword-123"),
+        "role": "owner",
+        "is_active": True,
+        "email_verified": True,
+        "totp_enabled": False,
+    }
+    fake_db.companies.documents.append(company)
+    fake_db.users.documents.append(user)
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "TOTP_ENCRYPTION_KEY", "test-totp-encryption-key")
+
+    async def exercise():
+        login_response = server.Response()
+        login_result = await server.login(
+            server.UserLogin(email=user["email"], password="StrongPassword-123"),
+            login_response,
+            make_request("/api/auth/login"),
+        )
+        assert login_result["mfa_setup_required"] is True
+        assert "user" not in login_result
+        setup_cookie = login_response.headers["set-cookie"].split(";", 1)[0]
+
+        with_setup_cookie = make_request(
+            "/api/dashboard/metrics", method="GET", headers={"cookie": setup_cookie}
+        )
+        try:
+            await server.get_current_user(with_setup_cookie)
+        except server.HTTPException as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("MFA setup session reached a protected API")
+
+        setup_request = make_request(
+            "/api/auth/2fa/setup",
+            headers={"cookie": setup_cookie, "origin": server.CORS_ORIGINS[0]},
+        )
+        current_user = await server.get_current_user(setup_request)
+        setup_result = await server.setup_two_factor(
+            server.TwoFactorPasswordRequest(password="StrongPassword-123"),
+            setup_request,
+            current_user,
+        )
+        assert setup_result["otpauth_uri"].startswith("otpauth://totp/")
+        secret = server.decrypt_totp_secret(fake_db.users.documents[0]["totp_pending_secret_enc"])
+        current_user = await server.get_current_user(setup_request)
+
+        confirm_response = server.Response()
+        confirm_request = make_request(
+            "/api/auth/2fa/confirm",
+            headers={"cookie": setup_cookie, "origin": server.CORS_ORIGINS[0]},
+        )
+        confirm_result = await server.confirm_two_factor(
+            server.TwoFactorConfirmRequest(
+                password="StrongPassword-123", code=server.totp_code(secret)
+            ),
+            confirm_request,
+            confirm_response,
+            current_user,
+        )
+        assert confirm_result["enabled"] is True
+        assert len(confirm_result["recovery_codes"]) == 10
+        assert "user" in confirm_result
+
+        full_cookie = confirm_response.headers["set-cookie"].split(";", 1)[0]
+        authenticated = await server.get_current_user(
+            make_request("/api/dashboard/metrics", method="GET", headers={"cookie": full_cookie})
+        )
+        assert authenticated["user_id"] == user["user_id"]
+        assert authenticated["totp_enabled"] is True
+
+    asyncio.run(exercise())

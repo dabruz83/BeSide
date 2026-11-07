@@ -960,6 +960,35 @@ async def create_mfa_pending_session(user: Dict[str, Any]) -> str:
     })
     return token
 
+async def create_mfa_setup_session(user: Dict[str, Any]) -> str:
+    """Create a short-lived, setup-only session for customers without MFA.
+
+    This session is intentionally distinct from both a pending-login session
+    and a fully authenticated JWT session.  It can only be used by the TOTP
+    setup/confirmation endpoints and never authorizes tenant data access.
+    """
+    jti = uuid.uuid4().hex
+    lifetime = timedelta(minutes=MFA_SESSION_MINUTES)
+    token = create_jwt_token(
+        user["user_id"], user["email"], user.get("role", "member"),
+        user.get("company_id", ""), jti, "mfa_setup", lifetime,
+    )
+    now = datetime.now(timezone.utc)
+    await db.user_sessions.insert_one({
+        "session_id": f"mfa_setup_{uuid.uuid4().hex[:16]}",
+        "user_id": user["user_id"],
+        "company_id": user.get("company_id"),
+        "jti": jti,
+        "token_hash": hash_token(token),
+        "session_type": "mfa_setup",
+        "expires_at": (now + lifetime).isoformat(),
+        "expires_at_dt": now + lifetime,
+        "created_at": now.isoformat(),
+        "revoked_at": None,
+        "mfa_attempts": 0,
+    })
+    return token
+
 async def create_admin_mfa_setup_session(user: Dict[str, Any], activation_code: str) -> str:
     """Create a setup-only session; it can never satisfy protected dependencies."""
     if await db.user_sessions.find_one({
@@ -1023,6 +1052,12 @@ def _ensure_recovery_contact_scope(request: Request, user: Dict[str, Any]) -> No
     if request.url.path not in allowed:
         raise HTTPException(status_code=403, detail="Account contatto limitato all'autenticazione")
 
+def _ensure_mfa_setup_scope(request: Request) -> None:
+    """Allow setup sessions to reach only the minimum MFA enrollment API."""
+    allowed = {"/api/auth/2fa/setup", "/api/auth/2fa/confirm", "/api/auth/logout"}
+    if request.url.path not in allowed:
+        raise HTTPException(status_code=401, detail="Configurazione 2FA richiesta")
+
 async def get_current_user(request: Request) -> Dict[str, Any]:
     token = _extract_request_token(request)
     if not token:
@@ -1035,6 +1070,14 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
     )
 
     if session and session.get("session_type") != "jwt":
+        if session.get("session_type") == "mfa_setup":
+            if _session_expired(session):
+                raise HTTPException(status_code=401, detail="Configurazione 2FA scaduta")
+            _ensure_mfa_setup_scope(request)
+            user = await _load_active_user(session["user_id"])
+            if user.get("totp_enabled"):
+                raise HTTPException(status_code=409, detail="2FA già attivo")
+            return user
         if session.get("session_type") in {"mfa_pending", "admin_mfa_setup"}:
             raise HTTPException(status_code=401, detail="Secondo fattore richiesto")
         if _session_expired(session):
@@ -1045,6 +1088,13 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
             raise HTTPException(status_code=403, detail="Verifica l'email prima di continuare")
+        if (
+            session.get("session_type") == "jwt"
+            and user.get("role") != RECOVERY_CONTACT_ROLE
+            and user.get("platform_role") != "super_admin"
+            and not user.get("totp_enabled")
+        ):
+            raise HTTPException(status_code=401, detail="Configurazione 2FA richiesta")
         return user
 
     try:
@@ -1064,6 +1114,12 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
             raise HTTPException(status_code=403, detail="Verifica l'email prima di continuare")
+        if (
+            user.get("role") != RECOVERY_CONTACT_ROLE
+            and user.get("platform_role") != "super_admin"
+            and not user.get("totp_enabled")
+        ):
+            raise HTTPException(status_code=401, detail="Configurazione 2FA richiesta")
         return user
     except HTTPException:
         raise
@@ -1644,6 +1700,7 @@ async def setup_two_factor(
 async def confirm_two_factor(
     data: TwoFactorConfirmRequest,
     request: Request,
+    response: Response,
     current_user: Dict = Depends(get_current_user),
 ):
     await enforce_rate_limit(request, "auth_2fa_confirm", limit=5, window_seconds=15 * 60,
@@ -1662,6 +1719,13 @@ async def confirm_two_factor(
     secret = decrypt_totp_secret(pending)
     if verify_totp_code(secret, data.code) is None:
         raise HTTPException(status_code=400, detail="Codice 2FA non valido")
+    setup_token = _extract_request_token(request)
+    setup_session = None
+    if setup_token:
+        setup_session = await db.user_sessions.find_one(
+            {"token_hash": hash_token(setup_token), "revoked_at": None},
+            {"_id": 0, "session_type": 1},
+        )
     recovery_codes = generate_recovery_codes()
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.users.update_one(
@@ -1676,7 +1740,23 @@ async def confirm_two_factor(
         {"$set": {"revoked_at": now_iso}},
     )
     await audit_event("2fa_enabled", user=current_user, request=request)
-    return {"enabled": True, "recovery_codes": recovery_codes}
+    # A first-time customer enrollment upgrades the setup-only session to a
+    # normal MFA-verified session only after the server validates the code.
+    # Existing authenticated users keep the historical behavior and must log
+    # in again if their session was revoked by this operation.
+    response_payload = {"enabled": True, "recovery_codes": recovery_codes}
+    if setup_session and setup_session.get("session_type") == "mfa_setup":
+        refreshed_user = await _load_active_user(current_user["user_id"])
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.users.update_one(
+            {"user_id": refreshed_user["user_id"]},
+            {"$set": {"last_login_at": now_iso, "updated_at": now_iso}},
+        )
+        refreshed_user["last_login_at"] = now_iso
+        access_token = await create_authenticated_session(refreshed_user, mfa_verified=True)
+        set_session_cookie(response, access_token)
+        response_payload["user"] = public_user(refreshed_user)
+    return response_payload
 
 
 @api_router.post("/auth/2fa/verify")
@@ -2648,18 +2728,14 @@ async def login(user_data: UserLogin, response: Response, request: Request):
         set_session_cookie(response, pending_token)
         await audit_event("login_password_verified", user=user, request=request, metadata={"mfa_required": True})
         return {"mfa_required": True, "expires_in": MFA_SESSION_MINUTES * 60}
-    now_iso = datetime.now(timezone.utc).isoformat()
-    await db.users.update_one(
-        {"user_id": user["user_id"], "company_id": user.get("company_id")},
-        {"$set": {"last_login_at": now_iso, "updated_at": now_iso}},
-    )
-    user["last_login_at"] = now_iso
-    token = await create_authenticated_session(user)
-    await audit_event("login", user=user, request=request)
-
-    set_session_cookie(response, token)
-
-    return {"user": public_user(user)}
+    # Password verification alone is never enough for a customer account.
+    # Issue only a short-lived enrollment session until the first TOTP code is
+    # confirmed; dashboard and tenant APIs remain inaccessible in this state.
+    setup_token = await create_mfa_setup_session(user)
+    set_session_cookie(response, setup_token)
+    await audit_event("login_password_verified", user=user, request=request,
+                      metadata={"mfa_setup_required": True})
+    return {"mfa_setup_required": True, "expires_in": MFA_SESSION_MINUTES * 60}
 
 @api_router.post("/auth/session")
 async def process_google_session(request: Request, response: Response):
@@ -3356,7 +3432,10 @@ async def verify_email(data: TokenRequest, request: Request):
     if user:
         await _start_recovery_contact_security_period(user["user_id"])
         await audit_event("email_verified", user=user, request=request)
-    return {"message": "Indirizzo email verificato."}
+    return {
+        "message": "Indirizzo email verificato.",
+        "mfa_setup_required": bool(user and not user.get("totp_enabled")),
+    }
 
 
 @api_router.get("/auth/onboarding-profile")
