@@ -1,5 +1,6 @@
 const fs = require("fs");
 const http = require("http");
+const https = require("https");
 const path = require("path");
 const crypto = require("crypto");
 
@@ -36,7 +37,8 @@ const proxyApiRequest = (request, response, headers) => {
 
   const target = new URL(request.url, backend);
   const proxyHeaders = { ...request.headers, host: target.host };
-  const upstream = http.request(target, { method: request.method, headers: proxyHeaders }, (upstreamResponse) => {
+  const transport = target.protocol === "https:" ? https : http;
+  const upstream = transport.request(target, { method: request.method, headers: proxyHeaders }, (upstreamResponse) => {
     response.writeHead(upstreamResponse.statusCode || 502, {
       ...headers,
       ...upstreamResponse.headers,
