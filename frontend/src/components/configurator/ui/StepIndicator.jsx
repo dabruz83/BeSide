@@ -4,11 +4,10 @@ import { Check } from 'lucide-react';
 const STEPS = [
   { label: 'Veicolo', short: '1' },
   { label: 'Colore', short: '2' },
-  { label: 'Pellicola', short: '3' },
-  { label: 'Zone', short: '4' },
-  { label: 'Extra', short: '5' },
-  { label: 'Prenota', short: '6' },
-  { label: 'Riepilogo', short: '7' }
+  { label: 'Personalizza', short: '3' },
+  { label: 'Extra', short: '4' },
+  { label: 'Prenota', short: '5' },
+  { label: 'Riepilogo', short: '6' }
 ];
 
 export const StepIndicator = ({ currentStep, maxVisitedStep, onStepClick }) => {

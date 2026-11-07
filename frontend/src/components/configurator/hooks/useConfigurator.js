@@ -10,6 +10,7 @@ const initialState = {
   film: null,
   filmColor: null,
   zones: [],
+  zoneSelections: {},
   tinting: {
     vetri: null,
     fari: null
@@ -29,6 +30,9 @@ const ACTIONS = {
   SET_FILM: 'SET_FILM',
   SET_FILM_COLOR: 'SET_FILM_COLOR',
   TOGGLE_ZONE: 'TOGGLE_ZONE',
+  SET_ZONE_SELECTION: 'SET_ZONE_SELECTION',
+  RESET_ZONE: 'RESET_ZONE',
+  RESET_CUSTOMIZATION: 'RESET_CUSTOMIZATION',
   SET_TINTING_VETRI: 'SET_TINTING_VETRI',
   SET_TINTING_FARI: 'SET_TINTING_FARI',
   SET_BOOKING_DATE: 'SET_BOOKING_DATE',
@@ -66,6 +70,22 @@ function configuratorReducer(state, action) {
           ? state.zones.filter(z => z !== zoneId)
           : [...state.zones, zoneId]
       };
+
+    case ACTIONS.SET_ZONE_SELECTION:
+      return {
+        ...state,
+        zoneSelections: { ...state.zoneSelections, [action.payload.zoneId]: action.payload.variant },
+        zones: state.zones.includes(action.payload.zoneId) ? state.zones : [...state.zones, action.payload.zoneId],
+      };
+
+    case ACTIONS.RESET_ZONE: {
+      const nextSelections = { ...state.zoneSelections };
+      delete nextSelections[action.payload];
+      return { ...state, zoneSelections: nextSelections, zones: state.zones.filter((zone) => zone !== action.payload) };
+    }
+
+    case ACTIONS.RESET_CUSTOMIZATION:
+      return { ...state, zoneSelections: {}, zones: [], film: null, filmColor: null };
     
     case ACTIONS.SET_TINTING_VETRI:
       return { ...state, tinting: { ...state.tinting, vetri: action.payload } };
@@ -86,7 +106,7 @@ function configuratorReducer(state, action) {
       return { ...state, gdprConsent: action.payload };
     
     case ACTIONS.NEXT_STEP:
-      const nextStep = Math.min(state.step + 1, 6);
+      const nextStep = Math.min(state.step + 1, 5);
       return {
         ...state,
         step: nextStep,
@@ -134,6 +154,18 @@ export function useConfigurator() {
 
   const toggleZone = useCallback((zoneId) => {
     dispatch({ type: ACTIONS.TOGGLE_ZONE, payload: zoneId });
+  }, []);
+
+  const setZoneSelection = useCallback((zoneId, variant) => {
+    dispatch({ type: ACTIONS.SET_ZONE_SELECTION, payload: { zoneId, variant } });
+  }, []);
+
+  const resetZone = useCallback((zoneId) => {
+    dispatch({ type: ACTIONS.RESET_ZONE, payload: zoneId });
+  }, []);
+
+  const resetCustomization = useCallback(() => {
+    dispatch({ type: ACTIONS.RESET_CUSTOMIZATION });
   }, []);
 
   const setTintingVetri = useCallback((option) => {
@@ -190,11 +222,10 @@ export function useConfigurator() {
   const canProceed = useMemo(() => ({
     0: state.vehicle !== null,
     1: state.baseColor !== null,
-    2: state.film !== null && state.filmColor !== null,
-    3: state.zones.length > 0,
-    4: true, // Step opzionale
-    5: state.booking.date !== null && state.booking.time !== null,
-    6: state.gdprConsent
+    2: Object.keys(state.zoneSelections).length > 0,
+    3: true, // Extra opzionale
+    4: state.booking.date !== null && state.booking.time !== null,
+    5: state.gdprConsent
   }), [state]);
 
   return {
@@ -207,6 +238,9 @@ export function useConfigurator() {
       setFilm,
       setFilmColor,
       toggleZone,
+      setZoneSelection,
+      resetZone,
+      resetCustomization,
       setTintingVetri,
       setTintingFari,
       setBookingDate,
