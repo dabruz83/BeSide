@@ -257,7 +257,20 @@ class UserCreate(BaseModel):
     business_name: str = Field(min_length=1, max_length=200)
     team_size: int = Field(default=1, ge=1, le=1000)
     services: List[str] = Field(default_factory=list, max_length=20)
-    tax_regime: str = "forfettario_15"
+    tax_regime: Optional[str] = None
+    last_name: str = Field(default="", max_length=100)
+    role: str = Field(default="", max_length=100)
+    location_general: str = Field(default="", max_length=160)
+    business_status: Optional[str] = Field(default=None, max_length=60)
+    legal_form: Optional[str] = Field(default=None, max_length=60)
+    sector: Optional[str] = Field(default=None, max_length=120)
+    customer_type: Optional[str] = Field(default=None, max_length=30)
+    revenue_band: Optional[str] = Field(default=None, max_length=40)
+    employees_band: Optional[str] = Field(default=None, max_length=40)
+    needs: List[str] = Field(default_factory=list, max_length=12)
+    interested_modules: List[str] = Field(default_factory=list, max_length=12)
+    monthly_quotes_band: Optional[str] = Field(default=None, max_length=40)
+    onboarding_complete: bool = False
     terms_accepted: bool = False
     marketing_emails_opt_in: bool = False
     marketing_profiling_opt_in: bool = False
@@ -2464,8 +2477,10 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
     business_name = user_data.business_name.strip()
     if not business_name:
         raise HTTPException(status_code=400, detail="Nome attività richiesto")
-    if user_data.tax_regime not in TAX_REGIMES:
+    if user_data.tax_regime is not None and user_data.tax_regime not in TAX_REGIMES and user_data.tax_regime not in {"non_so", "preferisco_non_rispondere"}:
         raise HTTPException(status_code=400, detail="Regime fiscale non valido")
+    if user_data.legal_form in {"societa_persone", "societa_capitali"} and user_data.tax_regime in {"forfettario_5", "forfettario_15"}:
+        raise HTTPException(status_code=422, detail="Regime fiscale non compatibile con la forma giuridica")
     if not set(user_data.services).issubset({"ppf", "wrap", "tint", "upholstery"}):
         raise HTTPException(status_code=400, detail="Servizio non valido")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
@@ -2502,7 +2517,7 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         "business_name": business_name,
         "team_size": user_data.team_size,
         "services": user_data.services,
-        "tax_regime": user_data.tax_regime,
+        "tax_regime": user_data.tax_regime or "forfettario_15",
         "business_info": {},
         "subscription_tier": "essential",
         "subscription_status": "trial",
@@ -2524,6 +2539,30 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
             "updated_at": now_iso,
         },
     }
+    if user_data.onboarding_complete:
+        user_doc["onboarding_profile"] = {
+            "first_name": user_data.first_name,
+            "last_name": user_data.last_name,
+            "role": user_data.role,
+            "location_general": user_data.location_general,
+            "step": 3,
+        }
+        company_doc["onboarding_profile"] = {
+            key: value for key, value in {
+                "business_status": user_data.business_status,
+                "legal_form": user_data.legal_form,
+                "tax_regime": user_data.tax_regime,
+                "sector": user_data.sector,
+                "customer_type": user_data.customer_type,
+                "revenue_band": user_data.revenue_band,
+                "employees_band": user_data.employees_band,
+                "needs": user_data.needs,
+                "interested_modules": user_data.interested_modules,
+                "monthly_quotes_band": user_data.monthly_quotes_band,
+                "step": 3,
+            }.items() if value is not None
+        }
+        user_doc["onboarding_completed_at"] = now_iso
 
     await reserve_email_claim(email, user_id, company_id)
     try:

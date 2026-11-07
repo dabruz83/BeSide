@@ -16,7 +16,7 @@ import {
   Calculator,
   MessageSquare
 } from "lucide-react";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 
 const formatCurrency = (amount) => {
   return new Intl.NumberFormat('it-IT', {
@@ -49,20 +49,12 @@ const LEAD_SOURCE_LABELS = {
 
 export const DashboardPage = () => {
   const { user } = useAuth();
-  const location = useLocation();
-  const navigate = useNavigate();
   const [metrics, setMetrics] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetchMetrics();
   }, []);
-
-  useEffect(() => {
-    if (user?.onboarding_enabled && !user?.onboarding_complete && !location.state?.onboardingDismissed) {
-      navigate("/personalizza", { replace: true });
-    }
-  }, [user, location.state, navigate]);
 
   const fetchMetrics = async () => {
     try {
