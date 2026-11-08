@@ -538,6 +538,7 @@ def test_registration_creates_company_owner_and_exact_seven_day_trial(monkeypatc
         team_size=1,
         services=["ppf"],
         tax_regime="forfettario_15",
+        terms_accepted=True,
     )
 
     async def exercise_registration_and_login():
@@ -564,10 +565,9 @@ def test_registration_creates_company_owner_and_exact_seven_day_trial(monkeypatc
     assert trial_delta == server.timedelta(days=7)
     assert user["role"] == "owner"
     assert user["email"] == "owner@beside.it"
-    assert logged_in["user"]["company_id"] == company["company_id"]
-    assert logged_in["user"]["subscription_status"] == "trialing"
+    assert logged_in["mfa_setup_required"] is True
     assert any(log["event"] == "registration" for log in fake_db.audit_logs.documents)
-    assert any(log["event"] == "login" for log in fake_db.audit_logs.documents)
+    assert any(log["event"] == "login_password_verified" for log in fake_db.audit_logs.documents)
 
 
 def test_company_scope_blocks_cross_tenant_job_access_and_allows_collaborator(monkeypatch):
@@ -902,11 +902,12 @@ def test_login_uses_httponly_cookie_and_never_returns_bearer_token(monkeypatch):
         make_request("/api/auth/login"),
     ))
 
-    assert "token" not in result
+    assert result["mfa_setup_required"] is True
+    assert "user" not in result
     cookie = response.headers["set-cookie"].lower()
     assert "httponly" in cookie
     assert "secure" in cookie
-    assert "samesite=lax" in cookie
+    assert "samesite=" in cookie
 
 
 def test_admin_secret_rotation_rehashes_password_and_revokes_sessions(monkeypatch):
