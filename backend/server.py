@@ -1131,6 +1131,15 @@ async def get_admin_user(request: Request) -> Dict[str, Any]:
     user = await get_current_user(request)
     if user.get("platform_role") != "super_admin":
         raise HTTPException(status_code=403, detail="Accesso negato - richiesti privilegi admin")
+    # Platform Owner endpoints require a completed MFA-bound session even if a
+    # stale or legacy session document still exists for the account.
+    token = _extract_request_token(request)
+    session = await db.user_sessions.find_one(
+        {"token_hash": hash_token(token or ""), "revoked_at": None},
+        {"_id": 0, "session_type": 1, "mfa_verified": 1},
+    )
+    if not user.get("totp_enabled") or not session or session.get("session_type") != "jwt" or not session.get("mfa_verified"):
+        raise HTTPException(status_code=401, detail="Verifica MFA amministratore richiesta")
     return user
 
 def require_company_roles(*allowed_roles: str):

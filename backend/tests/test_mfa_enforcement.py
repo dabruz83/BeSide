@@ -80,6 +80,9 @@ def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollmen
         assert confirm_result["enabled"] is True
         assert len(confirm_result["recovery_codes"]) == 10
         assert "user" in confirm_result
+        stored_codes = fake_db.users.documents[0]["totp_recovery_codes"]
+        assert all(server.hash_recovery_code(code) in stored_codes for code in confirm_result["recovery_codes"])
+        assert all(code not in stored_codes for code in confirm_result["recovery_codes"])
 
         full_cookie = confirm_response.headers["set-cookie"].split(";", 1)[0]
         authenticated = await server.get_current_user(
@@ -87,5 +90,39 @@ def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollmen
         )
         assert authenticated["user_id"] == user["user_id"]
         assert authenticated["totp_enabled"] is True
+
+    asyncio.run(exercise())
+
+
+def test_platform_owner_api_rejects_session_without_completed_mfa(monkeypatch):
+    fake_db = InMemoryDatabase()
+    company = {"company_id": server.PLATFORM_COMPANY_ID, "name": "BESIDE", "status": "active"}
+    admin = {
+        "user_id": "platform_owner_test",
+        "company_id": server.PLATFORM_COMPANY_ID,
+        "email": "platform-owner@example.com",
+        "role": "admin",
+        "platform_role": "super_admin",
+        "is_active": True,
+        "email_verified": True,
+        "totp_enabled": True,
+    }
+    fake_db.companies.documents.append(company)
+    fake_db.users.documents.append(admin)
+    monkeypatch.setattr(server, "db", fake_db)
+
+    async def exercise():
+        pending = await server.create_authenticated_session(admin, mfa_verified=False)
+        try:
+            await server.get_admin_user(make_request("/api/admin/stats", method="GET", headers={"authorization": f"Bearer {pending}"}))
+        except server.HTTPException as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("Platform Owner API accepted a session without completed MFA")
+
+        await fake_db.user_sessions.update_many({"token_hash": server.hash_token(pending)}, {"$set": {"revoked_at": server.datetime.now(server.timezone.utc).isoformat()}})
+        verified = await server.create_authenticated_session(admin, mfa_verified=True)
+        current = await server.get_admin_user(make_request("/api/admin/stats", method="GET", headers={"authorization": f"Bearer {verified}"}))
+        assert current["platform_role"] == "super_admin"
 
     asyncio.run(exercise())
