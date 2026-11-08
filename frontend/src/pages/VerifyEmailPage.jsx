@@ -14,7 +14,9 @@ export const VerifyEmailPage = () => {
     axios.post(`${API}/auth/email-verification/verify`, { token })
       .then((response) => {
         setStatus("success");
-        setMessage(response.data.message);
+        setMessage(response.data.mfa_setup_required
+          ? `${response.data.message} Dopo il login configurerai l'autenticazione a due fattori.`
+          : response.data.message);
       })
       .catch((error) => {
         setStatus("error");

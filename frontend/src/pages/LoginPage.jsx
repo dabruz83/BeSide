@@ -40,6 +40,11 @@ export const LoginPage = () => {
         toast.success("Inserisci il codice della tua app Authenticator");
         return;
       }
+      if (response.data.mfa_setup_required) {
+        toast.success("Configura l'autenticazione a due fattori per continuare");
+        navigate("/mfa/setup");
+        return;
+      }
       login(response.data.user);
       toast.success("Accesso effettuato!");
       navigate("/dashboard");
