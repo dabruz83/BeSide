@@ -2726,7 +2726,15 @@ async def login(user_data: UserLogin, response: Response, request: Request):
         raise HTTPException(status_code=401, detail="Email o password non corretti")
 
     if email_verification_blocks_access(user):
-        raise HTTPException(status_code=403, detail="Verifica l'email prima di accedere")
+        # Password verification has already succeeded. Return a non-authenticated
+        # application state so the client can resume the pending email step
+        # without creating a session or revealing account existence beforehand.
+        return {
+            "status": "EMAIL_VERIFICATION_REQUIRED",
+            "email_verification_required": True,
+            "email": email,
+            "message": "Devi ancora verificare il tuo indirizzo email. Controlla la posta elettronica per completare la registrazione",
+        }
 
     if user.get("role") == RECOVERY_CONTACT_ROLE and not user.get("email_verified"):
         raise HTTPException(status_code=403, detail="Verifica l'email prima di accedere")

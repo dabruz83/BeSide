@@ -40,6 +40,10 @@ export const LoginPage = () => {
         toast.success("Inserisci il codice della tua app Authenticator");
         return;
       }
+      if (response.data.status === "EMAIL_VERIFICATION_REQUIRED" || response.data.email_verification_required) {
+        navigate("/verify-email/pending", { state: { email: response.data.email || formData.email } });
+        return;
+      }
       if (response.data.mfa_setup_required) {
         toast.success("Configura l'autenticazione a due fattori per continuare");
         navigate("/mfa/setup");
