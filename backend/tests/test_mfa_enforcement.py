@@ -6,6 +6,50 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_deployment import InMemoryDatabase, make_request, server  # noqa: E402
 
 
+def test_correct_password_returns_pending_email_verification_without_session(monkeypatch):
+    fake_db = InMemoryDatabase()
+    company = {"company_id": "company_email", "name": "Email tenant", "owner_user_id": "user_email", "status": "active"}
+    user = {
+        "user_id": "user_email",
+        "company_id": company["company_id"],
+        "email": "pending@example.com",
+        "password_hash": server.hash_password("StrongPassword-123"),
+        "role": "owner",
+        "is_active": True,
+        "email_verified": False,
+        "email_verification_exempt": False,
+        "totp_enabled": False,
+    }
+    fake_db.companies.documents.append(company)
+    fake_db.users.documents.append(user)
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "EMAIL_VERIFICATION_REQUIRED", True)
+
+    async def exercise():
+        response = server.Response()
+        result = await server.login(
+            server.UserLogin(email=user["email"], password="StrongPassword-123"),
+            response,
+            make_request("/api/auth/login"),
+        )
+        assert result["status"] == "EMAIL_VERIFICATION_REQUIRED"
+        assert result["email"] == user["email"]
+        assert "set-cookie" not in response.headers
+
+        try:
+            await server.login(
+                server.UserLogin(email=user["email"], password="WrongPassword-123"),
+                server.Response(),
+                make_request("/api/auth/login"),
+            )
+        except server.HTTPException as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("Invalid password was accepted")
+
+    asyncio.run(exercise())
+
+
 def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollment(monkeypatch):
     fake_db = InMemoryDatabase()
     company = {
