@@ -104,7 +104,7 @@ export const ProfilePage = () => {
   }, [user?.user_id, user?.totp_enabled]);
 
   const handleContactInvite = async () => {
-    if (!contactEmail.trim() || !contactPassword || !/^\\d{6}$/.test(contactTotp)) {
+    if (!contactEmail.trim() || !contactPassword || !/^\d{6}$/.test(contactTotp)) {
       toast.error("Inserisci email, password e un codice Authenticator valido.");
       return;
     }
@@ -127,7 +127,7 @@ export const ProfilePage = () => {
   };
 
   const handleContactRevoke = async () => {
-    if (!contactPassword || !/^\\d{6}$/.test(contactTotp)) {
+    if (!contactPassword || !/^\d{6}$/.test(contactTotp)) {
       toast.error("Per revocare il contatto inserisci password e codice Authenticator.");
       return;
     }
