@@ -119,11 +119,15 @@ def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollmen
             current_user,
         )
         assert confirm_result["enabled"] is True
-        assert len(confirm_result["recovery_codes"]) == 10
+        assert "recovery_codes" not in confirm_result
         assert "user" in confirm_result
-        stored_codes = fake_db.users.documents[0]["totp_recovery_codes"]
-        assert all(server.hash_recovery_code(code) in stored_codes for code in confirm_result["recovery_codes"])
-        assert all(code not in stored_codes for code in confirm_result["recovery_codes"])
+        saved_user = fake_db.users.documents[0]
+        assert "totp_recovery_codes" not in saved_user
+        assert saved_user["totp_enabled"] is True
+        assert saved_user["totp_secret_enc"]
+        assert server.decrypt_totp_secret(saved_user["totp_secret_enc"]) == secret
+        assert "totp_pending_secret_enc" not in saved_user
+        assert "totp_pending_created_at" not in saved_user
 
         full_cookie = confirm_response.headers["set-cookie"].split(";", 1)[0]
         authenticated = await server.get_current_user(
