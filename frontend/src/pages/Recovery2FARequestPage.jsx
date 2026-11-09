@@ -178,7 +178,7 @@ export const Recovery2FARequestPage = () => {
         <Link to="/login" className="block text-center text-3xl font-bold text-primary">BESIDE</Link>
         <div className="space-y-2 text-center">
           <h1 className="text-2xl font-semibold">Recupero autenticazione 2FA</h1>
-          <p className="text-sm text-muted-foreground">La richiesta sarà verificata dal tuo contatto fidato. Non viene creata una sessione completa.</p>
+          <p className="text-sm text-muted-foreground">Per recuperare il tuo Authenticator, il contatto fidato riceverà un link via email. Non riceverà accesso al tuo account.</p>
         </div>
 
         {state !== "pending" && <form onSubmit={submit} className="space-y-4">
@@ -199,8 +199,8 @@ export const Recovery2FARequestPage = () => {
 
         {state === "pending" && <div className="space-y-4 rounded-lg border border-primary/30 bg-primary/5 p-4">
           <p className="text-sm font-medium">Stato: {statusLabel || "Richiesta in attesa"}</p>
-          {verificationNumber && <div className="space-y-1 text-center"><p className="text-xs text-muted-foreground">Numero temporaneo da comunicare al contatto fidato</p><p className="font-mono text-2xl tracking-[0.25em] text-primary">{verificationNumber}</p></div>}
-          <p className="text-xs text-muted-foreground">Il contatto dovrà autenticarsi e approvare la richiesta. Non condividere password, token o codici TOTP.</p>
+          {verificationNumber && <div className="space-y-1 text-center"><p className="text-xs text-muted-foreground">Comunica questo numero al contatto fidato</p><p className="font-mono text-2xl tracking-[0.25em] text-primary">{verificationNumber}</p></div>}
+          <p className="text-xs text-muted-foreground">Il contatto riceverà un'email con un link. Comunica soltanto il numero temporaneo di 8 cifre dopo averlo contattato personalmente. Non condividere password o codici Authenticator.</p>
           {expiryLabel && <p className="text-xs text-muted-foreground">{expiryLabel}</p>}
           <div className="space-y-2 border-t border-border/60 pt-3">
             <Label htmlFor="recovery-credential">Credenziale temporanea</Label>
