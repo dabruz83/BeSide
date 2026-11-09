@@ -1048,6 +1048,7 @@ def _ensure_recovery_contact_scope(request: Request, user: Dict[str, Any]) -> No
     allowed = {
         "/api/auth/me", "/api/auth/logout", "/api/auth/2fa/setup",
         "/api/auth/2fa/confirm", "/api/auth/2fa/verify",
+        "/api/auth/recovery-contact/link-account",
     }
     if request.url.path not in allowed:
         raise HTTPException(status_code=403, detail="Account contatto limitato all'autenticazione")
