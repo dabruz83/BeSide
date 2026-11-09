@@ -2471,13 +2471,13 @@ async def send_recovery_email_security_notice(primary_email: str, recovery_email
         ),
     )
 
-async def send_recovery_contact_invite(contact_email: str, token: str) -> bool:
+async def send_recovery_contact_invite(contact_email: str, token: str, inviter_email: str) -> bool:
     invite_url = f"{FRONTEND_PUBLIC_URL}/recovery-contact/accept?token={token}"
     return await send_email_sendgrid(
         contact_email,
         "Invito come contatto fidato BESIDE",
         (
-            "<p>Una persona ti ha invitato come contatto fidato Beside.</p>"
+            f"<p>{html.escape(inviter_email)} ti ha invitato come contatto fidato Beside.</p>"
             f'<p><a href="{html.escape(invite_url, quote=True)}">Rivedi e accetta l\'invito</a></p>'
             "<p>Non serve aprire un account Beside, né comunicare password o codici personali.</p>"
             f"<p>Il link scade tra {RECOVERY_CONTACT_INVITE_HOURS} ore. "
@@ -3199,7 +3199,7 @@ async def invite_recovery_contact(
         "acceptance_attempts": 0,
         "used_at": None,
     })
-    background_tasks.add_task(send_recovery_contact_invite, contact_email, token)
+    background_tasks.add_task(send_recovery_contact_invite, contact_email, token, current_user["email"])
     background_tasks.add_task(send_recovery_contact_notice, current_user["email"], contact_email, "invited")
     await audit_event("recovery_contact_invited", user=current_user, request=request)
     return {"message": "Invito del contatto fidato inviato.", "status": "pending_invitation"}
