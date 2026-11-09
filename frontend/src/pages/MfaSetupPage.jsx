@@ -15,7 +15,7 @@ export const MfaSetupPage = () => {
   const setupStarted = useRef(false);
   const [code, setCode] = useState("");
   const [setup, setSetup] = useState(null);
-  const [recoveryCodes, setRecoveryCodes] = useState([]);
+  const [configured, setConfigured] = useState(false);
   const [message, setMessage] = useState("Preparazione del codice QR per il tuo Authenticator...");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -54,9 +54,9 @@ export const MfaSetupPage = () => {
       const response = await axios.post(`${API}/auth/2fa/confirm`, { code });
       setCode("");
       setSetup(null);
-      setRecoveryCodes(response.data.recovery_codes || []);
+      setConfigured(true);
       if (response.data.user) login(response.data.user);
-      setMessage("Autenticazione a due fattori attivata. Conserva i codici di recupero in un luogo sicuro.");
+      setMessage("Autenticazione a due fattori attivata. Configura il contatto fidato dal tuo Profilo, nella sezione Sicurezza.");
     } catch (requestError) {
       setError(errorMessage(requestError, "Codice TOTP non valido o configurazione scaduta."));
     } finally {
@@ -64,16 +64,14 @@ export const MfaSetupPage = () => {
     }
   };
 
-  if (recoveryCodes.length > 0) {
+  if (configured) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <div className="w-full max-w-lg space-y-5 rounded-xl border bg-card p-6 shadow-sm">
           <h1 className="text-2xl font-semibold">MFA configurata</h1>
-          <p className="text-sm text-muted-foreground">Questi codici vengono mostrati una sola volta. Non salvarli nel browser.</p>
-          <div className="grid grid-cols-2 gap-2 rounded-md bg-muted p-4 font-mono text-sm">
-            {recoveryCodes.map((recoveryCode) => <span key={recoveryCode}>{recoveryCode}</span>)}
-          </div>
-          <Button className="w-full" onClick={() => navigate("/dashboard", { replace: true })}>Vai alla dashboard</Button>
+          <p className="text-sm text-muted-foreground">La tua autenticazione a due fattori è attiva. Per il recupero dell’accesso configura un contatto fidato nel Profilo, alla voce Sicurezza.</p>
+          <Button className="w-full" onClick={() => navigate("/profile#sicurezza", { replace: true })}>Configura contatto fidato</Button>
+          <Button variant="outline" className="w-full" onClick={() => navigate("/dashboard", { replace: true })}>Vai alla dashboard</Button>
         </div>
       </div>
     );
