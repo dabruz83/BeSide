@@ -23,7 +23,8 @@ import {
   MapPin,
   Phone,
   Search,
-  Loader2
+  Loader2,
+  ShieldCheck
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -53,6 +54,11 @@ export const ProfilePage = () => {
   const [saving, setSaving] = useState(false);
   const [searchingCompany, setSearchingCompany] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [recoveryContact, setRecoveryContact] = useState(null);
+  const [contactEmail, setContactEmail] = useState("");
+  const [contactPassword, setContactPassword] = useState("");
+  const [contactTotp, setContactTotp] = useState("");
+  const [contactBusy, setContactBusy] = useState(false);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -89,6 +95,58 @@ export const ProfilePage = () => {
       }));
     }
   }, [user]);
+
+  useEffect(() => {
+    if (!user?.totp_enabled) return;
+    axios.get(`${API}/auth/recovery-contact`)
+      .then((response) => setRecoveryContact(response.data.contact))
+      .catch(() => setRecoveryContact(null));
+  }, [user?.user_id, user?.totp_enabled]);
+
+  const handleContactInvite = async () => {
+    if (!contactEmail.trim() || !contactPassword || !/^\\d{6}$/.test(contactTotp)) {
+      toast.error("Inserisci email, password e un codice Authenticator valido.");
+      return;
+    }
+    setContactBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/recovery-contact/invite`, {
+        email: contactEmail.trim(),
+        password: contactPassword,
+        code: contactTotp,
+      });
+      setRecoveryContact({ contact_email: contactEmail.trim(), status: response.data.status });
+      setContactPassword("");
+      setContactTotp("");
+      toast.success(response.data.message || "Invito inviato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile inviare l'invito.");
+    } finally {
+      setContactBusy(false);
+    }
+  };
+
+  const handleContactRevoke = async () => {
+    if (!contactPassword || !/^\\d{6}$/.test(contactTotp)) {
+      toast.error("Per revocare il contatto inserisci password e codice Authenticator.");
+      return;
+    }
+    setContactBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/recovery-contact/revoke`, {
+        password: contactPassword,
+        code: contactTotp,
+      });
+      setRecoveryContact(null);
+      setContactPassword("");
+      setContactTotp("");
+      toast.success(response.data.message || "Contatto revocato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile revocare il contatto.");
+    } finally {
+      setContactBusy(false);
+    }
+  };
 
   const handleServiceToggle = (serviceId) => {
     setFormData(prev => ({
@@ -545,6 +603,55 @@ export const ProfilePage = () => {
 
         {/* Sidebar */}
         <div className="space-y-6">
+          <Card id="sicurezza">
+            <CardHeader>
+              <CardTitle className="text-lg flex items-center gap-2">
+                <ShieldCheck className="w-5 h-5" />
+                Sicurezza
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                Autenticazione MFA: {user?.totp_enabled ? "attiva" : "da configurare"}.
+                Il recupero dell'accesso avviene tramite contatto fidato.
+              </p>
+              {user?.totp_enabled ? (
+                <>
+                  {recoveryContact && (
+                    <div className="rounded-md bg-muted p-3 space-y-1 text-sm">
+                      <p className="font-medium">Contatto: {recoveryContact.contact_email}</p>
+                      <p>Stato: {recoveryContact.status}</p>
+                      {recoveryContact.security_period_ends_at && (
+                        <p className="text-xs text-muted-foreground">
+                          Fine periodo di sicurezza: {new Date(recoveryContact.security_period_ends_at).toLocaleString("it-IT")}
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  {!recoveryContact && (
+                    <>
+                      <p className="text-sm">Invita una persona fidata. Il contatto deve accettare l'invito, verificare la propria email e attivare MFA prima di poter assistere al recupero.</p>
+                      <Label htmlFor="trusted-contact-email">Email del contatto fidato</Label>
+                      <Input id="trusted-contact-email" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="contatto@esempio.it" autoComplete="off" />
+                    </>
+                  )}
+                  <Label htmlFor="trusted-contact-password">Password attuale per autorizzare l'operazione</Label>
+                  <Input id="trusted-contact-password" type="password" value={contactPassword} onChange={(e) => setContactPassword(e.target.value)} autoComplete="current-password" />
+                  <Label htmlFor="trusted-contact-totp">Nuovo codice Authenticator (6 cifre)</Label>
+                  <Input id="trusted-contact-totp" inputMode="numeric" maxLength={6} value={contactTotp} onChange={(e) => setContactTotp(e.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" />
+                  {recoveryContact ? (
+                    <Button type="button" variant="destructive" disabled={contactBusy} onClick={handleContactRevoke}>Revoca contatto fidato</Button>
+                  ) : (
+                    <Button type="button" disabled={contactBusy} onClick={handleContactInvite}>Invita contatto fidato</Button>
+                  )}
+                  <p className="text-xs text-muted-foreground">Non riutilizzare il codice TOTP appena utilizzato per accedere: inserisci un codice successivo.</p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">Completa la configurazione MFA per abilitare un contatto fidato.</p>
+              )}
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
