@@ -181,11 +181,139 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
     )
 
 
+async def _reset_two_staging_onboarding_test_accounts_once() -> None:
+    """One-time, allowlisted staging reset for the two onboarding test identities.
+
+    Never runs against production or another database, never deletes unrelated
+    tenants, and cannot repeat after registration is restarted.
+    """
+    if (APP_ENV != "staging"
+            or os.environ.get("RAILWAY_ENVIRONMENT_NAME") != "staging"
+            or DB_NAME != "beside_staging"):
+        logger.warning("Onboarding reset skipped: not the verified staging database")
+        return
+
+    marker_id = "accountless-trusted-contact-retest-2026-11-09"
+    if await db.staging_test_resets.find_one({"_id": marker_id}):
+        logger.info("Onboarding reset already initiated; refusing repeat")
+        return
+
+    target_emails = ["cameleondesign83@gmail.com", "davide831@hotmail.it"]
+    users = await db.users.find({"email": {"$in": target_emails}}).to_list(length=10)
+    if len(users) > 2 or len(set(u["email"] for u in users)) != len(users):
+        raise RuntimeError("Staging reset refused: ambiguous test identities")
+    by_email = {u["email"]: u for u in users}
+    main = by_email.get(target_emails[0])
+    if not main or main.get("role") != "owner" or main.get("platform_role") == "super_admin":
+        raise RuntimeError("Staging reset refused: Chameleon owner account mismatch")
+    if main.get("business_name", "").strip().lower() != "cameleon":
+        raise RuntimeError("Staging reset refused: Chameleon business identity mismatch")
+    guest = by_email.get(target_emails[1])
+    if guest and (guest.get("role") not in {"owner", RECOVERY_CONTACT_ROLE}
+                  or guest.get("platform_role") == "super_admin"):
+        raise RuntimeError("Staging reset refused: unexpected contact account role")
+
+    user_ids = [u["user_id"] for u in users]
+    companies_to_delete = []
+    for user in users:
+        company_id = user.get("company_id")
+        if not company_id:
+            if user.get("role") != RECOVERY_CONTACT_ROLE:
+                raise RuntimeError("Staging reset refused: unexpected missing company")
+            continue
+        company = await db.companies.find_one({"company_id": company_id})
+        if (not company or company.get("owner_user_id") != user["user_id"]
+                or await db.users.count_documents({"company_id": company_id}) != 1):
+            raise RuntimeError("Staging reset refused: company is shared or not owned")
+        companies_to_delete.append((company_id, user["user_id"]))
+
+    company_ids = [cid for cid, _ in companies_to_delete]
+    for email in target_emails:
+        claim = await db.email_claims.find_one({"_id": email_claim_id(email)})
+        if claim and claim.get("user_id") not in user_ids:
+            other = await db.users.find_one({"user_id": claim.get("user_id")})
+            if other:
+                raise RuntimeError("Staging reset refused: email claim belongs to another active user")
+
+    # Do not delete trusted-contact records owned by unrelated account holders.
+    conflicting = await db.recovery_contacts.count_documents({
+        "contact_email": target_emails[1],
+        "user_id": {"$nin": user_ids},
+    })
+    if conflicting:
+        raise RuntimeError("Staging reset refused: contact email used by another account")
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    try:
+        await db.staging_test_resets.insert_one({
+            "_id": marker_id, "state": "started", "started_at": started_at,
+            "target_user_ids": user_ids, "target_company_ids": company_ids,
+        })
+    except DuplicateKeyError:
+        logger.info("Onboarding reset skipped: another process already started it")
+        return
+
+    affected = 0
+    related_collections = (
+        "admin_chat", "ai_content_history", "audit_logs", "cash_plan_entries",
+        "cash_plan_settings", "email_recovery_tokens", "email_verification_tokens",
+        "finance_settings", "jobs", "lead_sources", "marketing_efforts",
+        "mfa_recovery_requests", "onboardings", "password_reset_tokens",
+        "payment_transactions", "quote_tokens", "recovery_contacts",
+        "support_tickets", "tax_accruals", "user_sessions",
+    )
+    selectors = [
+        {"user_id": {"$in": user_ids}},
+        {"company_id": {"$in": company_ids}},
+        {"linked_user_id": {"$in": user_ids}},
+        {"contact_user_id": {"$in": user_ids}},
+    ]
+    for collection in related_collections:
+        result = await db[collection].delete_many({"$or": selectors})
+        affected += result.deleted_count
+
+    for user in users:
+        result = await db.users.delete_one({
+            "_id": user["_id"], "user_id": user["user_id"],
+            "email": user["email"],
+        })
+        if result.deleted_count != 1:
+            raise RuntimeError("Staging reset incomplete: user record changed during reset")
+    for company_id, owner_user_id in companies_to_delete:
+        result = await db.companies.delete_one({
+            "company_id": company_id, "owner_user_id": owner_user_id,
+        })
+        if result.deleted_count != 1:
+            raise RuntimeError("Staging reset incomplete: company record changed")
+
+    for email in target_emails:
+        await db.email_claims.delete_one({"_id": email_claim_id(email)})
+        resend_key = hmac.new(
+            JWT_SECRET.encode(), f"email-verification-resend|{email}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        await db.email_verification_resends.delete_one({"_id": resend_key})
+
+    await db.staging_test_resets.update_one(
+        {"_id": marker_id, "state": "started"},
+        {"$set": {"state": "completed",
+                  "completed_at": datetime.now(timezone.utc).isoformat(),
+                  "users_removed": len(users), "companies_removed": len(companies_to_delete),
+                  "related_documents_removed": affected}},
+    )
+    logger.info(
+        "STAGING_ACCOUNTLESS_RETEST_RESET_COMPLETED users=%d companies=%d related=%d",
+        len(users), len(companies_to_delete), affected,
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
+        if APP_ENV == "staging":
+            await _reset_two_staging_onboarding_test_accounts_once()
         if APP_ENV == "staging":
             cleanup = await db.users.update_many(
                 {"$or": [{"totp_recovery_codes": {"$exists": True}},
