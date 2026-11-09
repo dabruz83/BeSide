@@ -1262,12 +1262,13 @@ async def request_two_factor_recovery(
     now = datetime.now(timezone.utc)
     contacts = await db.recovery_contacts.find({
         "user_id": user["user_id"],
-        "status": {"$in": ["active", "security_period"]},
+        "status": {"$in": ["active", "security_period", "verified"]},
         "accepted_at": {"$exists": True},
         "contact_verified_at": {"$exists": True},
     }, {"_id": 0}).to_list(20)
     authorized_contact = None
     for contact in contacts:
+        contact = await _refresh_recovery_contact_status(contact)
         period_end = parse_datetime(contact.get("security_period_ends_at"), now + timedelta(days=1))
         if period_end > now:
             continue
@@ -3099,7 +3100,24 @@ async def verify_recovery_email(
     return {"message": "Email di recupero verificata."}
 
 async def _refresh_recovery_contact_status(contact: Dict[str, Any]) -> Dict[str, Any]:
-    """Promote a verified contact after the mandatory seven-day hold."""
+    """Promote email-verified contacts without requiring an account.
+
+    Legacy accepted invitations can begin the hold without re-registering or
+    disclosing the contact's password.
+    """
+    if (contact.get("status") == "verified" and contact.get("accepted_at")
+            and contact.get("contact_verified_at")):
+        now = datetime.now(timezone.utc)
+        updated = await db.recovery_contacts.find_one_and_update(
+            {"contact_id": contact["contact_id"], "status": "verified",
+             "accepted_at": {"$exists": True}, "contact_verified_at": {"$exists": True}},
+            {"$set": {"status": "security_period", "verification_method": "email_link",
+                      "security_period_ends_at": (now + timedelta(days=RECOVERY_CONTACT_SECURITY_DAYS)).isoformat(),
+                      "updated_at": now.isoformat()}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if updated:
+            contact = updated
     if contact.get("status") == "security_period" and contact.get("accepted_at"):
         end = parse_datetime(contact.get("security_period_ends_at"))
         if end <= datetime.now(timezone.utc):
