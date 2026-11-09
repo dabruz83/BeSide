@@ -181,11 +181,54 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
     )
 
 
+async def _repair_broken_test_mfa_in_staging() -> None:
+    """Temporary, single-account repair for the 2026-11-09 incomplete MFA activation."""
+    if (APP_ENV != "staging"
+            or os.environ.get("RAILWAY_ENVIRONMENT_NAME") != "staging"
+            or DB_NAME != "beside_staging"):
+        return
+    email = "cameleondesign83@gmail.com"
+    selector = {
+        "email": email, "email_verified": True, "totp_enabled": True,
+        "$or": [{"totp_secret_enc": {"$exists": False}}, {"totp_secret_enc": None},
+                {"totp_secret_enc": ""}],
+    }
+    user = await db.users.find_one(selector)
+    if not user:
+        logger.info("Staging MFA repair: no matching broken account")
+        return
+    if (user.get("platform_role") == "super_admin"
+            or user.get("role") != "owner"
+            or user.get("totp_pending_secret_enc")
+            or not user.get("company_id")):
+        raise RuntimeError("Staging MFA repair refused: account guard")
+    company = await db.companies.find_one({"company_id": user["company_id"],
+                                           "owner_user_id": user["user_id"]})
+    if not company:
+        raise RuntimeError("Staging MFA repair refused: company guard")
+    if await db.recovery_contacts.count_documents({"user_id": user["user_id"]}):
+        raise RuntimeError("Staging MFA repair refused: recovery contact already exists")
+    result = await db.users.update_one(
+        {"_id": user["_id"], **selector},
+        {"$set": {"totp_enabled": False},
+         "$unset": {"totp_enabled_at": "", "totp_last_used_step": ""}},
+    )
+    if result.modified_count != 1:
+        raise RuntimeError("Staging MFA repair failed: unexpected record change")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.user_sessions.update_many(
+        {"user_id": user["user_id"], "revoked_at": None},
+        {"$set": {"revoked_at": now_iso}},
+    )
+    logger.info("STAGING_BROKEN_MFA_REPAIRED users=1, registration preserved")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
+        await _repair_broken_test_mfa_in_staging()
         if APP_ENV == "staging":
             cleanup = await db.users.update_many(
                 {"$or": [{"totp_recovery_codes": {"$exists": True}},
@@ -1721,12 +1764,17 @@ async def confirm_two_factor(
     if verify_totp_code(secret, data.code) is None:
         raise HTTPException(status_code=400, detail="Codice 2FA non valido")
     now_iso = datetime.now(timezone.utc).isoformat()
-    await db.users.update_one(
-        {"user_id": current_user["user_id"], "totp_pending_secret_enc": pending},
-        {"$set": {"totp_enabled": True, "totp_enabled_at": now_iso},
+    saved = await db.users.update_one(
+        {"user_id": current_user["user_id"], "totp_pending_secret_enc": pending,
+         "totp_enabled": {"$ne": True}},
+        {"$set": {"totp_secret_enc": pending, "totp_enabled": True,
+                  "totp_enabled_at": now_iso},
          "$unset": {"totp_pending_secret_enc": "", "totp_pending_created_at": "",
-                    "totp_recovery_codes": "", "totp_recovery_codes_rotated_at": ""}},
+                    "totp_last_used_step": "", "totp_recovery_codes": "",
+                    "totp_recovery_codes_rotated_at": ""}},
     )
+    if saved.modified_count != 1:
+        raise HTTPException(status_code=409, detail="Attivazione MFA non completata. Riprova.")
     await _start_recovery_contact_security_period(current_user["user_id"])
     await db.user_sessions.update_many(
         {"user_id": current_user["user_id"], "revoked_at": None},
