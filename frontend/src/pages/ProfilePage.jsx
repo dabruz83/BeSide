@@ -75,6 +75,10 @@ export const ProfilePage = () => {
     services: user?.services || [],
     tax_regime: user?.tax_regime || "forfettario_15"
   });
+  const [marketingPreferences, setMarketingPreferences] = useState({
+    email_opt_in: user?.marketing_preferences?.email_opt_in || false,
+    profiling_opt_in: user?.marketing_preferences?.profiling_opt_in || false,
+  });
 
   const [businessInfo, setBusinessInfo] = useState({
     business_type: user?.business_info?.business_type || "",
@@ -102,6 +106,12 @@ export const ProfilePage = () => {
         ...user.business_info
       }));
     }
+    if (user?.marketing_preferences) {
+      setMarketingPreferences({
+        email_opt_in: Boolean(user.marketing_preferences.email_opt_in),
+        profiling_opt_in: Boolean(user.marketing_preferences.profiling_opt_in),
+      });
+    }
   }, [user]);
 
   useEffect(() => {
@@ -124,7 +134,9 @@ export const ProfilePage = () => {
     try {
       await axios.put(`${API}/auth/profile`, {
         ...formData,
-        business_info: businessInfo
+        business_info: businessInfo,
+        marketing_emails_opt_in: marketingPreferences.email_opt_in,
+        marketing_profiling_opt_in: marketingPreferences.profiling_opt_in,
       });
       await checkAuth();
       toast.success("Profilo aggiornato!");
@@ -132,6 +144,16 @@ export const ProfilePage = () => {
       toast.error("Errore nell'aggiornamento");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleConsentSave = async () => {
+    try {
+      await axios.put(`${API}/auth/privacy-preferences`, marketingPreferences);
+      await checkAuth();
+      toast.success("Preferenze aggiornate");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Errore nell'aggiornamento delle preferenze");
     }
   };
 
@@ -643,6 +665,16 @@ export const ProfilePage = () => {
               </Card>
             </TabsContent>
           </Tabs>
+
+          <Card>
+            <CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label>
+              <label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label>
+              <p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze in qualsiasi momento. L'accesso a Beside non dipende da esse.</p>
+              <Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button>
+            </CardContent>
+          </Card>
 
           <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">
             <Save className="w-4 h-4 mr-2" />

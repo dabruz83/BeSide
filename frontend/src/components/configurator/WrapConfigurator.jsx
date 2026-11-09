@@ -119,6 +119,7 @@ export const WrapConfigurator = () => {
           }}
           onResetZone={actions.resetZone}
           onResetAll={actions.resetCustomization}
+          photoAiEndpoint={`${API}/configurator/photo-ai/preview`}
         />;
       case 3:
         return (

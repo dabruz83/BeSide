@@ -1,0 +1,135 @@
+import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import axios from "axios";
+import { API, useAuth } from "@/App";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+
+const steps = ["Identità", "Azienda", "Dimensioni e obiettivi"];
+const moduleOptions = [
+  ["configuratore", "Configuratore veicoli"],
+  ["lavori", "Lavori e clienti"],
+  ["preventivi", "Preventivi"],
+  ["finanza", "Finanza e scadenze"],
+  ["marketing", "Marketing"],
+];
+
+export const OnboardingWizardPage = () => {
+  const navigate = useNavigate();
+  const { user, checkAuth } = useAuth();
+  const [step, setStep] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [form, setForm] = useState({
+    first_name: user?.first_name || "",
+    last_name: "",
+    role: "",
+    location_general: "",
+    business_status: "attiva",
+    legal_form: "",
+    tax_regime: "",
+    sector: "",
+    customer_type: "",
+    revenue_band: "",
+    employees_band: "",
+    needs: [],
+    interested_modules: [],
+    monthly_quotes_band: "",
+    marketing_emails_opt_in: false,
+    marketing_profiling_opt_in: false,
+  });
+
+  useEffect(() => {
+    axios.get(`${API}/auth/onboarding-profile`)
+      .then(({ data }) => {
+        const personal = data.personal || {};
+        const organization = data.organization || {};
+        const privacy = personal.privacy_preferences || {};
+        setForm((current) => ({
+          ...current, ...personal, ...organization,
+          marketing_emails_opt_in: Boolean(privacy.marketing_emails),
+          marketing_profiling_opt_in: Boolean(privacy.marketing_profiling),
+        }));
+        if (personal.step) setStep(Math.min(3, personal.step));
+      })
+      .catch((err) => setError(err.response?.data?.detail || "Impossibile caricare il profilo"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const setField = (name, value) => setForm((current) => ({ ...current, [name]: value }));
+  const toggle = (name, value) => setForm((current) => ({
+    ...current,
+    [name]: current[name].includes(value)
+      ? current[name].filter((item) => item !== value)
+      : [...current[name], value],
+  }));
+
+  const save = async (complete = false) => {
+    setSaving(true); setError("");
+    try {
+      await axios.put(`${API}/auth/onboarding-profile`, { ...form, step, complete });
+      await checkAuth();
+      if (complete || step === 3) navigate("/dashboard", { replace: true });
+      else setStep((current) => current + 1);
+    } catch (err) {
+      setError(err.response?.data?.detail || "Non è stato possibile salvare le risposte");
+    } finally { setSaving(false); }
+  };
+
+  const taxOptions = useMemo(() => {
+    if (form.legal_form === "societa_persone" || form.legal_form === "societa_capitali") {
+      return [{ value: "ordinario", label: "Ordinario" }];
+    }
+    return [
+      { value: "forfettario_5", label: "Forfettario 5%" },
+      { value: "forfettario_15", label: "Forfettario 15%" },
+      { value: "ordinario", label: "Ordinario" },
+      { value: "non_so", label: "Non lo so" },
+      { value: "preferisco_non_rispondere", label: "Preferisco non rispondere" },
+    ];
+  }, [form.legal_form]);
+
+  if (loading) return <div className="max-w-2xl mx-auto p-6">Caricamento...</div>;
+
+  return (
+    <div className="max-w-2xl mx-auto p-4 md:p-8">
+      <Card>
+        <CardHeader>
+          <p className="text-sm text-muted-foreground">Passaggio {step} di 3</p>
+          <CardTitle>Personalizza la tua esperienza</CardTitle>
+          <div className="flex gap-2 pt-2">{steps.map((label, index) => <span key={label} className={`h-1 flex-1 rounded ${index + 1 <= step ? "bg-primary" : "bg-muted"}`} title={label} />)}</div>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {step === 1 && <div className="grid gap-4 sm:grid-cols-2">
+            <div><Label>Nome</Label><Input value={form.first_name} onChange={(e) => setField("first_name", e.target.value)} /></div>
+            <div><Label>Cognome</Label><Input value={form.last_name} onChange={(e) => setField("last_name", e.target.value)} /></div>
+            <div><Label>Ruolo</Label><Input placeholder="Titolare, responsabile..." value={form.role} onChange={(e) => setField("role", e.target.value)} /></div>
+            <div><Label>Zona generale</Label><Input placeholder="Provincia o regione" value={form.location_general} onChange={(e) => setField("location_general", e.target.value)} /></div>
+          </div>}
+          {step === 2 && <div className="space-y-4">
+            <div><Label>Stato attività</Label><Select value={form.business_status} onValueChange={(v) => setField("business_status", v)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="attiva">Attiva</SelectItem><SelectItem value="in_avvio">In avvio</SelectItem><SelectItem value="non_so">Non lo so</SelectItem></SelectContent></Select></div>
+            <div><Label>Forma giuridica</Label><Select value={form.legal_form} onValueChange={(v) => setField("legal_form", v)}><SelectTrigger><SelectValue placeholder="Seleziona" /></SelectTrigger><SelectContent><SelectItem value="ditta_individuale">Ditta individuale</SelectItem><SelectItem value="forfettario">Regime forfettario</SelectItem><SelectItem value="societa_persone">Società di persone</SelectItem><SelectItem value="societa_capitali">Società di capitali</SelectItem><SelectItem value="non_so">Non lo so</SelectItem><SelectItem value="preferisco_non_rispondere">Preferisco non rispondere</SelectItem></SelectContent></Select></div>
+            <div><Label>Regime fiscale</Label><Select value={form.tax_regime} onValueChange={(v) => setField("tax_regime", v)}><SelectTrigger><SelectValue placeholder="Seleziona" /></SelectTrigger><SelectContent>{taxOptions.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}</SelectContent></Select></div>
+            <div><Label>Settore</Label><Input value={form.sector} onChange={(e) => setField("sector", e.target.value)} /></div>
+            <div><Label>Clientela</Label><Select value={form.customer_type} onValueChange={(v) => setField("customer_type", v)}><SelectTrigger><SelectValue placeholder="Seleziona" /></SelectTrigger><SelectContent><SelectItem value="b2b">B2B</SelectItem><SelectItem value="b2c">B2C</SelectItem><SelectItem value="b2b_b2c">B2B e B2C</SelectItem><SelectItem value="non_so">Non lo so</SelectItem><SelectItem value="preferisco_non_rispondere">Preferisco non rispondere</SelectItem></SelectContent></Select></div>
+          </div>}
+          {step === 3 && <div className="space-y-5">
+            <div><Label>Fascia fatturato annuo</Label><Select value={form.revenue_band} onValueChange={(v) => setField("revenue_band", v)}><SelectTrigger><SelectValue placeholder="Facoltativo" /></SelectTrigger><SelectContent><SelectItem value="under_50k">Fino a 50.000 €</SelectItem><SelectItem value="50_150k">50.000–150.000 €</SelectItem><SelectItem value="over_150k">Oltre 150.000 €</SelectItem><SelectItem value="non_so">Non lo so</SelectItem><SelectItem value="preferisco_non_rispondere">Preferisco non rispondere</SelectItem></SelectContent></Select></div>
+            <div><Label>Addetti</Label><Select value={form.employees_band} onValueChange={(v) => setField("employees_band", v)}><SelectTrigger><SelectValue placeholder="Facoltativo" /></SelectTrigger><SelectContent><SelectItem value="1">Solo io</SelectItem><SelectItem value="2_5">2–5</SelectItem><SelectItem value="6_10">6–10</SelectItem><SelectItem value="over_10">Oltre 10</SelectItem><SelectItem value="non_so">Non lo so</SelectItem></SelectContent></Select></div>
+            <div><Label>Esigenze principali</Label><div className="grid gap-2 sm:grid-cols-2">{[["acquisizione_clienti", "Acquisire clienti"], ["organizzazione", "Organizzare il lavoro"], ["preventivi", "Creare preventivi"], ["finanza", "Gestire la finanza"], ["marketing", "Marketing"]].map(([value, label]) => <label key={value} className="flex items-center gap-2 text-sm"><Checkbox checked={form.needs.includes(value)} onCheckedChange={() => toggle("needs", value)} />{label}</label>)}</div></div>
+            <div><Label>Moduli di interesse</Label><div className="grid gap-2 sm:grid-cols-2">{moduleOptions.map(([value, label]) => <label key={value} className="flex items-center gap-2 text-sm"><Checkbox checked={form.interested_modules.includes(value)} onCheckedChange={() => toggle("interested_modules", value)} />{label}</label>)}</div></div>
+            <div><Label>Preventivi mensili (se pertinente)</Label><Select value={form.monthly_quotes_band} onValueChange={(v) => setField("monthly_quotes_band", v)}><SelectTrigger><SelectValue placeholder="Facoltativo" /></SelectTrigger><SelectContent><SelectItem value="0_5">0–5</SelectItem><SelectItem value="6_20">6–20</SelectItem><SelectItem value="over_20">Oltre 20</SelectItem><SelectItem value="preferisco_non_rispondere">Preferisco non rispondere</SelectItem></SelectContent></Select></div>
+            <div className="space-y-2 rounded-md border p-3"><p className="text-sm font-medium">Preferenze privacy</p><label className="flex items-start gap-2 text-sm"><Checkbox checked={form.marketing_emails_opt_in} onCheckedChange={(value) => setField("marketing_emails_opt_in", value === true)} />Ricevere comunicazioni promozionali (facoltativo)</label><label className="flex items-start gap-2 text-sm"><Checkbox checked={form.marketing_profiling_opt_in} onCheckedChange={(value) => setField("marketing_profiling_opt_in", value === true)} />Consentire la profilazione marketing (facoltativo)</label><p className="text-xs text-muted-foreground">Entrambe le preferenze restano disattivate finché non le abiliti.</p></div>
+          </div>}
+          <div className="flex flex-wrap justify-between gap-3 pt-2"><Button variant="ghost" onClick={() => navigate("/dashboard", { replace: true, state: { onboardingDismissed: true } })}>Continua più tardi</Button><div className="flex gap-2">{step > 1 && <Button variant="outline" onClick={() => setStep((current) => current - 1)}>Indietro</Button>}{step < 3 ? <Button onClick={() => save(false)} disabled={saving}>{saving ? "Salvataggio..." : "Avanti"}</Button> : <Button onClick={() => save(true)} disabled={saving}>{saving ? "Salvataggio..." : "Completa"}</Button>}</div></div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};

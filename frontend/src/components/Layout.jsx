@@ -10,7 +10,8 @@ import {
   LogOut,
   Menu,
   X,
-  Palette
+  Palette,
+  MessageSquare
 } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ const navItems = [
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
   { path: "/subscription", label: "Abbonamento", icon: Euro },
   { path: "/profile", label: "Profilo", icon: UserCog },
+  { path: "/support", label: "Assistenza", icon: MessageSquare },
 ];
 
 export const Layout = ({ children }) => {

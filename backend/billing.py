@@ -12,6 +12,17 @@ class CheckoutRequest(BaseModel):
     tier: Literal['essential', 'professional', 'elite']
 
 
+def _stripe_field(resource, name, default=None):
+    """Read StripeObject and dict payloads through the SDK-compatible index API."""
+    if resource is None:
+        return default
+    try:
+        value = resource[name]
+    except (KeyError, TypeError, AttributeError):
+        return default
+    return default if value is None else value
+
+
 def build_billing_router(db, current_user, require_roles, frontend_url, external_enabled):
     router = APIRouter(prefix='/api')
 
@@ -94,44 +105,75 @@ def build_billing_router(db, current_user, require_roles, frontend_url, external
             )
         except (ValueError, stripe.SignatureVerificationError):
             raise HTTPException(400, 'Firma webhook non valida.')
-        if await db.billing_events.find_one({'_id': event['id'], 'processed': True}):
+        event_id = _stripe_field(event, 'id')
+        event_type = _stripe_field(event, 'type')
+        event_data = _stripe_field(event, 'data')
+        obj = _stripe_field(event_data, 'object')
+        if not event_id or not event_type or obj is None:
+            raise HTTPException(400, 'Evento Stripe incompleto.')
+        if await db.billing_events.find_one({'_id': event_id, 'processed': True}):
             return {'received': True}
-        obj = event['data']['object']
-        event_type = event['type']
         if event_type in {'checkout.session.completed', 'checkout.session.async_payment_succeeded'}:
-            transaction = await db.payment_transactions.find_one({'session_id': obj['id']})
+            session_id = _stripe_field(obj, 'id')
+            if not session_id:
+                raise HTTPException(400, 'Sessione Stripe incompleta.')
+            transaction = await db.payment_transactions.find_one({'session_id': session_id})
             if not transaction:
                 # Return retryable status: the webhook may beat the checkout insert.
                 raise HTTPException(409, 'Sessione in preparazione.')
-            if obj.get('client_reference_id') != transaction['company_id']:
+            if _stripe_field(obj, 'client_reference_id') != transaction['company_id']:
                 raise HTTPException(400, 'Azienda non corrispondente.')
-            if obj.get('payment_status') == 'paid':
+            if _stripe_field(obj, 'payment_status') == 'paid':
+                subscription_id = _stripe_field(obj, 'subscription')
+                if not subscription_id:
+                    raise HTTPException(400, 'Abbonamento Stripe mancante.')
                 try:
-                    subscription = await api.v1.subscriptions.retrieve_async(obj['subscription'])
+                    subscription = await api.v1.subscriptions.retrieve_async(subscription_id)
                 except stripe.StripeError:
                     raise HTTPException(502, 'Stato abbonamento non disponibile.')
+                subscription_status = _stripe_field(subscription, 'status')
+                if not subscription_status:
+                    raise HTTPException(502, 'Stato abbonamento non disponibile.')
+                amount_total = _stripe_field(obj, 'amount_total', 0) or 0
+                try:
+                    amount = float(amount_total) / 100
+                except (TypeError, ValueError):
+                    raise HTTPException(400, 'Importo Stripe non valido.')
                 await db.companies.update_one({'company_id': transaction['company_id']}, {'$set': {
-                    'plan_id': transaction['tier'], 'subscription_status': subscription['status'],
-                    'stripe_customer_id': obj.get('customer'), 'stripe_subscription_id': obj.get('subscription'),
+                    'plan_id': transaction['tier'], 'subscription_status': subscription_status,
+                    'stripe_customer_id': _stripe_field(obj, 'customer'), 'stripe_subscription_id': subscription_id,
                 }})
-                await db.payment_transactions.update_one({'session_id': obj['id']}, {'$set': {
-                    'payment_status': 'paid', 'status': 'complete', 'amount': (obj.get('amount_total') or 0) / 100,
+                await db.payment_transactions.update_one({'session_id': session_id}, {'$set': {
+                    'payment_status': 'paid', 'status': 'complete', 'amount': amount,
                 }})
         elif event_type == 'checkout.session.expired':
-            await db.payment_transactions.update_one({'session_id': obj['id']}, {'$set': {'status': 'expired'}})
+            session_id = _stripe_field(obj, 'id')
+            if not session_id:
+                raise HTTPException(400, 'Sessione Stripe incompleta.')
+            await db.payment_transactions.update_one({'session_id': session_id}, {'$set': {'status': 'expired'}})
         elif event_type in {'customer.subscription.updated', 'customer.subscription.deleted'}:
             # Retrieve current state to prevent delayed/out-of-order events reverting plans.
+            subscription_id = _stripe_field(obj, 'id')
+            if not subscription_id:
+                raise HTTPException(400, 'Abbonamento Stripe mancante.')
             try:
-                subscription = await api.v1.subscriptions.retrieve_async(obj['id'])
+                subscription = await api.v1.subscriptions.retrieve_async(subscription_id)
             except stripe.StripeError:
                 raise HTTPException(502, 'Stato abbonamento non disponibile.')
-            updates = {'subscription_status': subscription['status']}
-            current_price = subscription['items']['data'][0]['price']['id'] if subscription['items']['data'] else None
+            subscription_status = _stripe_field(subscription, 'status')
+            items = _stripe_field(subscription, 'items', {})
+            item_data = _stripe_field(items, 'data', []) or []
+            first_item = item_data[0] if item_data else None
+            price = _stripe_field(first_item, 'price', {})
+            current_price = _stripe_field(price, 'id')
+            if not subscription_status:
+                raise HTTPException(502, 'Stato abbonamento non disponibile.')
+            updates = {'subscription_status': subscription_status}
             for tier in ('essential', 'professional', 'elite'):
                 if current_price and current_price == os.getenv(f'STRIPE_PRICE_{tier.upper()}'):
                     updates['plan_id'] = tier
-            await db.companies.update_one({'stripe_subscription_id': obj['id']}, {'$set': updates})
-        await db.billing_events.update_one({'_id': event['id']}, {'$set': {
+            await db.companies.update_one({'stripe_subscription_id': subscription_id}, {'$set': updates})
+        await db.billing_events.update_one({'_id': event_id}, {'$set': {
             'processed': True, 'type': event_type, 'processed_at': datetime.now(timezone.utc).isoformat(),
         }}, upsert=True)
         return {'received': True}

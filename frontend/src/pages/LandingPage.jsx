@@ -257,8 +257,8 @@ export const LandingPage = () => {
             © 2026 BESIDE. Tutti i diritti riservati.
           </p>
           <div className="flex items-center gap-6 text-sm text-muted-foreground">
-            <a href="#" className="hover:text-primary transition-colors">Privacy Policy</a>
-            <a href="#" className="hover:text-primary transition-colors">Termini di Servizio</a>
+            <Link to="/privacy" className="hover:text-primary transition-colors">Privacy Policy</Link>
+            <Link to="/termini" className="hover:text-primary transition-colors">Termini di Servizio</Link>
             <a href="#" className="hover:text-primary transition-colors">Contatti</a>
           </div>
         </div>

@@ -1,0 +1,13 @@
+import { Link } from "react-router-dom";
+
+export const LegalTermsPage = () => (
+  <main className="min-h-screen bg-background p-6 md:p-12">
+    <article className="mx-auto max-w-3xl space-y-5">
+      <Link to="/register" className="text-primary underline">Torna alla registrazione</Link>
+      <h1 className="text-3xl font-bold">Termini e condizioni</h1>
+      <p className="rounded border border-amber-400/50 bg-amber-50 p-3 text-sm">Contenuto provvisorio — richiede revisione legale professionale prima della pubblicazione.</p>
+      <p>Questa pagina conterrà le condizioni di utilizzo di Beside, le regole dell'account, i servizi disponibili e le responsabilità delle parti.</p>
+      <p>La versione accettata viene registrata con data e versione del documento. Le modifiche definitive saranno pubblicate con un nuovo numero di versione.</p>
+    </article>
+  </main>
+);
