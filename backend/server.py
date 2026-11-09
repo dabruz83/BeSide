@@ -186,6 +186,13 @@ async def lifespan(_app: FastAPI):
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
+        if APP_ENV == "staging":
+            cleanup = await db.users.update_many(
+                {"$or": [{"totp_recovery_codes": {"$exists": True}},
+                         {"totp_recovery_codes_rotated_at": {"$exists": True}}]},
+                {"$unset": {"totp_recovery_codes": "", "totp_recovery_codes_rotated_at": ""}},
+            )
+            logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
         yield
     finally:
@@ -653,15 +660,6 @@ def verify_totp_code(secret: str, code: str, timestamp: Optional[int] = None) ->
         if hmac.compare_digest(totp_code(secret, now, offset), code):
             return current_step + offset
     return None
-
-
-def generate_recovery_codes(count: int = 10) -> List[str]:
-    """Generate one-time recovery secrets; callers only return them once."""
-    return [secrets.token_hex(16) for _ in range(count)]
-
-
-def hash_recovery_code(code: str) -> str:
-    return hmac.new(JWT_SECRET.encode("utf-8"), code.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 # Keep the unknown-user login path close to the same bcrypt cost as a real user.
@@ -1215,27 +1213,6 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def _verify_totp_or_recovery(user: Dict[str, Any], code: str) -> bool:
-    secret_value = user.get("totp_secret_enc")
-    if secret_value:
-        step = verify_totp_code(decrypt_totp_secret(secret_value), code)
-        if step is not None:
-            replay_guard = await db.users.update_one(
-                {"user_id": user["user_id"], "$or": [
-                    {"totp_last_used_step": {"$lt": step}},
-                    {"totp_last_used_step": {"$exists": False}},
-                ]},
-                {"$set": {"totp_last_used_step": step}},
-            )
-            return replay_guard.modified_count == 1
-    recovery_hash = hash_recovery_code(code)
-    consumed = await db.users.update_one(
-        {"user_id": user["user_id"], "totp_recovery_codes": recovery_hash},
-        {"$pull": {"totp_recovery_codes": recovery_hash}},
-    )
-    return consumed.modified_count == 1
-
-
 async def _consume_current_totp(user: Dict[str, Any], code: str) -> bool:
     """Validate and atomically reserve the current TOTP step."""
     secret_value = user.get("totp_secret_enc")
@@ -1645,14 +1622,12 @@ async def confirm_recovery_totp(
     )
     if not locked:
         raise HTTPException(status_code=409, detail="Configurazione già in corso o conclusa")
-    recovery_codes = generate_recovery_codes()
     now_iso = now.isoformat()
     updated = await db.users.update_one(
         {"user_id": user["user_id"], "is_active": {"$ne": False}},
         {"$set": {"totp_secret_enc": encrypt_totp_secret(new_secret), "totp_enabled": True,
-                  "totp_enabled_at": now_iso, "totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes],
-                  "updated_at": now_iso},
-         "$unset": {"totp_last_used_step": ""}},
+                  "totp_enabled_at": now_iso, "updated_at": now_iso},
+         "$unset": {"totp_last_used_step": "", "totp_recovery_codes": "", "totp_recovery_codes_rotated_at": ""}},
     )
     if updated.modified_count != 1:
         await db.mfa_recovery_requests.update_one(
@@ -1672,7 +1647,7 @@ async def confirm_recovery_totp(
     await audit_event("2fa_recovery_totp_replaced", user=user, request=request,
                       metadata={"request_id": recovery_request["request_id"]})
     background_tasks.add_task(send_2fa_recovery_totp_replaced_notice, user["email"])
-    return {"status": "completed", "recovery_codes": recovery_codes,
+    return {"status": "completed",
             "email_delivery_configured": email_delivery_configured(),
             "production_ready": email_delivery_configured(),
             "message": "Authenticator sostituito. Esegui un nuovo login completo."}
@@ -1745,13 +1720,12 @@ async def confirm_two_factor(
     secret = decrypt_totp_secret(pending)
     if verify_totp_code(secret, data.code) is None:
         raise HTTPException(status_code=400, detail="Codice 2FA non valido")
-    recovery_codes = generate_recovery_codes()
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.users.update_one(
         {"user_id": current_user["user_id"], "totp_pending_secret_enc": pending},
-        {"$set": {"totp_enabled": True, "totp_enabled_at": now_iso,
-                  "totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes]},
-         "$unset": {"totp_pending_secret_enc": "", "totp_pending_created_at": ""}},
+        {"$set": {"totp_enabled": True, "totp_enabled_at": now_iso},
+         "$unset": {"totp_pending_secret_enc": "", "totp_pending_created_at": "",
+                    "totp_recovery_codes": "", "totp_recovery_codes_rotated_at": ""}},
     )
     await _start_recovery_contact_security_period(current_user["user_id"])
     await db.user_sessions.update_many(
@@ -1763,7 +1737,7 @@ async def confirm_two_factor(
     # normal MFA-verified session only after the server validates the code.
     # Existing authenticated users keep the historical behavior and must log
     # in again if their session was revoked by this operation.
-    response_payload = {"enabled": True, "recovery_codes": recovery_codes}
+    response_payload = {"enabled": True}
     if setup_session and setup_session.get("session_type") == "mfa_setup":
         refreshed_user = await _load_active_user(current_user["user_id"])
         now_iso = datetime.now(timezone.utc).isoformat()
@@ -1796,7 +1770,7 @@ async def verify_two_factor(data: TwoFactorVerifyRequest, response: Response, re
     if not updated:
         raise HTTPException(status_code=429, detail="Troppi tentativi 2FA")
     user = await _load_active_user(session["user_id"])
-    if not await _verify_totp_or_recovery(user, data.code):
+    if not await _consume_current_totp(user, data.code):
         raise HTTPException(status_code=401, detail="Codice 2FA non valido")
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.user_sessions.update_one(
@@ -1811,31 +1785,6 @@ async def verify_two_factor(data: TwoFactorVerifyRequest, response: Response, re
     return {"user": public_user(user)}
 
 
-@api_router.post("/auth/2fa/recovery-codes/regenerate")
-async def regenerate_recovery_codes(
-    data: TwoFactorConfirmRequest,
-    request: Request,
-    current_user: Dict = Depends(get_current_user),
-):
-    """Replace all recovery codes after password plus a fresh TOTP check."""
-    await enforce_rate_limit(request, "auth_2fa_recovery_regenerate", limit=3,
-                             window_seconds=15 * 60, identifier=current_user["user_id"])
-    if not current_user.get("totp_enabled"):
-        raise HTTPException(status_code=400, detail="2FA non attivo")
-    if not verify_password(data.password, current_user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
-    if not await _consume_current_totp(current_user, data.code):
-        raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
-    recovery_codes = generate_recovery_codes()
-    await db.users.update_one(
-        {"user_id": current_user["user_id"], "totp_enabled": True},
-        {"$set": {"totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes],
-                  "totp_recovery_codes_rotated_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    await audit_event("2fa_recovery_codes_regenerated", user=current_user, request=request)
-    return {"recovery_codes": recovery_codes}
-
-
 @api_router.post("/auth/2fa/disable")
 async def disable_two_factor(
     data: TwoFactorConfirmRequest,
@@ -1846,7 +1795,7 @@ async def disable_two_factor(
         raise HTTPException(status_code=400, detail="2FA non attivo")
     if not verify_password(data.password, current_user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
-    if not await _verify_totp_or_recovery(current_user, data.code):
+    if not await _consume_current_totp(current_user, data.code):
         raise HTTPException(status_code=401, detail="Codice 2FA non valido")
     await db.users.update_one(
         {"user_id": current_user["user_id"]},
@@ -5202,13 +5151,12 @@ async def confirm_admin_mfa_activation(
     if verify_totp_code(decrypt_totp_secret(pending), data.code) is None:
         raise HTTPException(status_code=401, detail="Codice TOTP non valido")
 
-    recovery_codes = generate_recovery_codes()
     now_iso = datetime.now(timezone.utc).isoformat()
     updated = await db.users.update_one(
         {"user_id": user["user_id"], "platform_role": "super_admin", "totp_enabled": {"$ne": True}},
-        {"$set": {"totp_secret_enc": pending, "totp_enabled": True, "totp_enabled_at": now_iso,
-                  "totp_recovery_codes": [hash_recovery_code(code) for code in recovery_codes]},
-         "$unset": {"totp_pending_secret_enc": "", "totp_pending_created_at": ""}},
+        {"$set": {"totp_secret_enc": pending, "totp_enabled": True, "totp_enabled_at": now_iso},
+         "$unset": {"totp_pending_secret_enc": "", "totp_pending_created_at": "",
+                    "totp_recovery_codes": "", "totp_recovery_codes_rotated_at": ""}},
     )
     if updated.modified_count != 1:
         raise HTTPException(status_code=409, detail="MFA già attivata; ripeti il login")
@@ -5222,8 +5170,7 @@ async def confirm_admin_mfa_activation(
     await audit_event("admin_mfa_enabled", user=user, request=request,
                       metadata={"platform_admin": True})
     return {"enabled": True, "user": public_user(user),
-            "recovery_codes": recovery_codes,
-            "message": "MFA attivata. Conserva i codici di recupero e prosegui nel pannello amministratore."}
+            "message": "MFA attivata. Configura un contatto fidato nella sezione Sicurezza."}
 
 SUPPORT_CATEGORIES = {"password", "authentication", "privacy", "billing", "technical", "other"}
 SUPPORT_STATUSES = {"open", "pending", "closed"}
