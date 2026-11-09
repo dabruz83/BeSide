@@ -616,7 +616,7 @@ export const ProfilePage = () => {
             <CardContent className="space-y-4">
               <p className="text-sm text-muted-foreground">
                 Autenticazione MFA: {user?.totp_enabled ? "attiva" : "da configurare"}.
-                Il recupero dell'accesso avviene tramite contatto fidato.
+                Il recupero dell'accesso prevede l'aiuto di una persona fidata, senza darle accesso ai tuoi dati.
               </p>
               {user?.totp_enabled ? (
                 <>
@@ -633,7 +633,7 @@ export const ProfilePage = () => {
                   )}
                   {!recoveryContact && (
                     <>
-                      <p className="text-sm">Invita una persona fidata. Il contatto deve accettare l'invito, verificare la propria email e attivare MFA prima di poter assistere al recupero.</p>
+                      <p className="text-sm">Invita una persona fidata: riceverà un'email e potrà accettare con un clic, senza creare un account Beside. Dopo il periodo di sicurezza potrà confermare soltanto una richiesta di recupero.</p>
                       <Label htmlFor="trusted-contact-email">Email del contatto fidato</Label>
                       <Input id="trusted-contact-email" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="contatto@esempio.it" autoComplete="off" />
                     </>
