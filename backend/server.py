@@ -3329,7 +3329,7 @@ async def forgot_password(data: EmailRequest, background_tasks: BackgroundTasks,
         identifier=email,
     )
     user = await db.users.find_one({"email": email, "is_active": {"$ne": False}}, {"_id": 0})
-    if user and user.get("password_hash") and user.get("company_id"):
+    if user and user.get("password_hash") and (user.get("company_id") or user.get("role") == RECOVERY_CONTACT_ROLE):
         now_iso = datetime.now(timezone.utc).isoformat()
         await db.password_reset_tokens.update_many(
             {"user_id": user["user_id"], "company_id": user["company_id"], "used_at": None},
