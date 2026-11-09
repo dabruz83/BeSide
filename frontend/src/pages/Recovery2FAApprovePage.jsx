@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
+import { useMemo, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import { Button } from "@/components/ui/button";
@@ -7,51 +7,54 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
 export const Recovery2FAApprovePage = () => {
-  const [form, setForm] = useState({ request_token: "", verification_number: "", email: "", password: "", code: "" });
+  const [searchParams] = useSearchParams();
+  const token = useMemo(() => searchParams.get("token") || "", [searchParams]);
+  const [number, setNumber] = useState("");
   const [state, setState] = useState("idle");
-  const [message, setMessage] = useState("Inserisci i dati ricevuti dal richiedente e verifica la tua identità.");
-
-  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const [message, setMessage] = useState("");
 
   const approve = async (event) => {
     event.preventDefault();
+    if (!token || !/^\d{8}$/.test(number) || state === "loading") return;
     setState("loading");
+    setMessage("");
     try {
-      const response = await axios.post(`${API}/auth/2fa/recovery/approve`, form);
-      if (response.data.status !== "approved") throw new Error("Risposta inattesa");
+      const response = await axios.post(`${API}/auth/2fa/recovery/approve-email`, {
+        approval_token: token, verification_number: number,
+      });
+      if (response.data.status !== "approved") throw new Error("Conferma non riuscita.");
       setState("success");
-      setMessage("Richiesta approvata. Il richiedente potrà proseguire con il periodo di sicurezza previsto.");
-      setForm((current) => ({ ...current, request_token: "", verification_number: "", password: "", code: "" }));
+      setNumber("");
+      setMessage("Richiesta confermata. Non hai concesso accesso all'account: il proprietario dovrà completare il proprio periodo di sicurezza.");
     } catch (error) {
       setState("error");
-      const status = error.response?.status;
-      const detail = error.response?.data?.detail;
-      setMessage(status === 400 ? "Richiesta scaduta, già utilizzata o non valida."
-        : status === 401 ? "Password o codice TOTP non validi."
-          : status === 403 ? "Non sei il contatto autorizzato per questa richiesta."
-            : status === 409 ? "La richiesta è già stata approvata o conclusa."
-              : (detail || "Impossibile approvare la richiesta."));
+      setMessage(error.response?.data?.detail || error.message || "Impossibile confermare la richiesta.");
+      setNumber("");
     }
   };
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4 sm:p-8">
-      <div className="w-full max-w-md space-y-6 rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8">
-        <Link to="/login" className="block text-center text-3xl font-bold text-primary">BESIDE</Link>
-        <div className="space-y-2 text-center">
-          <h1 className="text-2xl font-semibold">Assistenza recupero account</h1>
-          <p className="text-sm text-muted-foreground">Nessuna richiesta viene mostrata automaticamente. Usa solo i dati comunicati direttamente dal richiedente.</p>
-        </div>
-        {state !== "success" && <form onSubmit={approve} className="space-y-4">
-          <div className="space-y-2"><Label htmlFor="recovery-request-token">Token richiesta</Label><Input id="recovery-request-token" type="password" value={form.request_token} onChange={(event) => update("request_token", event.target.value)} required autoComplete="off" /></div>
-          <div className="space-y-2"><Label htmlFor="recovery-verification-number">Numero temporaneo</Label><Input id="recovery-verification-number" inputMode="numeric" maxLength={8} value={form.verification_number} onChange={(event) => update("verification_number", event.target.value.replace(/\D/g, "").slice(0, 8))} required /></div>
-          <div className="space-y-2"><Label htmlFor="recovery-contact-email">Email del contatto</Label><Input id="recovery-contact-email" type="email" value={form.email} onChange={(event) => update("email", event.target.value)} required autoComplete="email" /></div>
-          <div className="space-y-2"><Label htmlFor="recovery-contact-password">Password</Label><Input id="recovery-contact-password" type="password" value={form.password} onChange={(event) => update("password", event.target.value)} required autoComplete="current-password" /></div>
-          <div className="space-y-2"><Label htmlFor="recovery-contact-totp">Codice TOTP (6 cifre)</Label><Input id="recovery-contact-totp" inputMode="numeric" maxLength={6} value={form.code} onChange={(event) => update("code", event.target.value.replace(/\D/g, "").slice(0, 6))} required autoComplete="one-time-code" /></div>
-          <Button type="submit" className="w-full" disabled={state === "loading" || form.verification_number.length !== 8 || form.code.length !== 6}>{state === "loading" ? "Verifica in corso..." : "Approva richiesta"}</Button>
-        </form>}
-        <p className={state === "error" ? "text-sm text-center text-destructive" : "text-sm text-center text-muted-foreground"}>{message}</p>
-        {state === "success" && <Link to="/login" className="block text-center text-sm text-primary hover:underline">Torna al login</Link>}
+      <div className="w-full max-w-md space-y-5 rounded-xl border border-border bg-card p-6 shadow-sm sm:p-8">
+        <Link to="/" className="block text-center text-3xl font-bold text-primary">BESIDE</Link>
+        <h1 className="text-center text-2xl font-semibold">Aiuta una persona fidata</h1>
+        <p className="text-center text-sm text-muted-foreground">
+          Conferma solo se hai parlato con la persona che conosci e ti ha richiesto aiuto.
+          Non servono account Beside, password o Authenticator.
+        </p>
+        {state !== "success" && (token ? <form onSubmit={approve} className="space-y-4">
+          <Label htmlFor="trusted-recovery-number">Numero di 8 cifre comunicato dalla persona</Label>
+          <Input id="trusted-recovery-number" inputMode="numeric" autoComplete="off"
+            maxLength={8} value={number}
+            onChange={(e) => setNumber(e.target.value.replace(/\D/g, "").slice(0, 8))} required />
+          <Button className="w-full" disabled={state === "loading" || number.length !== 8}>
+            {state === "loading" ? "Verifica in corso..." : "Conferma la richiesta"}
+          </Button>
+        </form> : <p className="text-center text-destructive text-sm">Link di verifica mancante.</p>)}
+        {message && <p className={`text-center text-sm ${state === "error" ? "text-destructive" : "text-primary"}`}>{message}</p>}
+        <p className="text-center text-xs text-muted-foreground">
+          In caso di dubbio, non approvare. La richiesta scade automaticamente.
+        </p>
       </div>
     </div>
   );
