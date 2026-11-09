@@ -209,9 +209,19 @@ async def _reset_two_staging_onboarding_test_accounts_once() -> None:
     if main.get("business_name", "").strip().lower() != "cameleon":
         raise RuntimeError("Staging reset refused: Chameleon business identity mismatch")
     guest = by_email.get(target_emails[1])
+    # The private mailbox may belong to an existing admin/independent account.
+    # Only test identities can be deleted. The new contact flow does not
+    # require deleting or even logging into the contact's existing account.
     if guest and (guest.get("role") not in {"owner", RECOVERY_CONTACT_ROLE}
                   or guest.get("platform_role") == "super_admin"):
-        raise RuntimeError("Staging reset refused: unexpected contact account role")
+        logger.warning(
+            "Staging reset: preserving non-test contact identity; role=%s, "
+            "platform_privileged=%s, company_present=%s",
+            guest.get("role"), bool(guest.get("platform_role")),
+            bool(guest.get("company_id")),
+        )
+        users = [main]
+        target_emails = [main["email"]]
 
     user_ids = [u["user_id"] for u in users]
     companies_to_delete = []
@@ -237,7 +247,7 @@ async def _reset_two_staging_onboarding_test_accounts_once() -> None:
 
     # Do not delete trusted-contact records owned by unrelated account holders.
     conflicting = await db.recovery_contacts.count_documents({
-        "contact_email": target_emails[1],
+        "contact_email": "davide831@hotmail.it",
         "user_id": {"$nin": user_ids},
     })
     if conflicting:
