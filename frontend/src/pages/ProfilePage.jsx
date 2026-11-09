@@ -120,6 +120,9 @@ export const ProfilePage = () => {
       setContactTotp("");
       toast.success(response.data.message || "Invito inviato.");
     } catch (error) {
+      // Keep the authenticated profile and invitation fields, but clear the
+      // rejected one-time code so the next TOTP can be entered immediately.
+      setContactTotp("");
       toast.error(error.response?.data?.detail || "Impossibile inviare l'invito.");
     } finally {
       setContactBusy(false);
