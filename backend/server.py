@@ -3110,7 +3110,8 @@ async def accept_recovery_contact(
     token_hash = hash_token(data.token)
     now = datetime.now(timezone.utc)
     doc = await db.recovery_contacts.find_one({"contact_token_hash": token_hash}, {"_id": 0})
-    if not doc or doc.get("status") != "pending_invitation" or parse_datetime(doc.get("expires_at")) <= now:
+    if (not doc or doc.get("status") not in {"pending_invitation", "verified"}
+            or doc.get("linked_user_id") or parse_datetime(doc.get("expires_at")) <= now):
         raise HTTPException(status_code=400, detail="Invito non valido, già usato o scaduto")
     if doc.get("acceptance_attempts", 0) >= RECOVERY_CONTACT_MAX_ATTEMPTS:
         raise HTTPException(status_code=429, detail="Troppi tentativi di accettazione")
@@ -3120,6 +3121,12 @@ async def accept_recovery_contact(
             {"$inc": {"acceptance_attempts": 1}},
         )
         raise HTTPException(status_code=401, detail="Codice di accettazione non valido")
+    # An accepted invitation can be reopened on another device or after refresh
+    # while it is still valid and not yet linked. The separate acceptance code
+    # remains required; no second acceptance notification is sent.
+    if doc.get("status") == "verified":
+        return {"message": "Invito già accettato. Completa l'associazione dell'account.",
+                "status": "verified", "contact_id": doc["contact_id"]}
     now_iso = now.isoformat()
     accepted = await db.recovery_contacts.find_one_and_update(
         {"contact_id": doc["contact_id"], "status": "pending_invitation",
@@ -3231,8 +3238,28 @@ async def link_recovery_contact_account(
     if not verify_password(data.password, current_user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
     if current_user.get("totp_enabled"):
-        if not data.code or not await _consume_current_totp(current_user, data.code):
-            raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+        if data.code:
+            # Standalone link operation: require a fresh, unused TOTP.
+            if not await _consume_current_totp(current_user, data.code):
+                raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+        else:
+            # The invitation UI has JUST completed password + TOTP login.
+            # Re-use that *server-verified* MFA session rather than demanding
+            # the same one-time code again. This is not a password-only bypass.
+            token = _extract_request_token(request)
+            session = await db.user_sessions.find_one(
+                {"token_hash": hash_token(token or ""), "session_type": "jwt",
+                 "mfa_verified": True, "revoked_at": None,
+                 "user_id": current_user["user_id"]},
+                {"_id": 0, "created_at": 1},
+            )
+            fresh_at = parse_datetime(session["created_at"]) if session else None
+            age = datetime.now(timezone.utc) - fresh_at if fresh_at else None
+            if age is None or not timedelta(0) <= age <= timedelta(minutes=2):
+                raise HTTPException(
+                    status_code=401,
+                    detail="Per associare il contatto effettua un nuovo accesso MFA oppure inserisci un nuovo codice Authenticator.",
+                )
     contact = await db.recovery_contacts.find_one({
         "contact_id": data.contact_id,
         "status": "verified",
