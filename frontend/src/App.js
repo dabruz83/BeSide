@@ -51,7 +51,20 @@ axios.defaults.withCredentials = true;
 axios.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    // A rejected password or TOTP challenge is NOT an expired login session.
+    // Logout only when a protected request explicitly reports missing,
+    // revoked or expired session credentials.
+    const detail = error.response?.data?.detail;
+    const sessionErrors = new Set([
+      "Non autenticato",
+      "Sessione scaduta",
+      "Sessione revocata o scaduta",
+      "Sessione non valida o legacy",
+    ]);
+    const requestPath = (error.config?.url || "").split("?")[0];
+    const isLoginChallenge = /\/auth\/(login|2fa\/verify|2fa\/confirm|2fa\/setup)$/.test(requestPath);
+    if (error.response?.status === 401 && !isLoginChallenge &&
+        typeof detail === "string" && sessionErrors.has(detail)) {
       window.dispatchEvent(new Event('beside:session-expired'));
     }
     return Promise.reject(error);
