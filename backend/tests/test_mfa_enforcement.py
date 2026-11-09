@@ -100,7 +100,6 @@ def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollmen
         )
         current_user = await server.get_current_user(setup_request)
         setup_result = await server.setup_two_factor(
-            server.TwoFactorPasswordRequest(password="StrongPassword-123"),
             setup_request,
             current_user,
         )
@@ -114,9 +113,7 @@ def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollmen
             headers={"cookie": setup_cookie, "origin": server.CORS_ORIGINS[0]},
         )
         confirm_result = await server.confirm_two_factor(
-            server.TwoFactorConfirmRequest(
-                password="StrongPassword-123", code=server.totp_code(secret)
-            ),
+            server.TwoFactorVerifyRequest(code=server.totp_code(secret)),
             confirm_request,
             confirm_response,
             current_user,
@@ -134,6 +131,19 @@ def test_customer_without_mfa_gets_setup_only_session_and_can_complete_enrollmen
         )
         assert authenticated["user_id"] == user["user_id"]
         assert authenticated["totp_enabled"] is True
+
+        # The newly authenticated JWT cannot restart enrollment: only the
+        # short-lived mfa_setup session has permission to invoke these endpoints.
+        full_setup_request = make_request(
+            "/api/auth/2fa/setup",
+            headers={"cookie": full_cookie, "origin": server.CORS_ORIGINS[0]},
+        )
+        try:
+            await server.setup_two_factor(full_setup_request, authenticated)
+        except server.HTTPException as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("Authenticated session incorrectly allowed MFA setup")
 
     asyncio.run(exercise())
 

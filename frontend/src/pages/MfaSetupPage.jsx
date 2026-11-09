@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import axios from "axios";
 import { QRCodeSVG } from "qrcode.react";
@@ -12,20 +12,19 @@ const errorMessage = (error, fallback) => error.response?.data?.detail || fallba
 export const MfaSetupPage = () => {
   const navigate = useNavigate();
   const { login } = useAuth();
-  const [password, setPassword] = useState("");
+  const setupStarted = useRef(false);
   const [code, setCode] = useState("");
   const [setup, setSetup] = useState(null);
   const [recoveryCodes, setRecoveryCodes] = useState([]);
-  const [message, setMessage] = useState("Conferma la password per iniziare la configurazione.");
+  const [message, setMessage] = useState("Preparazione del codice QR per il tuo Authenticator...");
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const beginSetup = async (event) => {
-    event.preventDefault();
+  const beginSetup = async () => {
     setLoading(true);
     setError("");
     try {
-      const response = await axios.post(`${API}/auth/2fa/setup`, { password });
+      const response = await axios.post(`${API}/auth/2fa/setup`, {});
       setSetup(response.data);
       setMessage("Scansiona il QR code con Google Authenticator o Microsoft Authenticator, poi inserisci il codice visualizzato.");
     } catch (requestError) {
@@ -34,6 +33,14 @@ export const MfaSetupPage = () => {
       setLoading(false);
     }
   };
+
+  // Login has already verified the password and issued a setup-only cookie.
+  // Start QR generation automatically, never asking for the password twice.
+  useEffect(() => {
+    if (setupStarted.current) return;
+    setupStarted.current = true;
+    void beginSetup();
+  }, []);
 
   const confirmSetup = async (event) => {
     event.preventDefault();
@@ -44,8 +51,7 @@ export const MfaSetupPage = () => {
     setLoading(true);
     setError("");
     try {
-      const response = await axios.post(`${API}/auth/2fa/confirm`, { password, code });
-      setPassword("");
+      const response = await axios.post(`${API}/auth/2fa/confirm`, { code });
       setCode("");
       setSetup(null);
       setRecoveryCodes(response.data.recovery_codes || []);
@@ -83,13 +89,13 @@ export const MfaSetupPage = () => {
         </div>
         <p className={error ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>{error || message}</p>
         {!setup ? (
-          <form onSubmit={beginSetup} className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="mfa-setup-password">Password dell'account</Label>
-              <Input id="mfa-setup-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete="current-password" required />
-            </div>
-            <Button className="w-full" type="submit" disabled={loading}>{loading ? "Verifica..." : "Continua"}</Button>
-          </form>
+          <div className="space-y-4">
+            {loading ? (
+              <p className="text-sm text-muted-foreground" role="status">Caricamento del QR code...</p>
+            ) : (
+              <Button className="w-full" type="button" onClick={beginSetup}>Riprova</Button>
+            )}
+          </div>
         ) : (
           <form onSubmit={confirmSetup} className="space-y-4">
             <div className="flex justify-center rounded-md bg-white p-4"><QRCodeSVG value={setup.otpauth_uri} size={220} includeMargin /></div>

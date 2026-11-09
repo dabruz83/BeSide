@@ -1678,17 +1678,33 @@ async def confirm_recovery_totp(
             "message": "Authenticator sostituito. Esegui un nuovo login completo."}
 
 
+async def require_mfa_enrollment_session(request: Request) -> Dict[str, Any]:
+    """Confirm a still-valid, password-verified setup-only session.
+
+    The password was verified at login. This session never grants access to
+    tenant data or the dashboard; enrollment still requires a valid TOTP.
+    """
+    token = _extract_request_token(request)
+    if not token:
+        raise HTTPException(status_code=401, detail="Accedi per configurare MFA")
+    session = await db.user_sessions.find_one(
+        {"token_hash": hash_token(token), "session_type": "mfa_setup", "revoked_at": None},
+        {"_id": 0},
+    )
+    if not session or _session_expired(session):
+        raise HTTPException(status_code=401, detail="Sessione MFA scaduta. Effettua nuovamente l'accesso")
+    return session
+
+
 @api_router.post("/auth/2fa/setup")
 async def setup_two_factor(
-    data: TwoFactorPasswordRequest,
     request: Request,
     current_user: Dict = Depends(get_current_user),
 ):
-    """Prepare TOTP enrollment; activation requires a fresh code confirmation."""
+    """Prepare TOTP after password login, within the restricted setup session."""
     await enforce_rate_limit(request, "auth_2fa_setup", limit=5, window_seconds=15 * 60,
                              identifier=current_user["user_id"])
-    if not verify_password(data.password, current_user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    await require_mfa_enrollment_session(request)
     if current_user.get("totp_enabled"):
         raise HTTPException(status_code=400, detail="2FA già attivo")
     secret = generate_totp_secret()
@@ -1709,15 +1725,14 @@ async def setup_two_factor(
 
 @api_router.post("/auth/2fa/confirm")
 async def confirm_two_factor(
-    data: TwoFactorConfirmRequest,
+    data: TwoFactorVerifyRequest,
     request: Request,
     response: Response,
     current_user: Dict = Depends(get_current_user),
 ):
     await enforce_rate_limit(request, "auth_2fa_confirm", limit=5, window_seconds=15 * 60,
                              identifier=current_user["user_id"])
-    if not verify_password(data.password, current_user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Riautenticazione richiesta")
+    setup_session = await require_mfa_enrollment_session(request)
     pending = current_user.get("totp_pending_secret_enc")
     if not pending:
         raise HTTPException(status_code=400, detail="Predisposizione 2FA non trovata")
@@ -1730,13 +1745,6 @@ async def confirm_two_factor(
     secret = decrypt_totp_secret(pending)
     if verify_totp_code(secret, data.code) is None:
         raise HTTPException(status_code=400, detail="Codice 2FA non valido")
-    setup_token = _extract_request_token(request)
-    setup_session = None
-    if setup_token:
-        setup_session = await db.user_sessions.find_one(
-            {"token_hash": hash_token(setup_token), "revoked_at": None},
-            {"_id": 0, "session_type": 1},
-        )
     recovery_codes = generate_recovery_codes()
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.users.update_one(
