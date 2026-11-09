@@ -314,6 +314,11 @@ class TwoFactorRecoveryApprovalRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
     code: str = Field(min_length=6, max_length=6)
 
+class TwoFactorRecoveryEmailApprovalRequest(BaseModel):
+    approval_token: str = Field(min_length=32, max_length=512)
+    verification_number: str = Field(min_length=8, max_length=8)
+
+
 class TwoFactorRecoveryPrepareRequest(BaseModel):
     request_token: str = Field(min_length=20, max_length=512)
     email: EmailStr
@@ -1258,25 +1263,22 @@ async def request_two_factor_recovery(
     contacts = await db.recovery_contacts.find({
         "user_id": user["user_id"],
         "status": {"$in": ["active", "security_period"]},
-        "linked_user_id": {"$exists": True},
+        "accepted_at": {"$exists": True},
+        "contact_verified_at": {"$exists": True},
     }, {"_id": 0}).to_list(20)
     authorized_contact = None
     for contact in contacts:
         period_end = parse_datetime(contact.get("security_period_ends_at"), now + timedelta(days=1))
         if period_end > now:
             continue
-        linked_contact = await db.users.find_one(
-            {"user_id": contact["linked_user_id"], "is_active": {"$ne": False}},
-            {"_id": 0, "email_verified": 1, "totp_enabled": 1},
-        )
-        if linked_contact and linked_contact.get("email_verified") and linked_contact.get("totp_enabled"):
-            authorized_contact = contact
-            if contact.get("status") == "security_period":
-                await db.recovery_contacts.update_one(
-                    {"contact_id": contact["contact_id"], "status": "security_period"},
-                    {"$set": {"status": "active", "activated_at": now.isoformat(), "updated_at": now.isoformat()}},
-                )
-            break
+        authorized_contact = contact
+        if contact.get("status") == "security_period":
+            await db.recovery_contacts.update_one(
+                {"contact_id": contact["contact_id"], "status": "security_period"},
+                {"$set": {"status": "active", "activated_at": now.isoformat(),
+                          "updated_at": now.isoformat()}},
+            )
+        break
     if not authorized_contact:
         raise HTTPException(status_code=400, detail="Nessun contatto fidato attivo e verificato")
 
@@ -1288,17 +1290,20 @@ async def request_two_factor_recovery(
         raise HTTPException(status_code=409, detail="Esiste già una richiesta di recupero in corso")
 
     request_token = secrets.token_urlsafe(32)
+    contact_approval_token = secrets.token_urlsafe(32)
     verification_number = f"{secrets.randbelow(100_000_000):08d}"
     expires = now + timedelta(minutes=MFA_RECOVERY_REQUEST_MINUTES)
     request_id = f"mfa_recovery_{uuid.uuid4().hex[:16]}"
     await db.mfa_recovery_requests.insert_one({
         "request_id": request_id,
         "request_token_hash": hash_token(request_token),
+        "contact_approval_token_hash": hash_token(contact_approval_token),
         "verification_number_hash": hash_token(verification_number),
         "user_id": user["user_id"],
         "company_id": user.get("company_id"),
         "contact_id": authorized_contact["contact_id"],
-        "contact_user_id": authorized_contact["linked_user_id"],
+        "contact_user_id": authorized_contact.get("linked_user_id"),
+        "contact_email": authorized_contact["contact_email"],
         "status": "pending",
         "attempts": 0,
         "max_attempts": MFA_RECOVERY_MAX_ATTEMPTS,
@@ -1309,12 +1314,15 @@ async def request_two_factor_recovery(
     await audit_event("2fa_recovery_requested", user=user, request=request,
                       metadata={"request_id": request_id, "contact_id": authorized_contact["contact_id"]})
     background_tasks.add_task(send_2fa_recovery_started_notice, user["email"])
+    background_tasks.add_task(
+        send_recovery_contact_approval_email, authorized_contact["contact_email"],
+        contact_approval_token)
     return {
         "request_id": request_id,
         "request_token": request_token,
         "verification_number": verification_number,
         "expires_in": MFA_RECOVERY_REQUEST_MINUTES * 60,
-        "message": "Richiesta avviata. Il contatto fidato dovrà completare la verifica prevista.",
+        "message": "Comunica il numero temporaneo al contatto fidato. Riceverà un'email per confermare.",
     }
 
 @api_router.get("/auth/2fa/recovery/status")
@@ -1375,6 +1383,67 @@ async def get_two_factor_recovery_status(request: Request, response: Response):
         "expired": status == "expired",
         "cancelled": status == "cancelled",
     }
+
+@api_router.post("/auth/2fa/recovery/approve-email")
+async def approve_two_factor_recovery_by_email(
+    data: TwoFactorRecoveryEmailApprovalRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Two-channel approval: proof of contact mailbox + number from owner.
+
+    It never resets MFA, grants a session, or circumvents the separate 24-hour hold.
+    """
+    await enforce_rate_limit(request, "auth_recovery_approval_email_ip",
+                             limit=10, window_seconds=15 * 60)
+    now = datetime.now(timezone.utc)
+    attempted = await db.mfa_recovery_requests.find_one_and_update(
+        {"contact_approval_token_hash": hash_token(data.approval_token),
+         "status": "pending", "expires_at_dt": {"$gt": now},
+         "attempts": {"$lt": MFA_RECOVERY_MAX_ATTEMPTS}},
+        {"$inc": {"attempts": 1}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not attempted:
+        raise HTTPException(status_code=400, detail="Richiesta non disponibile o scaduta")
+    if not hmac.compare_digest(
+        attempted["verification_number_hash"], hash_token(data.verification_number)
+    ):
+        raise HTTPException(status_code=401, detail="Numero di verifica non corretto")
+    contact = await db.recovery_contacts.find_one(
+        {"contact_id": attempted["contact_id"],
+         "user_id": attempted["user_id"],
+         "contact_email": attempted["contact_email"],
+         "status": {"$in": ["active", "security_period"]},
+         "accepted_at": {"$exists": True},
+         "contact_verified_at": {"$exists": True}},
+        {"_id": 0},
+    )
+    if not contact or parse_datetime(contact.get("security_period_ends_at"),
+                                     now + timedelta(days=1)) > now:
+        raise HTTPException(status_code=403, detail="Contatto fidato non più autorizzato")
+    approved_at = now.isoformat()
+    approved = await db.mfa_recovery_requests.find_one_and_update(
+        {"request_id": attempted["request_id"], "status": "pending",
+         "contact_approval_token_hash": hash_token(data.approval_token),
+         "expires_at_dt": {"$gt": now}},
+        {"$set": {"status": "approved", "approved_at": approved_at,
+                  "approval_method": "contact_email_and_owner_challenge",
+                  "updated_at": approved_at},
+         "$unset": {"contact_approval_token_hash": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not approved:
+        raise HTTPException(status_code=409, detail="Richiesta già completata o scaduta")
+    owner = await db.users.find_one({"user_id": approved["user_id"]}, {"_id": 0})
+    if owner:
+        background_tasks.add_task(send_2fa_recovery_approved_notice, owner["email"])
+        await audit_event("2fa_recovery_approved_by_trusted_email",
+                          user=owner, request=request,
+                          metadata={"request_id": approved["request_id"],
+                                    "contact_id": approved["contact_id"]})
+    return {"status": "approved", "message": "Conferma acquisita. Nessun accesso è stato concesso."}
+
 
 @api_router.post("/auth/2fa/recovery/approve")
 async def approve_two_factor_recovery(
@@ -2401,17 +2470,36 @@ async def send_recovery_email_security_notice(primary_email: str, recovery_email
         ),
     )
 
-async def send_recovery_contact_invite(contact_email: str, token: str, acceptance_code: str) -> bool:
+async def send_recovery_contact_invite(contact_email: str, token: str) -> bool:
     invite_url = f"{FRONTEND_PUBLIC_URL}/recovery-contact/accept?token={token}"
     return await send_email_sendgrid(
         contact_email,
         "Invito come contatto fidato BESIDE",
         (
-            "<p>Sei stato invitato come contatto fidato per un account BESIDE.</p>"
-            f'<p><a href="{invite_url}">Apri l\'invito</a></p>'
-            f"<p>Per confermare inserisci anche il codice di accettazione: <strong>{html.escape(acceptance_code)}</strong></p>"
-            f"<p>L'invito scade tra {RECOVERY_CONTACT_INVITE_HOURS} ore. Dopo l'accettazione è previsto un periodo di sicurezza di "
-            f"{RECOVERY_CONTACT_SECURITY_DAYS} giorni.</p>"
+            "<p>Una persona ti ha invitato come contatto fidato Beside.</p>"
+            f'<p><a href="{html.escape(invite_url, quote=True)}">Rivedi e accetta l\'invito</a></p>'
+            "<p>Non serve aprire un account Beside, né comunicare password o codici personali.</p>"
+            f"<p>Il link scade tra {RECOVERY_CONTACT_INVITE_HOURS} ore. "
+            f"Il contatto potrà aiutare nel recupero solo dopo {RECOVERY_CONTACT_SECURITY_DAYS} giorni.</p>"
+        ),
+    )
+
+
+async def send_recovery_contact_approval_email(
+    contact_email: str, approval_token: str,
+) -> bool:
+    url = f"{FRONTEND_PUBLIC_URL}/recovery-2fa/approve?token={approval_token}"
+    return await send_email_sendgrid(
+        contact_email,
+        "Conferma una richiesta di recupero BESIDE",
+        (
+            "<p>È stato richiesto il tuo aiuto come contatto fidato Beside.</p>"
+            "<p>Approva soltanto se hai parlato con la persona che conosci e "
+            "ti ha comunicato un numero temporaneo di 8 cifre.</p>"
+            f'<p><a href="{html.escape(url, quote=True)}">Verifica la richiesta</a></p>'
+            "<p>Non servono password, account Beside o codici Authenticator. "
+            "Il link è monouso e scade dopo 15 minuti. "
+            "Se non riconosci la richiesta, ignorala.</p>"
         ),
     )
 
@@ -3012,7 +3100,7 @@ async def verify_recovery_email(
 
 async def _refresh_recovery_contact_status(contact: Dict[str, Any]) -> Dict[str, Any]:
     """Promote a verified contact after the mandatory seven-day hold."""
-    if contact.get("status") == "security_period" and contact.get("linked_user_id"):
+    if contact.get("status") == "security_period" and contact.get("accepted_at"):
         end = parse_datetime(contact.get("security_period_ends_at"))
         if end <= datetime.now(timezone.utc):
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -3079,11 +3167,10 @@ async def invite_recovery_contact(
         raise HTTPException(status_code=400, detail="Email già associata a un contatto fidato")
     now = datetime.now(timezone.utc)
     token = secrets.token_urlsafe(32)
-    acceptance_code = f"{secrets.randbelow(1_000_000):06d}"
     await db.recovery_contacts.insert_one({
         "contact_id": f"recovery_contact_{uuid.uuid4().hex[:16]}",
         "contact_token_hash": hash_token(token),
-        "acceptance_code_hash": hash_token(acceptance_code),
+        "verification_method": "email_link",
         "user_id": current_user["user_id"],
         "company_id": current_user["company_id"],
         "contact_email": contact_email,
@@ -3094,10 +3181,57 @@ async def invite_recovery_contact(
         "acceptance_attempts": 0,
         "used_at": None,
     })
-    background_tasks.add_task(send_recovery_contact_invite, contact_email, token, acceptance_code)
+    background_tasks.add_task(send_recovery_contact_invite, contact_email, token)
     background_tasks.add_task(send_recovery_contact_notice, current_user["email"], contact_email, "invited")
     await audit_event("recovery_contact_invited", user=current_user, request=request)
     return {"message": "Invito del contatto fidato inviato.", "status": "pending_invitation"}
+
+@api_router.post("/auth/recovery-contact/accept-email")
+async def accept_recovery_contact_by_email(
+    data: TokenRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    """Verify mailbox ownership with a high-entropy single-use invitation link.
+
+    GET never consumes the invitation (email-security scanners can visit links);
+    only an explicit POST from the contact's confirmation button does.
+    This operation never creates a login session or an account.
+    """
+    await enforce_rate_limit(request, "auth_recovery_contact_accept_email",
+                             limit=8, window_seconds=60 * 60)
+    now = datetime.now(timezone.utc)
+    token_hash = hash_token(data.token)
+    accepted_at = now.isoformat()
+    security_end = (now + timedelta(days=RECOVERY_CONTACT_SECURITY_DAYS)).isoformat()
+    contact = await db.recovery_contacts.find_one_and_update(
+        {"contact_token_hash": token_hash, "status": "pending_invitation",
+         "verification_method": "email_link",
+         "expires_at_dt": {"$gt": now}},
+        {"$set": {"status": "security_period",
+                  "accepted_at": accepted_at, "contact_verified_at": accepted_at,
+                  "security_period_ends_at": security_end, "updated_at": accepted_at},
+         "$unset": {"contact_token_hash": "", "acceptance_code_hash": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not contact:
+        raise HTTPException(status_code=400,
+                            detail="Invito non disponibile, già accettato o scaduto")
+    await db.recovery_contacts.update_many(
+        {"user_id": contact["user_id"], "contact_id": {"$ne": contact["contact_id"]},
+         "status": {"$in": ["pending_invitation", "verified", "security_period", "active"]}},
+        {"$set": {"status": "revoked", "revoked_at": accepted_at,
+                  "updated_at": accepted_at, "revoked_reason": "replaced"}},
+    )
+    owner = await db.users.find_one({"user_id": contact["user_id"]}, {"_id": 0})
+    if owner:
+        background_tasks.add_task(
+            send_recovery_contact_notice, owner["email"], contact["contact_email"], "accepted")
+        await audit_event("recovery_contact_email_accepted", user=owner, request=request,
+                          metadata={"contact_id": contact["contact_id"]})
+    return {"message": "Invito accettato. Non devi creare un account Beside.",
+            "status": "security_period", "security_period_ends_at": security_end}
+
 
 @api_router.post("/auth/recovery-contact/accept")
 async def accept_recovery_contact(
