@@ -181,11 +181,78 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
     )
 
 
+async def _reset_one_staging_test_account() -> None:
+    """One-time test-account purge, scoped to a non-production staging deployment."""
+    reset_id = "cameleon-onboarding-retest-2026-11-09"
+    target_email = "cameleondesign83@gmail.com"
+    if (os.environ.get("APP_ENV") != "staging"
+            or os.environ.get("RAILWAY_ENVIRONMENT_NAME") != "staging"
+            or "staging" not in DB_NAME.lower()):
+        return
+    if await db.staging_test_resets.find_one({"_id": reset_id, "completed": True}):
+        return
+    user = await db.users.find_one({"email": target_email})
+    if not user:
+        logger.info("Staging reset: test account not found, no data changed")
+        return
+    user_id = user.get("user_id")
+    company_id = user.get("company_id")
+    if (not user_id or not company_id or company_id == PLATFORM_COMPANY_ID
+            or user.get("platform_role") == "super_admin"):
+        raise RuntimeError("Staging reset refused: unexpected account identity")
+    if (user.get("business_name", "").strip().lower() != "cameleon"
+            or await db.users.count_documents({"company_id": company_id}) != 1):
+        raise RuntimeError("Staging reset refused: company mismatch or shared company")
+    company = await db.companies.find_one({"company_id": company_id})
+    if not company or company.get("owner_user_id") != user_id:
+        raise RuntimeError("Staging reset refused: company ownership mismatch")
+    # Delete only documents owned by this exact test account/company.
+    associated = (
+        "admin_chat", "ai_content_history", "audit_logs",
+        "cash_plan_entries", "cash_plan_settings", "email_recovery_tokens",
+        "email_verification_tokens", "finance_settings", "jobs",
+        "lead_sources", "marketing_efforts", "mfa_recovery_requests",
+        "onboardings", "password_reset_tokens", "payment_transactions",
+        "quote_tokens", "recovery_contacts", "support_tickets",
+        "tax_accruals", "user_sessions",
+    )
+    counts = {}
+    for collection in associated:
+        result = await db[collection].delete_many({
+            "$or": [{"company_id": company_id}, {"user_id": user_id},
+                    {"linked_user_id": user_id}]
+        })
+        counts[collection] = result.deleted_count
+    await db.email_claims.delete_one({"_id": email_claim_id(target_email),
+                                      "user_id": user_id})
+    resend_key = hmac.new(
+        JWT_SECRET.encode(),
+        f"email-verification-resend|{target_email}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    await db.email_verification_resends.delete_one({"_id": resend_key})
+    deleted_user = await db.users.delete_one({"_id": user["_id"], "user_id": user_id})
+    deleted_company = await db.companies.delete_one({
+        "company_id": company_id, "owner_user_id": user_id
+    })
+    if deleted_user.deleted_count != 1 or deleted_company.deleted_count != 1:
+        raise RuntimeError("Staging reset incomplete: verify data before retry")
+    await db.staging_test_resets.update_one(
+        {"_id": reset_id},
+        {"$set": {"completed": True, "completed_at": datetime.now(timezone.utc).isoformat(),
+                  "email": target_email, "user_id": user_id, "company_id": company_id}},
+        upsert=True,
+    )
+    logger.info("STAGING_TEST_RESET_COMPLETED user=1 company=1 associated=%s",
+                sum(counts.values()))
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
+        await _reset_one_staging_test_account()
         if APP_ENV == "staging":
             cleanup = await db.users.update_many(
                 {"$or": [{"totp_recovery_codes": {"$exists": True}},
