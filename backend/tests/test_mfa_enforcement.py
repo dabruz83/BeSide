@@ -184,3 +184,150 @@ def test_platform_owner_api_rejects_session_without_completed_mfa(monkeypatch):
         assert current["platform_role"] == "super_admin"
 
     asyncio.run(exercise())
+
+
+def test_accountless_contact_invitation_and_recovery_email_approval(monkeypatch):
+    """Invited contacts never need a Beside account, password or authenticator."""
+    from datetime import datetime, timedelta, timezone
+    from fastapi import BackgroundTasks
+
+    fake_db = InMemoryDatabase()
+    owner = {
+        "user_id": "user_owner", "company_id": "company_owner",
+        "role": "owner", "email": "owner@example.com",
+        "password_hash": server.hash_password("OwnerPassword-123"),
+        "is_active": True, "email_verified": True, "totp_enabled": True,
+    }
+    fake_db.users.documents.append(owner)
+    fake_db.companies.documents.append({
+        "company_id": "company_owner", "owner_user_id": "user_owner",
+        "name": "Company", "status": "active",
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+    monkeypatch.setattr(server, "RECOVERY_CONTACT_SECURITY_DAYS", 2)
+    invite_token = "invitation-token-test-0123456789abcdef"
+    request_token = "request-token-test-0123456789abcdef"
+    approval_token = "contact-email-approval-test-0123456789abcdef"
+    monkeypatch.setattr(server.secrets, "token_urlsafe", lambda size: request_token)
+
+    async def exercise():
+        now = datetime.now(timezone.utc)
+        fake_db.recovery_contacts.documents.append({
+            "contact_id": "contact_test",
+            "contact_email": "trusted@example.net",
+            "user_id": owner["user_id"],
+            "company_id": owner["company_id"],
+            "status": "pending_invitation",
+            "verification_method": "email_link",
+            "contact_token_hash": server.hash_token(invite_token),
+            "created_at": now.isoformat(),
+            "expires_at_dt": now + timedelta(hours=1),
+            "accepted_at": None,
+        })
+        accepted = await server.accept_recovery_contact_by_email(
+            server.TokenRequest(token=invite_token),
+            BackgroundTasks(),
+            make_request("/api/auth/recovery-contact/accept-email"),
+        )
+        assert accepted["status"] == "security_period"
+        record = fake_db.recovery_contacts.documents[0]
+        assert record["accepted_at"]
+        assert "contact_token_hash" not in record
+        assert record.get("linked_user_id") is None
+        assert len(fake_db.users.documents) == 1  # contact never registers
+
+        try:
+            await server.accept_recovery_contact_by_email(
+                server.TokenRequest(token=invite_token),
+                BackgroundTasks(),
+                make_request("/api/auth/recovery-contact/accept-email"),
+            )
+        except server.HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("Consumed invitation token was accepted twice")
+
+        # Test server-side hold rejection before the waiting period elapses.
+        try:
+            await server.request_two_factor_recovery(
+                server.TwoFactorRecoveryRequest(
+                    email=owner["email"], password="OwnerPassword-123"),
+                BackgroundTasks(), make_request("/api/auth/2fa/recovery/request"),
+            )
+        except server.HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("Trusted contact was usable before security hold expired")
+
+        record["security_period_ends_at"] = (now - timedelta(minutes=1)).isoformat()
+        # Contingent recovery credentials: contact email token is sent only to
+        # the contact and never returned in the owner's API response.
+        generated = iter([request_token, approval_token])
+        monkeypatch.setattr(server.secrets, "token_urlsafe", lambda size: next(generated))
+        recovery = await server.request_two_factor_recovery(
+            server.TwoFactorRecoveryRequest(
+                email=owner["email"], password="OwnerPassword-123"),
+            BackgroundTasks(), make_request("/api/auth/2fa/recovery/request"),
+        )
+        assert recovery["request_token"] == request_token
+        assert "contact_approval_token" not in recovery
+        challenge = recovery["verification_number"]
+        assert len(challenge) == 8
+        assert fake_db.mfa_recovery_requests.documents[0]["contact_approval_token_hash"] == server.hash_token(approval_token)
+
+        bad_number = "12345678" if challenge != "12345678" else "87654321"
+        try:
+            await server.approve_two_factor_recovery_by_email(
+                server.TwoFactorRecoveryEmailApprovalRequest(
+                    approval_token=approval_token, verification_number=bad_number),
+                BackgroundTasks(), make_request("/api/auth/2fa/recovery/approve-email"),
+            )
+        except server.HTTPException as exc:
+            assert exc.status_code == 401
+        else:
+            raise AssertionError("Bad owner challenge was accepted")
+
+        approved = await server.approve_two_factor_recovery_by_email(
+            server.TwoFactorRecoveryEmailApprovalRequest(
+                approval_token=approval_token, verification_number=challenge),
+            BackgroundTasks(), make_request("/api/auth/2fa/recovery/approve-email"),
+        )
+        assert approved["status"] == "approved"
+        assert "contact_approval_token_hash" not in fake_db.mfa_recovery_requests.documents[0]
+        assert fake_db.mfa_recovery_requests.documents[0]["status"] == "approved"
+        assert len(fake_db.user_sessions.documents) == 0  # no login access
+        try:
+            await server.approve_two_factor_recovery_by_email(
+                server.TwoFactorRecoveryEmailApprovalRequest(
+                    approval_token=approval_token, verification_number=challenge),
+                BackgroundTasks(), make_request("/api/auth/2fa/recovery/approve-email"),
+            )
+        except server.HTTPException as exc:
+            assert exc.status_code in (400, 409)
+        else:
+            raise AssertionError("Single-use contact approval token was accepted twice")
+
+    asyncio.run(exercise())
+
+
+def test_password_reset_available_for_legacy_contact_without_company(monkeypatch):
+    from fastapi import BackgroundTasks
+    fake_db = InMemoryDatabase()
+    fake_db.users.documents.append({
+        "user_id": "legacy_contact", "company_id": None,
+        "role": server.RECOVERY_CONTACT_ROLE, "email": "friend@example.net",
+        "password_hash": server.hash_password("FriendPassword-123"),
+        "is_active": True,
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+    async def exercise():
+        tasks = BackgroundTasks()
+        result = await server.forgot_password(
+            server.EmailRequest(email="friend@example.net"),
+            tasks,
+            make_request("/api/auth/forgot-password"),
+        )
+        assert result["message"]
+        assert len(fake_db.password_reset_tokens.documents) == 1
+        assert any(t.func == server.send_password_reset_email for t in tasks.tasks)
+    asyncio.run(exercise())
