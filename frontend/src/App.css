@@ -1,1 +1,11 @@
 /* Additional app-specific styles */
+/* Keep native iOS date/time values centered inside Beside's split controls. */
+.calendar-date-time-input {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.calendar-date-time-input::-webkit-date-and-time-value {
+  min-height: 1.75rem;
+  text-align: center;
+}

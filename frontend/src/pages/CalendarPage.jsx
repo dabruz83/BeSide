@@ -29,6 +29,10 @@ const REMINDERS = [[0, "All'orario dell'evento"], [5, "5 minuti prima"], [10, "1
 const pad = (n) => String(n).padStart(2, "0");
 const dayKey = (d) => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
 const localDateTime = (d) => dayKey(d) + "T" + pad(d.getHours()) + ":" + pad(d.getMinutes());
+const dateTimeParts = (value = "") => {
+  const [date = "", rawTime = ""] = value.split("T");
+  return { date, time: rawTime.slice(0, 5) };
+};
 const dayAt = (s) => new Date(s + "T00:00:00");
 const addDays = (d, n) => { const v = new Date(d); v.setDate(v.getDate() + n); return v; };
 const weekStart = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - (x.getDay() + 6) % 7); return x; };
@@ -60,6 +64,44 @@ const downloadCalendar = (e) => {
   link.href = url; link.download = "Beside-" + e.event_id + ".ics";
   document.body.appendChild(link); link.click(); link.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
+};
+
+const DateTimeField = ({ label, value, onChange }) => {
+  const { date, time } = dateTimeParts(value);
+  const setPart = (part, nextValue) => {
+    const next = part === "date"
+      ? `${nextValue}T${time}`
+      : `${date}T${nextValue}`;
+    onChange(next);
+  };
+
+  return <div className="min-w-0 space-y-1.5">
+    <Label>{label} *</Label>
+    <div className="grid min-w-0 grid-cols-[minmax(0,1.35fr)_minmax(7rem,0.65fr)] overflow-hidden rounded-2xl border border-input bg-background shadow-sm">
+      <label className="min-w-0 px-3 py-2.5 text-center">
+        <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Data</span>
+        <input
+          type="date"
+          required
+          aria-label={`${label}: data`}
+          value={date}
+          onChange={(event) => setPart("date", event.target.value)}
+          className="calendar-date-time-input mt-0.5 h-8 w-full min-w-0 bg-transparent p-0 text-center text-base font-semibold text-foreground outline-none"
+        />
+      </label>
+      <label className="min-w-0 border-l border-primary/15 bg-sky-50 px-2 py-2.5 text-center">
+        <span className="block text-[10px] font-semibold uppercase tracking-[0.14em] text-primary/70">Ora</span>
+        <input
+          type="time"
+          required
+          aria-label={`${label}: ora`}
+          value={time}
+          onChange={(event) => setPart("time", event.target.value)}
+          className="calendar-date-time-input mt-0.5 h-8 w-full min-w-0 bg-transparent p-0 text-center text-lg font-bold text-primary outline-none"
+        />
+      </label>
+    </div>
+  </div>;
 };
 
 export const CalendarPage = () => {
@@ -171,6 +213,27 @@ export const CalendarPage = () => {
   useEffect(() => () => {
     if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
+  useEffect(() => {
+    if (!dialogOpen) return undefined;
+    const root = document.documentElement;
+    const body = document.body;
+    const previous = {
+      rootOverflow: root.style.overflow,
+      rootOverscroll: root.style.overscrollBehavior,
+      bodyOverflow: body.style.overflow,
+      bodyOverscroll: body.style.overscrollBehavior,
+    };
+    root.style.overflow = "hidden";
+    root.style.overscrollBehavior = "none";
+    body.style.overflow = "hidden";
+    body.style.overscrollBehavior = "none";
+    return () => {
+      root.style.overflow = previous.rootOverflow;
+      root.style.overscrollBehavior = previous.rootOverscroll;
+      body.style.overflow = previous.bodyOverflow;
+      body.style.overscrollBehavior = previous.bodyOverscroll;
+    };
+  }, [dialogOpen]);
   const fillQuote = (current, quote) => ({
     ...current, job_id: quote.job_id, title: typeName(quote.job_type) + " • " + quote.client_name,
     job_type: quote.job_type, client_name: quote.client_name, client_email: quote.client_email || "",
@@ -447,9 +510,12 @@ export const CalendarPage = () => {
         </div></div>
       </div>}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-xl max-h-[90dvh] overflow-y-auto">
-          <DialogHeader><DialogTitle>{editing ? "Modifica appuntamento" : "Pianifica lavoro"}</DialogTitle></DialogHeader>
-          <form onSubmit={handleSubmit} className="space-y-3">
+        <DialogContent className="flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-xl flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:h-auto sm:max-h-[90dvh] sm:rounded-2xl">
+          <DialogHeader className="shrink-0 border-b bg-background px-5 py-5 pr-14">
+            <DialogTitle>{editing ? "Modifica appuntamento" : "Pianifica lavoro"}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <div className="min-h-0 flex-1 touch-pan-y space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-4">
             <div><Label>Titolo *</Label><Input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Installazione PPF • Mario Rossi" /></div>
             <div><Label>Preventivo accettato (opzionale)</Label>
               <select className="w-full rounded-md border bg-background p-2 text-sm" value={form.job_id} onChange={(e) => {
@@ -462,8 +528,8 @@ export const CalendarPage = () => {
                 {quotes.map((q) => <option key={q.job_id} value={q.job_id}>{q.client_name} · {typeName(q.job_type)}</option>)}
               </select></div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div><Label>Inizio *</Label><Input type="datetime-local" required value={form.starts_at} onChange={(e) => setForm({ ...form, starts_at: e.target.value })} /></div>
-              <div><Label>Fine *</Label><Input type="datetime-local" required value={form.ends_at} onChange={(e) => setForm({ ...form, ends_at: e.target.value })} /></div>
+              <DateTimeField label="Inizio" value={form.starts_at} onChange={(value) => setForm({ ...form, starts_at: value })} />
+              <DateTimeField label="Fine" value={form.ends_at} onChange={(value) => setForm({ ...form, ends_at: value })} />
               <div><Label>Postazione *</Label><Input required value={form.resource} onChange={(e) => setForm({ ...form, resource: e.target.value })} placeholder="Postazione 1" /></div>
               <div><Label>Lavorazione</Label><select className="w-full rounded-md border p-2 bg-background text-sm" value={form.job_type}
                 onChange={(e) => setForm({ ...form, job_type: e.target.value })}>
@@ -483,12 +549,13 @@ export const CalendarPage = () => {
                 </label>)}
               </div><p className="text-xs text-muted-foreground mt-1">Fino a quattro avvisi. In questa fase vengono inviati all'email del titolare dell'azienda, non al cliente.</p>
             </div>
-            <div className="flex justify-between flex-wrap gap-2 pt-2">
+            </div>
+            <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-background px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
               {editing ? <div className="flex gap-2">
                 <Button type="button" variant="outline" onClick={() => downloadCalendar(editing)}><Download className="w-4 h-4 mr-1" />Esporta .ics</Button>
                 <Button type="button" variant="destructive" onClick={cancelEvent} disabled={saving}><Trash2 className="w-4 h-4" /></Button>
               </div> : <span />}
-              <Button type="submit" disabled={saving}>{saving ? "Salvataggio..." : editing ? "Salva modifiche" : "Pianifica lavoro"}</Button>
+              <Button type="submit" className="ml-auto rounded-full px-5" disabled={saving}>{saving ? "Salvataggio..." : editing ? "Salva modifiche" : "Pianifica lavoro"}</Button>
             </div>
           </form>
         </DialogContent>
