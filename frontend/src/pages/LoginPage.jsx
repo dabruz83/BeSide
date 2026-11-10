@@ -53,6 +53,15 @@ export const LoginPage = () => {
       toast.success("Accesso effettuato!");
       navigate("/dashboard");
     } catch (error) {
+      if (error.response?.status === 429) {
+        const retryHeader = error.response?.headers?.["retry-after"];
+        const retryAfter = Number.parseInt(retryHeader, 10);
+        const retryMessage = Number.isFinite(retryAfter) && retryAfter > 0
+          ? ` Riprova tra circa ${retryAfter} secondi.`
+          : " Riprova tra qualche istante.";
+        toast.error(`Accesso temporaneamente rallentato.${retryMessage} La password non è stata rifiutata.`);
+        return;
+      }
       const message = getErrorMessage(error, "Errore durante l'accesso");
       if (
         error.response?.status === 403 &&

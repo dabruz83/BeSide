@@ -88,13 +88,28 @@ export const useAuth = () => {
 export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState(null);
 
   const checkAuth = useCallback(async () => {
+    setLoading(true);
+    setAuthError(null);
     try {
       const response = await axios.get(`${API}/auth/me`);
       setUser(response.data);
+      setAuthError(null);
     } catch (error) {
-      setUser(null);
+      const status = error.response?.status;
+      if (status === 401 || status === 403) {
+        setUser(null);
+        setAuthError(null);
+      } else {
+        const retryHeader = error.response?.headers?.["retry-after"];
+        const retryAfter = Number.parseInt(retryHeader, 10);
+        setAuthError({
+          status,
+          retryAfter: Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null,
+        });
+      }
     } finally {
       setLoading(false);
     }
@@ -115,12 +130,16 @@ export const AuthProvider = ({ children }) => {
   }, [checkAuth]);
 
   useEffect(() => {
-    const handleExpiredSession = () => setUser(null);
+    const handleExpiredSession = () => {
+      setAuthError(null);
+      setUser(null);
+    };
     window.addEventListener('beside:session-expired', handleExpiredSession);
     return () => window.removeEventListener('beside:session-expired', handleExpiredSession);
   }, []);
 
   const login = (userData) => {
+    setAuthError(null);
     setUser(userData);
   };
 
@@ -130,11 +149,12 @@ export const AuthProvider = ({ children }) => {
     } catch (error) {
       console.error("Logout error:", error);
     }
+    setAuthError(null);
     setUser(null);
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, checkAuth }}>
+    <AuthContext.Provider value={{ user, loading, authError, login, logout, checkAuth }}>
       {children}
     </AuthContext.Provider>
   );
@@ -188,7 +208,7 @@ const AuthCallback = () => {
 
 // Protected Route Component
 const ProtectedRoute = ({ children }) => {
-  const { user, loading } = useAuth();
+  const { user, loading, authError, checkAuth } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -197,6 +217,29 @@ const ProtectedRoute = ({ children }) => {
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
           <p className="text-muted-foreground">Caricamento...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user && authError) {
+    const waitMessage = authError.retryAfter
+      ? ` Riprova tra circa ${authError.retryAfter} secondi.`
+      : " Riprova tra qualche istante.";
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background p-6">
+        <div className="w-full max-w-md rounded-3xl border border-border bg-card p-8 text-center shadow-sm">
+          <h1 className="text-2xl font-bold text-primary">Accesso temporaneamente rallentato</h1>
+          <p className="mt-3 text-muted-foreground">
+            La sessione non è stata cancellata e la password non è stata rifiutata.{waitMessage}
+          </p>
+          <button
+            type="button"
+            onClick={checkAuth}
+            className="mt-6 min-h-12 rounded-full bg-primary px-6 font-medium text-primary-foreground shadow-sm transition hover:opacity-90"
+          >
+            Riprova ora
+          </button>
         </div>
       </div>
     );
