@@ -8,6 +8,7 @@ import html
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import List, Optional
 
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
@@ -258,7 +259,10 @@ async def run_calendar_reminder_worker(db, send_email, every_seconds: int = 45):
                 starts = datetime.fromisoformat(event["starts_at"])
                 for lead in event.get("reminder_minutes", []):
                     due = starts - timedelta(minutes=lead)
-                    if not (due <= now < starts + timedelta(minutes=2)):
+                    # Only deliver near the selected interval, never send a
+                    # burst of all overdue reminders when an event was created
+                    # shortly before its start.
+                    if not (due <= now < due + timedelta(minutes=2)):
                         continue
                     key = {
                         "event_id": event["event_id"],
@@ -284,13 +288,13 @@ async def run_calendar_reminder_worker(db, send_email, every_seconds: int = 45):
                     if not email:
                         await db.calendar_reminder_claims.delete_one(key)
                         continue
-                    date_text = starts.astimezone().strftime("%d/%m/%Y %H:%M UTC%z")
+                    date_text = starts.astimezone(ZoneInfo("Europe/Rome")).strftime("%d/%m/%Y alle %H:%M")
                     safe = html.escape
                     title = safe(event.get("title") or "Lavoro")
                     content = (
                         "<p>Promemoria Beside: è previsto un lavoro.</p>"
                         f"<p><strong>{title}</strong></p>"
-                        f"<p>Data (UTC): {safe(starts.strftime('%d/%m/%Y %H:%M'))}</p>"
+                        f"<p>Data e ora: {safe(date_text)} (Italia)</p>"
                         f"<p>Cliente: {safe(event.get('client_name') or '—')}</p>"
                         f"<p>Postazione: {safe(event.get('resource') or '—')}</p>"
                         "<p>Apri Beside → Pianificazione per i dettagli.</p>"
