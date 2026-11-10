@@ -22,6 +22,7 @@ import { DashboardPage } from "@/pages/DashboardPage";
 import { JobsPage } from "@/pages/JobsPage";
 import { FinancePage } from "@/pages/FinancePage";
 import { MarketingPage } from "@/pages/MarketingPage";
+import { CalendarPage } from "@/pages/CalendarPage";
 import { OnboardingPage } from "@/pages/OnboardingPage";
 import { OnboardingWizardPage } from "@/pages/OnboardingWizardPage";
 import { ProfilePage } from "@/pages/ProfilePage";
@@ -271,6 +272,7 @@ const AppRouter = () => {
           </ProtectedRoute>
         }
       />
+      <Route path="/calendar" element={<ProtectedRoute><Layout><CalendarPage /></Layout></ProtectedRoute>} />
       <Route
         path="/marketing"
         element={
