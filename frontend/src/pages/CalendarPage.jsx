@@ -63,6 +63,7 @@ export const CalendarPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [focusDate, setFocusDate] = useState(() => new Date());
   const [view, setView] = useState("week");
+  const [resourceFilter, setResourceFilter] = useState("Postazione 1");
   const [events, setEvents] = useState([]);
   const [quotes, setQuotes] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -146,6 +147,7 @@ export const CalendarPage = () => {
     try {
       await saveEvent(form);
       toast.success(editing ? "Appuntamento aggiornato" : "Appuntamento pianificato");
+      setResourceFilter(form.resource.trim());
       setDialogOpen(false); await reload();
     } catch (error) { toast.error(error.response?.data?.detail || error.message || "Salvataggio non riuscito"); }
     finally { setSaving(false); }
@@ -186,7 +188,7 @@ export const CalendarPage = () => {
         ends_at: new Date(day.getTime() + length).toISOString(), client_email: updated.client_email || null,
         job_id: updated.job_id || null };
       await axios.put(API + "/calendar/events/" + event.event_id, payload);
-      toast.success("Lavoro spostato"); setFocusDate(day); await reload();
+      toast.success("Lavoro spostato"); setFocusDate(day); setResourceFilter(event.resource); await reload();
     } catch (error) { toast.error(error.response?.data?.detail || "Spostamento non riuscito"); }
     finally { setSaving(false); }
   };
@@ -245,6 +247,16 @@ export const CalendarPage = () => {
               <Button size="sm" variant={view === "week" ? "default" : "outline"} onClick={() => setView("week")}>Settimana</Button>
             </div>
           </div>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <Label htmlFor="calendar-resource">Postazione visualizzata</Label>
+            <select id="calendar-resource" value={resourceFilter}
+              onChange={(e) => setResourceFilter(e.target.value)}
+              className="min-w-[175px] max-w-full rounded-md border bg-background p-2 text-sm">
+              {[...new Set(["Postazione 1", "Postazione 2", "Postazione 3",
+                ...events.map((event) => event.resource)])].map((name) =>
+                <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
           <p className="text-xs text-muted-foreground">Tocca uno slot libero per inserirlo; trascina un appuntamento per spostarlo. Le sovrapposizioni sulla stessa postazione sono bloccate.</p>
           <div className="overflow-x-auto border rounded-lg">
             <div className="flex min-w-max">
@@ -262,7 +274,7 @@ export const CalendarPage = () => {
                   const first = new Date(event.starts_at), last = new Date(event.ends_at);
                   const visibleStart = new Date(d); visibleStart.setHours(HOUR_FIRST, 0, 0, 0);
                   const visibleEnd = new Date(d); visibleEnd.setHours(HOUR_LAST, 0, 0, 0);
-                  return first < visibleEnd && last > visibleStart;
+                  return event.resource === resourceFilter && first < visibleEnd && last > visibleStart;
                 });
                 return <div key={key} className={"shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
                   <div className={"h-12 border-b px-2 flex items-center justify-center text-sm font-semibold " + (key === dayKey(new Date()) ? "bg-primary/10 text-primary" : "bg-muted/30")}>{dayLabel(d)}</div>
@@ -274,6 +286,7 @@ export const CalendarPage = () => {
                       const halfHours = Math.floor((e.clientY - rect.top) / 32);
                       const time = dayAt(key); time.setMinutes(HOUR_FIRST * 60 + Math.max(0, halfHours) * 30);
                       openNew(time);
+                      setForm((prev) => ({ ...prev, resource: resourceFilter }));
                     }}>
                     {dayEvents.map((ev) => {
                       const startMoment = new Date(ev.starts_at);
