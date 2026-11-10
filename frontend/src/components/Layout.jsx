@@ -23,7 +23,7 @@ const navItems = [
   { path: "/jobs", label: "Lavori", icon: Wrench },
   { path: "/configurator", label: "Configuratore", icon: Palette },
   { path: "/finance", label: "Finanza", icon: Euro },
-  { path: "/calendar", label: "Pianificazione", icon: CalendarDays },
+  { path: "/calendar", label: "Pianificazione", shortLabel: "Agenda", icon: CalendarDays },
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
   { path: "/subscription", label: "Abbonamento", icon: Euro },
   { path: "/profile", label: "Profilo", icon: UserCog },
@@ -175,7 +175,7 @@ export const Layout = ({ children }) => {
             }
           >
             <item.icon className="w-6 h-6" />
-            <span className="text-xs mt-1">{item.label}</span>
+            <span className="text-xs mt-1">{item.shortLabel || item.label}</span>
           </NavLink>
         ))}
       </nav>
