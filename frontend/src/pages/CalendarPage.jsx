@@ -18,6 +18,7 @@ const HOUR_HEIGHT = 64;
 const TRACK_HEIGHT = (HOUR_LAST - HOUR_FIRST) * HOUR_HEIGHT;
 const INITIAL_WINDOW_DAYS = 42;
 const WINDOW_EXTENSION_DAYS = 14;
+const DEFAULT_WORK_AREA = { area_id: "area_default", name: "Area principale" };
 const WORK_TYPES = [
   ["ppf_full", "PPF completo"], ["ppf_partial", "PPF parziale"],
   ["wrap_decorative", "Wrap decorativo"], ["wrap_commercial", "Wrap commerciale"],
@@ -39,16 +40,23 @@ const weekStart = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setD
 const dayLabel = (d) => new Intl.DateTimeFormat("it-IT", { weekday: "short", day: "numeric", month: "short" }).format(d);
 const typeName = (code) => WORK_TYPES.find((x) => x[0] === code)?.[1] || "Lavoro";
 const minutesOf = (date) => date.getHours() * 60 + date.getMinutes();
+const eventAreaId = (event) => event.resource_id ||
+  (["postazione 1", "area principale"].includes((event.resource || "").trim().toLowerCase())
+    ? DEFAULT_WORK_AREA.area_id
+    : `legacy:${(event.resource || "").trim().toLowerCase()}`);
 const defaultForm = () => {
   const base = new Date(); base.setHours(9, 0, 0, 0);
   const end = new Date(base); end.setHours(11);
   return { title: "", starts_at: localDateTime(base), ends_at: localDateTime(end),
-    resource: "Postazione 1", job_id: "", job_type: "altro", client_name: "",
+    resource: DEFAULT_WORK_AREA.name, resource_id: DEFAULT_WORK_AREA.area_id,
+    job_id: "", job_type: "altro", client_name: "",
     client_email: "", vehicle_info: "", notes: "", reminder_minutes: [30] };
 };
 const eventToForm = (e) => ({ ...e, starts_at: localDateTime(new Date(e.starts_at)),
   ends_at: localDateTime(new Date(e.ends_at)), job_id: e.job_id || "",
-  client_email: e.client_email || "", reminder_minutes: e.reminder_minutes || [] });
+  resource: eventAreaId(e) === DEFAULT_WORK_AREA.area_id ? DEFAULT_WORK_AREA.name : e.resource,
+  resource_id: eventAreaId(e), client_email: e.client_email || "",
+  reminder_minutes: e.reminder_minutes || [] });
 const escIcs = (v) => String(v || "").replace(/\\/g, "\\\\").replace(/\r?\n/g, "\\n").replace(/[,;]/g, "\\$&");
 const icsDate = (v) => new Date(v).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
 const downloadCalendar = (e) => {
@@ -110,9 +118,13 @@ export const CalendarPage = () => {
   const [view, setView] = useState("week");
   const [windowStart, setWindowStart] = useState(() => addDays(weekStart(new Date()), -14));
   const [windowDays, setWindowDays] = useState(INITIAL_WINDOW_DAYS);
-  const [resourceFilter, setResourceFilter] = useState("Postazione 1");
+  const [resourceFilter, setResourceFilter] = useState(DEFAULT_WORK_AREA.area_id);
   const [events, setEvents] = useState([]);
   const [quotes, setQuotes] = useState([]);
+  const [workAreas, setWorkAreas] = useState([DEFAULT_WORK_AREA]);
+  const [areasDialogOpen, setAreasDialogOpen] = useState(false);
+  const [areaDrafts, setAreaDrafts] = useState([DEFAULT_WORK_AREA]);
+  const [savingAreas, setSavingAreas] = useState(false);
   const [busy, setBusy] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -135,12 +147,17 @@ export const CalendarPage = () => {
   const reload = useCallback(async () => {
     setBusy(true);
     try {
-      const [list, accepted] = await Promise.all([
+      const [list, accepted, configuredAreas] = await Promise.all([
         axios.get(API + "/calendar/events", { params: { start: start.toISOString(), end: end.toISOString() } }),
-        axios.get(API + "/calendar/accepted-quotes")
+        axios.get(API + "/calendar/accepted-quotes"),
+        axios.get(API + "/calendar/work-areas"),
       ]);
       setEvents(list.data);
       setQuotes(accepted.data);
+      const areas = configuredAreas.data.length ? configuredAreas.data : [DEFAULT_WORK_AREA];
+      setWorkAreas(areas);
+      setResourceFilter((current) => areas.some((area) => area.area_id === current)
+        ? current : areas[0].area_id);
     } catch (error) {
       toast.error(error.response?.data?.detail || "Impossibile caricare la pianificazione.");
     } finally {
@@ -239,6 +256,58 @@ export const CalendarPage = () => {
     job_type: quote.job_type, client_name: quote.client_name, client_email: quote.client_email || "",
     vehicle_info: quote.vehicle_info || "",
   });
+  const openAreaManager = () => {
+    setAreaDrafts(workAreas.map((area) => ({ ...area })));
+    setAreasDialogOpen(true);
+  };
+  const addAreaDraft = () => {
+    setAreaDrafts((current) => [...current, {
+      area_id: null,
+      draft_id: `draft_${Date.now()}_${current.length}`,
+      name: "",
+    }]);
+  };
+  const removeAreaDraft = (index) => {
+    if (areaDrafts.length === 1) {
+      toast.error("Deve rimanere almeno un'area di lavoro.");
+      return;
+    }
+    setAreaDrafts((current) => current.filter((_, itemIndex) => itemIndex !== index));
+  };
+  const saveWorkAreas = async () => {
+    const areas = areaDrafts.map((area) => ({
+      area_id: area.area_id || null,
+      name: area.name.trim(),
+    }));
+    if (areas.some((area) => !area.name)) {
+      toast.error("Inserisci un nome per ogni area di lavoro.");
+      return;
+    }
+    if (new Set(areas.map((area) => area.name.toLowerCase())).size !== areas.length) {
+      toast.error("Ogni area di lavoro deve avere un nome diverso.");
+      return;
+    }
+    setSavingAreas(true);
+    try {
+      const response = await axios.put(API + "/calendar/work-areas", { areas });
+      const saved = response.data;
+      setWorkAreas(saved);
+      const nextSelected = saved.some((area) => area.area_id === resourceFilter)
+        ? resourceFilter : saved[0].area_id;
+      setResourceFilter(nextSelected);
+      setForm((current) => {
+        const selected = saved.find((area) => area.area_id === current.resource_id) || saved[0];
+        return { ...current, resource_id: selected.area_id, resource: selected.name };
+      });
+      setAreasDialogOpen(false);
+      toast.success("Aree di lavoro aggiornate");
+      await reload();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile aggiornare le aree di lavoro");
+    } finally {
+      setSavingAreas(false);
+    }
+  };
   const openNew = (starts, quote) => {
     const first = new Date(starts || new Date());
     first.setSeconds(0, 0);
@@ -285,7 +354,7 @@ export const CalendarPage = () => {
     try {
       await saveEvent(form);
       toast.success(editing ? "Appuntamento aggiornato" : "Appuntamento pianificato");
-      setResourceFilter(form.resource.trim());
+      setResourceFilter(form.resource_id || DEFAULT_WORK_AREA.area_id);
       setDialogOpen(false); await reload();
     } catch (error) { toast.error(error.response?.data?.detail || error.message || "Salvataggio non riuscito"); }
     finally { setSaving(false); }
@@ -337,7 +406,7 @@ export const CalendarPage = () => {
         ends_at: new Date(day.getTime() + length).toISOString(), client_email: updated.client_email || null,
         job_id: updated.job_id || null };
       await axios.put(API + "/calendar/events/" + event.event_id, payload);
-      toast.success("Lavoro spostato"); setFocusDate(day); setResourceFilter(event.resource); await reload();
+      toast.success("Lavoro spostato"); setFocusDate(day); setResourceFilter(eventAreaId(event)); await reload();
     } catch (error) { toast.error(error.response?.data?.detail || "Spostamento non riuscito"); }
     finally { setSaving(false); }
   };
@@ -379,6 +448,9 @@ export const CalendarPage = () => {
     const starts = dayAt(dayKey(focusDate));
     starts.setHours(9, 0, 0, 0);
     openNew(starts);
+    const selectedArea = workAreas.find((area) => area.area_id === resourceFilter) || workAreas[0];
+    setForm((current) => ({ ...current,
+      resource_id: selectedArea.area_id, resource: selectedArea.name }));
   };
   const eventStyle = (e, day) => {
     const firstVisible = new Date(day);
@@ -428,13 +500,12 @@ export const CalendarPage = () => {
             </div>
           </div>
           <div className="flex shrink-0 flex-wrap items-center gap-3 px-1 text-sm">
-            <Label htmlFor="calendar-resource">Postazione visualizzata</Label>
+            <Label htmlFor="calendar-resource" className="text-[15px]">Area visualizzata</Label>
             <select id="calendar-resource" value={resourceFilter}
               onChange={(e) => setResourceFilter(e.target.value)}
-              className="min-w-[175px] max-w-full rounded-md border bg-background p-2 text-sm">
-              {[...new Set(["Postazione 1", "Postazione 2", "Postazione 3",
-                ...events.map((event) => event.resource)])].map((name) =>
-                <option key={name} value={name}>{name}</option>)}
+              className="min-w-[175px] max-w-full rounded-md border bg-background p-2 text-[15px]">
+              {workAreas.map((area) =>
+                <option key={area.area_id} value={area.area_id}>{area.name}</option>)}
             </select>
           </div>
           <div ref={calendarScrollRef} onScroll={handleCalendarScroll}
@@ -455,7 +526,7 @@ export const CalendarPage = () => {
                   const first = new Date(event.starts_at), last = new Date(event.ends_at);
                   const visibleStart = new Date(d); visibleStart.setHours(HOUR_FIRST, 0, 0, 0);
                   const visibleEnd = new Date(d); visibleEnd.setHours(HOUR_LAST, 0, 0, 0);
-                  return event.resource === resourceFilter && first < visibleEnd && last > visibleStart;
+                  return eventAreaId(event) === resourceFilter && first < visibleEnd && last > visibleStart;
                 });
                 const isToday = key === dayKey(new Date());
                 const isSelected = key === dayKey(focusDate);
@@ -472,7 +543,9 @@ export const CalendarPage = () => {
                       const halfHours = Math.floor((e.clientY - rect.top) / 32);
                       const time = dayAt(key); time.setMinutes(HOUR_FIRST * 60 + Math.max(0, halfHours) * 30);
                       openNew(time);
-                      setForm((prev) => ({ ...prev, resource: resourceFilter }));
+                      const selectedArea = workAreas.find((area) => area.area_id === resourceFilter) || workAreas[0];
+                      setForm((prev) => ({ ...prev,
+                        resource_id: selectedArea.area_id, resource: selectedArea.name }));
                     }}>
                     {dayEvents.map((ev) => {
                       const startMoment = new Date(ev.starts_at);
@@ -515,7 +588,7 @@ export const CalendarPage = () => {
             <DialogTitle>{editing ? "Modifica appuntamento" : "Pianifica lavoro"}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="min-h-0 flex-1 touch-pan-y space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-4">
+            <div className="appointment-form-fields min-h-0 flex-1 touch-pan-y space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-4">
             <div><Label>Titolo *</Label><Input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Installazione PPF • Mario Rossi" /></div>
             <div><Label>Preventivo accettato (opzionale)</Label>
               <select className="w-full rounded-md border bg-background p-2 text-sm" value={form.job_id} onChange={(e) => {
@@ -530,7 +603,26 @@ export const CalendarPage = () => {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <DateTimeField label="Inizio" value={form.starts_at} onChange={(value) => setForm({ ...form, starts_at: value })} />
               <DateTimeField label="Fine" value={form.ends_at} onChange={(value) => setForm({ ...form, ends_at: value })} />
-              <div><Label>Postazione *</Label><Input required value={form.resource} onChange={(e) => setForm({ ...form, resource: e.target.value })} placeholder="Postazione 1" /></div>
+              <div className="min-w-0">
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="appointment-work-area">Area di lavoro *</Label>
+                  <button type="button" onClick={openAreaManager}
+                    className="text-sm font-medium text-primary hover:underline">
+                    Gestisci aree
+                  </button>
+                </div>
+                <select id="appointment-work-area" required value={form.resource_id || DEFAULT_WORK_AREA.area_id}
+                  onChange={(event) => {
+                    const area = workAreas.find((item) => item.area_id === event.target.value) || workAreas[0];
+                    setForm({ ...form, resource_id: area.area_id, resource: area.name });
+                  }}
+                  className="mt-1 w-full rounded-md border bg-background p-2.5 shadow-sm">
+                  {workAreas.map((area) => <option key={area.area_id} value={area.area_id}>{area.name}</option>)}
+                </select>
+                <p className="mt-1.5 text-sm leading-snug text-muted-foreground">
+                  Indica dove verrà eseguito il lavoro. Beside evita appuntamenti sovrapposti nella stessa area.
+                </p>
+              </div>
               <div><Label>Lavorazione</Label><select className="w-full rounded-md border p-2 bg-background text-sm" value={form.job_type}
                 onChange={(e) => setForm({ ...form, job_type: e.target.value })}>
                 {WORK_TYPES.map(([id, label]) => <option value={id} key={id}>{label}</option>)}
@@ -540,14 +632,17 @@ export const CalendarPage = () => {
             </div>
             <div><Label>Veicolo</Label><Input value={form.vehicle_info} onChange={(e) => setForm({ ...form, vehicle_info: e.target.value })} placeholder="Modello / targa / note" /></div>
             <div><Label>Note</Label><Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
-            <div><Label className="flex gap-2 items-center"><Clock className="w-4 h-4" />Promemoria email all'installatore</Label>
-              <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {REMINDERS.map(([minutes, label]) => <label key={minutes} className="flex items-center gap-2 border rounded p-2 text-xs">
-                  <input type="checkbox" checked={form.reminder_minutes.includes(minutes)} onChange={(e) => setForm((prev) => ({
-                    ...prev, reminder_minutes: e.target.checked ? [...prev.reminder_minutes, minutes] : prev.reminder_minutes.filter((x) => x !== minutes)
-                  }))} />{label}
-                </label>)}
-              </div><p className="text-xs text-muted-foreground mt-1">Fino a quattro avvisi. In questa fase vengono inviati all'email del titolare dell'azienda, non al cliente.</p>
+            <div><Label htmlFor="appointment-reminder" className="flex gap-2 items-center"><Clock className="w-4 h-4" />Promemoria email all'installatore</Label>
+              <select
+                id="appointment-reminder"
+                className="mt-2 w-full rounded-md border bg-background p-2.5 shadow-sm"
+                value={form.reminder_minutes[0] ?? ""}
+                onChange={(e) => setForm({ ...form, reminder_minutes: e.target.value === "" ? [] : [Number(e.target.value)] })}
+              >
+                <option value="">Nessun promemoria</option>
+                {REMINDERS.map(([minutes, label]) => <option value={minutes} key={minutes}>{label}</option>)}
+              </select>
+              <p className="mt-1.5 text-sm leading-snug text-muted-foreground">Verrà inviato all'email del titolare dell'azienda, non al cliente.</p>
             </div>
             </div>
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-background px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
@@ -558,6 +653,44 @@ export const CalendarPage = () => {
               <Button type="submit" className="ml-auto rounded-full px-5" disabled={saving}>{saving ? "Salvataggio..." : editing ? "Salva modifiche" : "Pianifica lavoro"}</Button>
             </div>
           </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={areasDialogOpen} onOpenChange={setAreasDialogOpen}>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] w-[calc(100vw-2rem)] max-w-md flex-col gap-0 overflow-hidden rounded-3xl p-0">
+          <DialogHeader className="shrink-0 border-b bg-background px-5 py-5 pr-14">
+            <DialogTitle>Gestisci aree di lavoro</DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-5 py-4">
+            <p className="text-[15px] leading-relaxed text-muted-foreground">
+              Crea un'area per ogni spazio in cui puoi eseguire una lavorazione contemporaneamente.
+            </p>
+            {areaDrafts.map((area, index) => <div key={area.area_id || area.draft_id || index}
+              className="flex items-center gap-2">
+              <Input
+                value={area.name}
+                onChange={(event) => setAreaDrafts((current) => current.map((item, itemIndex) =>
+                  itemIndex === index ? { ...item, name: event.target.value } : item))}
+                placeholder={index === 0 ? "Area principale" : "Es. Area PPF"}
+                aria-label={`Nome area ${index + 1}`}
+                className="h-11 text-[17px]"
+                maxLength={80}
+              />
+              <Button type="button" variant="outline" size="icon" className="h-11 w-11 shrink-0 rounded-full"
+                onClick={() => removeAreaDraft(index)} disabled={areaDrafts.length === 1}
+                aria-label={`Rimuovi ${area.name || `area ${index + 1}`}`}>
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>)}
+            <Button type="button" variant="outline" className="w-full rounded-full" onClick={addAreaDraft}
+              disabled={areaDrafts.length >= 12}>
+              <Plus className="mr-1 h-4 w-4" />Aggiungi area
+            </Button>
+          </div>
+          <div className="flex shrink-0 justify-end border-t bg-background px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+            <Button type="button" className="rounded-full px-5" onClick={saveWorkAreas} disabled={savingAreas}>
+              {savingAreas ? "Salvataggio..." : "Salva aree"}
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </div>

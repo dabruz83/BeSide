@@ -9,3 +9,14 @@
   min-height: 1.75rem;
   text-align: center;
 }
+
+.appointment-form-fields label {
+  font-size: 1.0625rem;
+}
+
+.appointment-form-fields input:not([type="checkbox"]):not(.calendar-date-time-input),
+.appointment-form-fields select,
+.appointment-form-fields textarea {
+  min-height: 2.75rem;
+  font-size: 1.0625rem;
+}

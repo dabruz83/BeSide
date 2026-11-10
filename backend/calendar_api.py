@@ -19,13 +19,26 @@ from pymongo.errors import DuplicateKeyError
 logger = logging.getLogger(__name__)
 REMINDER_CHOICES = frozenset({0, 5, 10, 20, 30, 60})
 MAX_EVENT_HOURS = 24 * 14
+DEFAULT_WORK_AREA_ID = "area_default"
+DEFAULT_WORK_AREA_NAME = "Area principale"
+LEGACY_DEFAULT_AREA_KEYS = ("postazione 1", "area principale", DEFAULT_WORK_AREA_ID)
+
+
+class CalendarWorkAreaInput(BaseModel):
+    area_id: Optional[str] = Field(default=None, max_length=80)
+    name: str = Field(min_length=1, max_length=80)
+
+
+class CalendarWorkAreasInput(BaseModel):
+    areas: List[CalendarWorkAreaInput] = Field(min_length=1, max_length=12)
 
 
 class CalendarEventInput(BaseModel):
     title: str = Field(min_length=1, max_length=180)
     starts_at: datetime
     ends_at: datetime
-    resource: str = Field(default="Postazione 1", min_length=1, max_length=80)
+    resource: str = Field(default=DEFAULT_WORK_AREA_NAME, min_length=1, max_length=80)
+    resource_id: Optional[str] = Field(default=DEFAULT_WORK_AREA_ID, max_length=80)
     job_id: Optional[str] = Field(default=None, max_length=100)
     job_type: str = Field(default="altro", max_length=80)
     client_name: str = Field(default="", max_length=200)
@@ -53,7 +66,8 @@ def _validated_event(data: CalendarEventInput) -> dict:
         "starts_at": starts.isoformat(),
         "ends_at": ends.isoformat(),
         "resource": data.resource.strip(),
-        "resource_key": data.resource.strip().casefold(),
+        "resource_id": data.resource_id.strip() if data.resource_id else None,
+        "resource_key": (data.resource_id or data.resource).strip().casefold(),
         "job_id": data.job_id or None,
         "job_type": data.job_type.strip() or "altro",
         "client_name": data.client_name.strip(),
@@ -62,6 +76,40 @@ def _validated_event(data: CalendarEventInput) -> dict:
         "notes": data.notes.strip(),
         "reminder_minutes": reminders,
     }
+
+
+def _default_work_areas() -> List[dict]:
+    return [{"area_id": DEFAULT_WORK_AREA_ID, "name": DEFAULT_WORK_AREA_NAME}]
+
+
+async def _load_work_areas(db, company_id: str) -> List[dict]:
+    company = await db.companies.find_one(
+        {"company_id": company_id}, {"_id": 0, "calendar_work_areas": 1},
+    )
+    configured = (company or {}).get("calendar_work_areas") or []
+    areas = [
+        {"area_id": str(item.get("area_id") or "").strip(),
+         "name": str(item.get("name") or "").strip()}
+        for item in configured
+        if item.get("area_id") and str(item.get("name") or "").strip()
+    ]
+    return areas or _default_work_areas()
+
+
+async def _resolve_work_area(db, company_id: str, event: dict) -> None:
+    areas = await _load_work_areas(db, company_id)
+    requested_id = event.get("resource_id")
+    requested_name = event.get("resource", "").casefold()
+    area = next((item for item in areas if item["area_id"] == requested_id), None)
+    if not area and requested_name in {"postazione 1", "area principale"}:
+        area = next((item for item in areas if item["area_id"] == DEFAULT_WORK_AREA_ID), areas[0])
+    if not area:
+        area = next((item for item in areas if item["name"].casefold() == requested_name), None)
+    if not area:
+        raise HTTPException(422, "Seleziona un'area di lavoro configurata")
+    event["resource_id"] = area["area_id"]
+    event["resource"] = area["name"]
+    event["resource_key"] = area["area_id"].casefold()
 
 
 async def _lock_company(db, company_id: str) -> str:
@@ -106,19 +154,94 @@ async def _check_job(db, company_scope, current_user: dict, job_id: Optional[str
 
 async def _check_overlap(db, company_id: str, event: dict,
                          editing_event_id: Optional[str] = None) -> None:
+    area_matches = [
+        {"resource_id": event["resource_id"]},
+        {"resource_key": event["resource_key"]},
+    ]
+    if event["resource_id"] == DEFAULT_WORK_AREA_ID:
+        area_matches.append({"resource_key": {"$in": list(LEGACY_DEFAULT_AREA_KEYS)}})
     overlap = await db.calendar_events.find_one({
         "company_id": company_id,
-        "resource_key": event["resource_key"], "status": "confirmed",
+        "$or": area_matches, "status": "confirmed",
         "starts_at": {"$lt": event["ends_at"]},
         "ends_at": {"$gt": event["starts_at"]},
         "event_id": {"$ne": editing_event_id or ""},
     }, {"_id": 0, "event_id": 1})
     if overlap:
-        raise HTTPException(409, "Fascia oraria già occupata per questa postazione")
+        raise HTTPException(409, "Fascia oraria già occupata per questa area di lavoro")
 
 
 def register_calendar_routes(router, db, company_scope, require_company_roles):
     roles = require_company_roles("owner", "admin", "member")
+    manage_roles = require_company_roles("owner", "admin")
+
+    @router.get("/calendar/work-areas")
+    async def calendar_work_areas(current_user: dict = Depends(roles)):
+        return await _load_work_areas(db, current_user["company_id"])
+
+    @router.put("/calendar/work-areas")
+    async def update_calendar_work_areas(
+        data: CalendarWorkAreasInput,
+        current_user: dict = Depends(manage_roles),
+    ):
+        company_id = current_user["company_id"]
+        current = await _load_work_areas(db, company_id)
+        current_by_id = {item["area_id"]: item for item in current}
+        names = set()
+        updated = []
+        for item in data.areas:
+            name = " ".join(item.name.split())
+            name_key = name.casefold()
+            if name_key in names:
+                raise HTTPException(422, "Ogni area di lavoro deve avere un nome diverso")
+            names.add(name_key)
+            requested_id = (item.area_id or "").strip()
+            area_id = requested_id if requested_id in current_by_id else "area_" + uuid.uuid4().hex[:16]
+            if requested_id == DEFAULT_WORK_AREA_ID:
+                area_id = DEFAULT_WORK_AREA_ID
+            updated.append({"area_id": area_id, "name": name})
+
+        updated_ids = {item["area_id"] for item in updated}
+        removed = [item for item in current if item["area_id"] not in updated_ids]
+        now = datetime.now(timezone.utc).isoformat()
+        for area in removed:
+            matches = [{"resource_id": area["area_id"]}]
+            if area["area_id"] == DEFAULT_WORK_AREA_ID:
+                matches.append({"resource_key": {"$in": list(LEGACY_DEFAULT_AREA_KEYS)}})
+            future = await db.calendar_events.find_one({
+                "company_id": company_id, "status": "confirmed",
+                "ends_at": {"$gt": now}, "$or": matches,
+            }, {"_id": 0, "event_id": 1})
+            if future:
+                raise HTTPException(
+                    409,
+                    f"{area['name']} ha appuntamenti futuri: spostali prima di rimuoverla",
+                )
+
+        for area in updated:
+            previous = current_by_id.get(area["area_id"])
+            if not previous or previous["name"] == area["name"]:
+                continue
+            matches = [{"resource_id": area["area_id"]}]
+            if area["area_id"] == DEFAULT_WORK_AREA_ID:
+                matches.append({"resource_key": {"$in": list(LEGACY_DEFAULT_AREA_KEYS)}})
+            await db.calendar_events.update_many(
+                {"company_id": company_id, "$or": matches},
+                {"$set": {
+                    "resource_id": area["area_id"],
+                    "resource": area["name"],
+                    "resource_key": area["area_id"].casefold(),
+                    "updated_at": now,
+                }},
+            )
+
+        result = await db.companies.update_one(
+            {"company_id": company_id},
+            {"$set": {"calendar_work_areas": updated, "updated_at": now}},
+        )
+        if getattr(result, "matched_count", 0) == 0:
+            raise HTTPException(404, "Azienda non trovata")
+        return updated
 
     @router.get("/calendar/events")
     async def calendar_events(
@@ -161,6 +284,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
                                     current_user: dict = Depends(roles)):
         value = _validated_event(data)
         company_id = current_user["company_id"]
+        await _resolve_work_area(db, company_id, value)
         lock = await _lock_company(db, company_id)
         try:
             quote = await _check_job(db, company_scope, current_user, value["job_id"])
@@ -187,6 +311,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
                                     current_user: dict = Depends(roles)):
         value = _validated_event(data)
         company_id = current_user["company_id"]
+        await _resolve_work_area(db, company_id, value)
         lock = await _lock_company(db, company_id)
         try:
             old = await db.calendar_events.find_one({
@@ -205,7 +330,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
             value["revision"] = old.get("revision", 1) + 1
             value["updated_at"] = datetime.now(timezone.utc).isoformat()
             await db.calendar_events.update_one(
-                {"_id": old["_id"], "status": "confirmed"},
+                {"company_id": company_id, "event_id": event_id, "status": "confirmed"},
                 {"$set": value},
             )
             return {**{k: v for k, v in old.items()
@@ -227,7 +352,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
                 raise HTTPException(404, "Appuntamento non trovato")
             now = datetime.now(timezone.utc).isoformat()
             await db.calendar_events.update_one(
-                {"_id": event["_id"], "status": "confirmed"},
+                {"company_id": company_id, "event_id": event_id, "status": "confirmed"},
                 {"$set": {"status": "cancelled", "cancelled_at": now,
                           "updated_at": now},
                  "$inc": {"revision": 1}},
@@ -296,7 +421,7 @@ async def run_calendar_reminder_worker(db, send_email, every_seconds: int = 45):
                         f"<p><strong>{title}</strong></p>"
                         f"<p>Data e ora: {safe(date_text)} (Italia)</p>"
                         f"<p>Cliente: {safe(event.get('client_name') or '—')}</p>"
-                        f"<p>Postazione: {safe(event.get('resource') or '—')}</p>"
+                        f"<p>Area di lavoro: {safe(event.get('resource') or '—')}</p>"
                         "<p>Apri Beside → Pianificazione per i dettagli.</p>"
                     )
                     try:

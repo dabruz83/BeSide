@@ -11,12 +11,13 @@ from test_deployment import InMemoryDatabase
 import server
 
 
-def model(*, start_hour=9, end_hour=11, resource="Postazione 1", job_id=None):
+def model(*, start_hour=9, end_hour=11, resource="Area principale",
+          resource_id="area_default", job_id=None):
     start = datetime(2026, 11, 18, start_hour, tzinfo=timezone.utc)
     end = datetime(2026, 11, 18, end_hour, tzinfo=timezone.utc)
     return calendar_api.CalendarEventInput(
         title="Installazione PPF",
-        starts_at=start, ends_at=end, resource=resource,
+        starts_at=start, ends_at=end, resource=resource, resource_id=resource_id,
         job_id=job_id, job_type="ppf_full", client_name="Cliente test",
         reminder_minutes=[0, 10, 30],
     )
@@ -25,7 +26,7 @@ def model(*, start_hour=9, end_hour=11, resource="Postazione 1", job_id=None):
 def test_calendar_dates_and_reminders_are_validated():
     value = calendar_api._validated_event(model())
     assert value["starts_at"] == "2026-11-18T09:00:00+00:00"
-    assert value["resource_key"] == "postazione 1"
+    assert value["resource_key"] == "area_default"
     assert value["reminder_minutes"] == [0, 10, 30]
     with pytest.raises(server.HTTPException) as wrong_order:
         calendar_api._validated_event(model(start_hour=11, end_hour=9))
@@ -61,6 +62,12 @@ def test_calendar_crud_respects_company_slots_and_accepted_quote():
     update = endpoint("/calendar/events/{event_id}", "PUT")
     cancel = endpoint("/calendar/events/{event_id}", "DELETE")
     accepted = endpoint("/calendar/accepted-quotes", "GET")
+    work_areas = endpoint("/calendar/work-areas", "GET")
+    save_work_areas = endpoint("/calendar/work-areas", "PUT")
+    db.companies.documents.extend([
+        {"company_id": "tenant_1", "name": "Tenant 1"},
+        {"company_id": "tenant_2", "name": "Tenant 2"},
+    ])
     db.jobs.documents.extend([
         {"job_id": "accepted_1", "company_id": "tenant_1", "user_id": "owner_1",
          "is_quote": True, "quote_status": "accepted",
@@ -74,6 +81,17 @@ def test_calendar_crud_respects_company_slots_and_accepted_quote():
     ])
 
     async def exercise():
+        assert await work_areas(current_user=owner) == [
+            {"area_id": "area_default", "name": "Area principale"},
+        ]
+        configured = await save_work_areas(
+            calendar_api.CalendarWorkAreasInput(areas=[
+                {"area_id": "area_default", "name": "Area principale"},
+                {"name": "Area PPF"},
+            ]),
+            current_user=owner,
+        )
+        area_ppf_id = configured[1]["area_id"]
         assert len(await accepted(current_user=owner)) == 1
         first = await create(model(job_id="accepted_1"), current_user=owner)
         assert first["job_id"] == "accepted_1"
@@ -84,15 +102,16 @@ def test_calendar_crud_respects_company_slots_and_accepted_quote():
         second_company = await create(model(), current_user=other)
         assert second_company["company_id"] == "tenant_2"
 
-        # A collision in the same company's physical postazione must be denied.
+        # A collision in the same company's physical area must be denied.
         with pytest.raises(server.HTTPException) as clash:
             await create(model(start_hour=10, end_hour=12), current_user=owner)
         assert clash.value.status_code == 409
 
-        # Different postazioni are independent concurrent resources.
+        # Different work areas are independent concurrent resources.
         second_lane = await create(model(start_hour=10, end_hour=12,
-                                         resource="Postazione 2"), current_user=owner)
-        assert second_lane["resource"] == "Postazione 2"
+                                         resource="Area PPF", resource_id=area_ppf_id),
+                                   current_user=owner)
+        assert second_lane["resource"] == "Area PPF"
         assert len(await listing(
             start=datetime(2026, 11, 18, tzinfo=timezone.utc),
             end=datetime(2026, 11, 19, tzinfo=timezone.utc),
@@ -119,8 +138,24 @@ def test_calendar_crud_respects_company_slots_and_accepted_quote():
         recreated = await create(model(job_id="accepted_1"), current_user=owner)
         assert recreated["event_id"] != first["event_id"]
         with pytest.raises(server.HTTPException) as duplicate_job:
-            await create(model(start_hour=14, end_hour=16, resource="Postazione 3",
+            await create(model(start_hour=14, end_hour=16, resource="Area PPF",
+                               resource_id=area_ppf_id,
                                job_id="accepted_1"), current_user=owner)
         assert duplicate_job.value.status_code == 409
+
+        renamed = await save_work_areas(
+            calendar_api.CalendarWorkAreasInput(areas=[
+                {"area_id": "area_default", "name": "Area principale"},
+                {"area_id": area_ppf_id, "name": "Area wrapping"},
+            ]),
+            current_user=owner,
+        )
+        assert renamed[1]["name"] == "Area wrapping"
+        renamed_events = await listing(
+            start=datetime(2026, 11, 18, tzinfo=timezone.utc),
+            end=datetime(2026, 11, 19, tzinfo=timezone.utc),
+            current_user=owner,
+        )
+        assert any(event["resource"] == "Area wrapping" for event in renamed_events)
 
     asyncio.run(exercise())
