@@ -247,13 +247,12 @@ export const CalendarPage = () => {
 
       <Card>
         <CardContent className="pt-4 space-y-3">
-          <div className="flex flex-wrap gap-2 justify-between items-center">
-            <div className="flex gap-1 items-center">
-              <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
-              <Button variant="outline" size="sm" onClick={() => setFocusDate(new Date())}>Oggi</Button>
-              <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
-            </div>
-            <h2 className="font-semibold text-sm sm:text-base">{calendarRange}</h2>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
+            <h2 className="min-w-0 flex-1 text-center font-semibold text-sm sm:text-base">{calendarRange}</h2>
+            <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
+          </div>
+          <div className="flex justify-center">
             <div className="flex gap-1">
               <Button size="sm" variant={view === "day" ? "default" : "outline"} onClick={() => setView("day")}>Giorno</Button>
               <Button size="sm" variant={view === "week" ? "default" : "outline"} onClick={() => setView("week")}>Settimana</Button>
@@ -273,8 +272,8 @@ export const CalendarPage = () => {
           <div className="max-h-[65dvh] overflow-auto overscroll-contain border rounded-lg"
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
-              <div className="sticky left-0 z-30 w-14 shrink-0 bg-background">
-                <div className="sticky top-0 h-12 border-b bg-muted/50" />
+              <div className="sticky left-0 z-[60] w-14 shrink-0 bg-background">
+                <div className="sticky top-0 z-[60] h-12 border-b bg-muted/50" />
                 <div className="relative" style={{ height: TRACK_HEIGHT }}>
                   {Array.from({ length: HOUR_LAST - HOUR_FIRST + 1 }, (_, i) =>
                     <div key={i} className="absolute right-1 text-xs text-muted-foreground -translate-y-1/2"
@@ -289,8 +288,13 @@ export const CalendarPage = () => {
                   const visibleEnd = new Date(d); visibleEnd.setHours(HOUR_LAST, 0, 0, 0);
                   return event.resource === resourceFilter && first < visibleEnd && last > visibleStart;
                 });
-                return <div key={key} className={"shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
-                  <div className={"sticky top-0 z-20 h-12 border-b px-2 flex items-center justify-center text-sm font-semibold " + (key === dayKey(new Date()) ? "bg-primary/10 text-primary" : "bg-muted/30")}>{dayLabel(d)}</div>
+                const isToday = key === dayKey(new Date());
+                const isSelected = key === dayKey(focusDate);
+                return <div key={key} className={"relative isolate shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
+                  <div className={"sticky top-0 z-50 h-12 border-b px-2 flex flex-col items-center justify-center text-xs font-semibold leading-tight text-primary " + (isToday ? "bg-sky-200" : "bg-sky-100")}>
+                    <span className="uppercase">{new Intl.DateTimeFormat("it-IT", { weekday: "short" }).format(d)}</span>
+                    <span className={"flex h-6 min-w-6 items-center justify-center rounded-full text-sm " + (isSelected ? "bg-primary text-primary-foreground" : "")}>{d.getDate()}</span>
+                  </div>
                   <div data-calendar-day={key} className="relative cursor-crosshair"
                     style={{ height: TRACK_HEIGHT, backgroundImage: "repeating-linear-gradient(to bottom, transparent 0, transparent 31px, hsl(var(--border)) 31px, hsl(var(--border)) 32px)", backgroundSize: "100% 32px" }}
                     onClick={(e) => {
