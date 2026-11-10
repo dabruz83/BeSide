@@ -236,7 +236,8 @@ CASH_PLAN_FORECAST_METHODS = ["manual", "average_3", "average_6", "copy_previous
 BUSINESS_TYPES = ["ditta_individuale", "forfettario", "societa_persone", "societa_capitali"]
 
 # Job Types
-JOB_TYPES = ["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint", "upholstery"]
+JOB_TYPES = ["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint", "upholstery",
+             "interior_decor", "exterior_decor", "altro"]
 
 # Vehicle Types
 VEHICLE_TYPES = ["sedan", "suv", "van", "truck"]
@@ -464,6 +465,7 @@ class OnboardingProfileUpdate(BaseModel):
 class JobCreate(BaseModel):
     client_name: str = Field(min_length=1, max_length=200)
     client_email: Optional[str] = None
+    client_phone: Optional[str] = Field(default=None, max_length=40)
     job_type: str = Field(max_length=50)
     vehicle_type: str = Field(max_length=50)
     vehicle_info: Optional[str] = Field(default=None, max_length=500)
@@ -480,6 +482,7 @@ class JobResponse(BaseModel):
     user_id: str
     client_name: str
     client_email: Optional[str] = None
+    client_phone: Optional[str] = None
     job_type: str
     vehicle_type: str
     vehicle_info: Optional[str] = None
@@ -3841,6 +3844,7 @@ async def create_job(
         "job_id": job_id,
         "client_name": job_data.client_name,
         "client_email": job_data.client_email,
+        "client_phone": job_data.client_phone,
         "job_type": job_data.job_type,
         "vehicle_type": job_data.vehicle_type,
         "vehicle_info": job_data.vehicle_info,
@@ -4019,11 +4023,24 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks
             {"_id": 0, "email": 1})
         if owner and owner.get("email"):
             calendar_url = f"{FRONTEND_PUBLIC_URL}/calendar?job={job['job_id']}"
+            job_labels = {
+                "ppf_full": "PPF completo", "ppf_partial": "PPF parziale",
+                "wrap_decorative": "Wrapping auto", "wrap_commercial": "Wrapping commerciale",
+                "tint": "Vetri auto", "upholstery": "Tappezzeria",
+                "interior_decor": "Interior decor", "exterior_decor": "Decorazioni esterne",
+                "altro": "Altro",
+            }
+            amount = f"{float(job.get('quote_amount') or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             background_tasks.add_task(
                 send_email_sendgrid, owner["email"], "Preventivo accettato • Beside",
-                "<p>Un cliente ha accettato il tuo preventivo.</p>"
-                f"<p>Cliente: <strong>{html.escape(job['client_name'])}</strong></p>"
-                f'<p><a href="{html.escape(calendar_url, quote=True)}">Pianifica lavoro</a></p>',
+                "<div style='font-family:Arial,sans-serif;text-align:center'>"
+                "<div style='font-size:48px;color:#16a34a'>✓</div>"
+                "<h2>Preventivo accettato</h2>"
+                f"<p><strong>{html.escape(job['client_name'])}</strong><br>"
+                f"{html.escape(job_labels.get(job.get('job_type'), 'Lavoro'))}<br>"
+                f"<strong>€ {amount}</strong></p>"
+                f'<p><a href="{html.escape(calendar_url, quote=True)}" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#1e3a5f;color:white;text-decoration:none">Aggiungi al calendario</a></p>'
+                "</div>",
             )
 
     # If accepted, add to lead sources
@@ -4510,10 +4527,13 @@ async def get_tax_deadlines(current_user: Dict = Depends(get_current_user)):
 JOB_TYPE_LABELS_IT = {
     "ppf_full": "PPF Completo",
     "ppf_partial": "PPF Parziale",
-    "wrap_decorative": "Wrap Decorativo",
-    "wrap_commercial": "Wrap Commerciale",
-    "tint": "Oscuramento Vetri",
-    "upholstery": "Tappezzeria"
+    "wrap_decorative": "Wrapping Auto",
+    "wrap_commercial": "Wrapping Commerciale",
+    "tint": "Vetri Auto",
+    "upholstery": "Tappezzeria",
+    "interior_decor": "Interior decor",
+    "exterior_decor": "Decorazioni esterne",
+    "altro": "Altro"
 }
 
 VEHICLE_TYPE_LABELS_IT = {

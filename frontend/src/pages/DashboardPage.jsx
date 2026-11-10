@@ -29,10 +29,13 @@ const formatCurrency = (amount) => {
 const JOB_TYPE_LABELS = {
   ppf_full: "PPF Completo",
   ppf_partial: "PPF Parziale",
-  wrap_decorative: "Wrap Decorativo",
-  wrap_commercial: "Wrap Commerciale",
-  tint: "Oscuramento Vetri",
-  upholstery: "Tappezzeria"
+  wrap_decorative: "Wrapping Auto",
+  wrap_commercial: "Wrapping Commerciale",
+  tint: "Vetri Auto",
+  upholstery: "Tappezzeria",
+  interior_decor: "Interior Decor",
+  exterior_decor: "Decorazioni Esterne",
+  altro: "Altro"
 };
 
 const LEAD_SOURCE_LABELS = {

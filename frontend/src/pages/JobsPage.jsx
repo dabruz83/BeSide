@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
 import { 
@@ -24,7 +25,10 @@ import {
   ExternalLink,
   CheckCircle2,
   Clock,
-  XCircle
+  XCircle,
+  Mail,
+  MessageCircle,
+  Phone
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
@@ -39,11 +43,14 @@ const formatCurrency = (amount) => {
 const JOB_TYPES = [
   { value: "ppf_full", label: "PPF Completo" },
   { value: "ppf_partial", label: "PPF Parziale" },
-  { value: "wrap_decorative", label: "Wrap Decorativo" },
-  { value: "wrap_commercial", label: "Wrap Commerciale" },
-  { value: "tint", label: "Oscuramento Vetri" },
-  { value: "upholstery", label: "Tappezzeria" }
+  { value: "wrap_decorative", label: "Wrapping Auto" },
+  { value: "tint", label: "Vetri Auto" },
+  { value: "interior_decor", label: "Interior Decor" },
+  { value: "exterior_decor", label: "Decorazioni Esterne" },
+  { value: "altro", label: "Altro" }
 ];
+const LEGACY_JOB_TYPE_LABELS = { wrap_commercial: "Wrapping Commerciale", upholstery: "Tappezzeria" };
+const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint"]);
 
 const VEHICLE_TYPES = [
   { value: "sedan", label: "Berlina" },
@@ -78,6 +85,7 @@ export const JobsPage = () => {
   const [formData, setFormData] = useState({
     client_name: "",
     client_email: "",
+    client_phone: "",
     job_type: "",
     vehicle_type: "",
     vehicle_info: "",
@@ -128,6 +136,7 @@ export const JobsPage = () => {
     try {
       const payload = {
         ...formData,
+        vehicle_type: AUTOMOTIVE_TYPES.has(formData.job_type) ? formData.vehicle_type : "not_applicable",
         quote_amount: parseFloat(formData.quote_amount) || 0,
         hours_worked: parseFloat(formData.hours_worked) || 0,
         materials_cost: parseFloat(formData.materials_cost) || 0,
@@ -147,6 +156,7 @@ export const JobsPage = () => {
       setFormData({
         client_name: "",
         client_email: "",
+        client_phone: "",
         job_type: "",
         vehicle_type: "",
         vehicle_info: "",
@@ -178,12 +188,22 @@ export const JobsPage = () => {
     }
   };
 
+  const contactQuote = (channel, quote) => {
+    const phone = (quote.client_phone || "").replace(/[^\d+]/g, "");
+    const whatsappPhone = phone.startsWith("+") ? phone.slice(1) : phone.startsWith("39") ? phone : `39${phone}`;
+    const subject = encodeURIComponent(`Preventivo ${quote.client_name} • Beside`);
+    const message = encodeURIComponent(`Ciao ${quote.client_name}, ti contatto in merito al preventivo accettato.`);
+    if (channel === "whatsapp" && phone) window.location.href = `https://wa.me/${whatsappPhone}?text=${message}`;
+    if (channel === "phone" && phone) window.location.href = `tel:${phone}`;
+    if (channel === "email" && quote.client_email) window.location.href = `mailto:${quote.client_email}?subject=${subject}&body=${message}`;
+  };
+
   const copyQuoteLink = (link) => {
     navigator.clipboard.writeText(link);
     toast.success("Link copiato!");
   };
 
-  const getJobTypeLabel = (type) => JOB_TYPES.find(j => j.value === type)?.label || type;
+  const getJobTypeLabel = (type) => JOB_TYPES.find(j => j.value === type)?.label || LEGACY_JOB_TYPE_LABELS[type] || type;
   const getVehicleTypeLabel = (type) => VEHICLE_TYPES.find(v => v.value === type)?.label || type;
 
   const chartDataByJobType = analytics?.by_job_type?.map((item, index) => ({
@@ -268,15 +288,19 @@ export const JobsPage = () => {
                 </div>
                 
                 {formData.is_quote && (
-                  <div className="space-y-2">
-                    <Label htmlFor="client_email">Email Cliente</Label>
-                    <Input
-                      id="client_email"
-                      type="email"
-                      value={formData.client_email}
-                      onChange={(e) => setFormData({ ...formData, client_email: e.target.value })}
-                      placeholder="mario@email.it"
-                    />
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="client_phone">Telefono Cliente</Label>
+                      <Input id="client_phone" type="tel" value={formData.client_phone}
+                        onChange={(e) => setFormData({ ...formData, client_phone: e.target.value })}
+                        placeholder="+39 333 1234567" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="client_email">Email Cliente</Label>
+                      <Input id="client_email" type="email" value={formData.client_email}
+                        onChange={(e) => setFormData({ ...formData, client_email: e.target.value })}
+                        placeholder="mario@email.it" />
+                    </div>
                   </div>
                 )}
               </div>
@@ -286,7 +310,10 @@ export const JobsPage = () => {
                   <Label>Tipo Lavoro *</Label>
                   <Select
                     value={formData.job_type}
-                    onValueChange={(value) => setFormData({ ...formData, job_type: value })}
+                    onValueChange={(value) => setFormData({ ...formData, job_type: value,
+                      vehicle_type: AUTOMOTIVE_TYPES.has(value)
+                        ? (VEHICLE_TYPES.some((item) => item.value === formData.vehicle_type) ? formData.vehicle_type : "")
+                        : "not_applicable" })}
                     required
                   >
                     <SelectTrigger data-testid="job-type-select">
@@ -300,7 +327,7 @@ export const JobsPage = () => {
                   </Select>
                 </div>
                 
-                <div className="space-y-2">
+                {AUTOMOTIVE_TYPES.has(formData.job_type) && <div className="space-y-2">
                   <Label>Tipo Veicolo *</Label>
                   <Select
                     value={formData.vehicle_type}
@@ -316,16 +343,16 @@ export const JobsPage = () => {
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </div>}
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="vehicle_info">Info Veicolo</Label>
+                <Label htmlFor="vehicle_info">{AUTOMOTIVE_TYPES.has(formData.job_type) ? "Info Veicolo" : "Dettagli del lavoro"}</Label>
                 <Input
                   id="vehicle_info"
                   value={formData.vehicle_info}
                   onChange={(e) => setFormData({ ...formData, vehicle_info: e.target.value })}
-                  placeholder="Es: BMW X5 2023 Nero"
+                  placeholder={AUTOMOTIVE_TYPES.has(formData.job_type) ? "Es: BMW X5 2023 Nero" : "Es: vetrina, parete reception o facciata"}
                 />
               </div>
               
@@ -583,9 +610,27 @@ export const JobsPage = () => {
                         </div>
                         
                         {quote.quote_status === "accepted" && (
-                          <Button size="sm" onClick={() => navigate("/calendar?job=" + encodeURIComponent(quote.job_id))}>
-                            Pianifica lavoro
-                          </Button>
+                          <>
+                            <Button size="sm" className="rounded-full" onClick={() => navigate("/calendar?job=" + encodeURIComponent(quote.job_id))}>
+                              Aggiungi al calendario
+                            </Button>
+                            <DropdownMenu>
+                              <DropdownMenuTrigger asChild>
+                                <Button size="sm" variant="outline" className="rounded-full">Contatta</Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end" className="min-w-[210px] rounded-xl p-2">
+                                <DropdownMenuItem disabled={!quote.client_phone} onSelect={() => contactQuote("whatsapp", quote)} className="rounded-lg py-3">
+                                  <MessageCircle className="mr-2 h-4 w-4" />WhatsApp
+                                </DropdownMenuItem>
+                                <DropdownMenuItem disabled={!quote.client_phone} onSelect={() => contactQuote("phone", quote)} className="rounded-lg py-3">
+                                  <Phone className="mr-2 h-4 w-4" />Chiama
+                                </DropdownMenuItem>
+                                <DropdownMenuItem disabled={!quote.client_email} onSelect={() => contactQuote("email", quote)} className="rounded-lg py-3">
+                                  <Mail className="mr-2 h-4 w-4" />Email
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </>
                         )}
                         {quote.quote_link && (
                           <div className="flex items-center gap-2">

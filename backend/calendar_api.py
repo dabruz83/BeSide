@@ -43,7 +43,12 @@ class CalendarEventInput(BaseModel):
     job_type: str = Field(default="altro", max_length=80)
     client_name: str = Field(default="", max_length=200)
     client_email: Optional[EmailStr] = None
+    client_phone: str = Field(default="", max_length=40)
     vehicle_info: str = Field(default="", max_length=200)
+    vehicle_make: str = Field(default="", max_length=100)
+    vehicle_model: str = Field(default="", max_length=100)
+    vehicle_plate: str = Field(default="", max_length=30)
+    work_subject: str = Field(default="", max_length=300)
     notes: str = Field(default="", max_length=2000)
     reminder_minutes: List[int] = Field(default_factory=lambda: [30])
 
@@ -72,7 +77,12 @@ def _validated_event(data: CalendarEventInput) -> dict:
         "job_type": data.job_type.strip() or "altro",
         "client_name": data.client_name.strip(),
         "client_email": str(data.client_email).strip().lower() if data.client_email else None,
+        "client_phone": data.client_phone.strip(),
         "vehicle_info": data.vehicle_info.strip(),
+        "vehicle_make": data.vehicle_make.strip(),
+        "vehicle_model": data.vehicle_model.strip(),
+        "vehicle_plate": data.vehicle_plate.strip().upper(),
+        "work_subject": data.work_subject.strip(),
         "notes": data.notes.strip(),
         "reminder_minutes": reminders,
     }
@@ -268,6 +278,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
         quotes = await db.jobs.find(company_scope(
             current_user, is_quote=True, quote_status="accepted"),
             {"_id": 0, "job_id": 1, "client_name": 1, "client_email": 1,
+             "client_phone": 1,
              "vehicle_info": 1, "job_type": 1, "quote_amount": 1,
              "quote_accepted_at": 1}).sort("quote_accepted_at", -1).limit(300).to_list(300)
         if not quotes:
@@ -291,6 +302,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
             if quote:
                 value["client_name"] = quote.get("client_name") or value["client_name"]
                 value["client_email"] = quote.get("client_email") or value["client_email"]
+                value["client_phone"] = quote.get("client_phone") or value["client_phone"]
                 value["job_type"] = quote.get("job_type") or value["job_type"]
                 value["vehicle_info"] = quote.get("vehicle_info") or value["vehicle_info"]
             await _check_overlap(db, company_id, value)
@@ -324,6 +336,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
             if quote:
                 value["client_name"] = quote.get("client_name") or value["client_name"]
                 value["client_email"] = quote.get("client_email") or value["client_email"]
+                value["client_phone"] = quote.get("client_phone") or value["client_phone"]
                 value["job_type"] = quote.get("job_type") or value["job_type"]
                 value["vehicle_info"] = quote.get("vehicle_info") or value["vehicle_info"]
             await _check_overlap(db, company_id, value, editing_event_id=event_id)

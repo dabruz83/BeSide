@@ -9,8 +9,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
-import { CalendarDays, CalendarRange, Clock, FileCheck2, GripVertical, Plus, Trash2, Download } from "lucide-react";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { CalendarDays, CalendarRange, CheckCircle2, Clock, Download, FileCheck2, GripVertical, Mail, MessageCircle, Phone, Plus, Trash2 } from "lucide-react";
 
 const HOUR_FIRST = 7;
 const HOUR_LAST = 20;
@@ -21,10 +21,22 @@ const WINDOW_EXTENSION_DAYS = 14;
 const DEFAULT_WORK_AREA = { area_id: "area_default", name: "Area principale" };
 const WORK_TYPES = [
   ["ppf_full", "PPF completo"], ["ppf_partial", "PPF parziale"],
-  ["wrap_decorative", "Wrap decorativo"], ["wrap_commercial", "Wrap commerciale"],
-  ["tint", "Oscuramento vetri"], ["upholstery", "Tappezzeria"],
+  ["wrap_decorative", "Wrapping auto"], ["tint", "Vetri auto"],
+  ["interior_decor", "Interior decor"], ["exterior_decor", "Decorazioni esterne"],
   ["altro", "Altro"]
 ];
+const WORK_TYPE_LABELS = Object.fromEntries([
+  ...WORK_TYPES,
+  ["wrap_commercial", "Wrapping commerciale"],
+  ["upholstery", "Tappezzeria"],
+]);
+const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint"]);
+const WORK_SUBJECT_FIELDS = {
+  interior_decor: ["Ambiente / oggetto", "Es. parete reception, arredo o pannello"],
+  exterior_decor: ["Lavorazione esterna", "Es. vetrina, facciata o insegna"],
+  altro: ["Dettagli del lavoro", "Descrivi brevemente cosa verrà lavorato"],
+  upholstery: ["Oggetto da rivestire", "Descrivi l'elemento da lavorare"],
+};
 const REMINDERS = [[0, "All'orario dell'evento"], [5, "5 minuti prima"], [10, "10 minuti prima"],
   [20, "20 minuti prima"], [30, "30 minuti prima"], [60, "1 ora prima"]];
 const pad = (n) => String(n).padStart(2, "0");
@@ -38,7 +50,10 @@ const dayAt = (s) => new Date(s + "T00:00:00");
 const addDays = (d, n) => { const v = new Date(d); v.setDate(v.getDate() + n); return v; };
 const weekStart = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - (x.getDay() + 6) % 7); return x; };
 const dayLabel = (d) => new Intl.DateTimeFormat("it-IT", { weekday: "short", day: "numeric", month: "short" }).format(d);
-const typeName = (code) => WORK_TYPES.find((x) => x[0] === code)?.[1] || "Lavoro";
+const typeName = (code) => WORK_TYPE_LABELS[code] || "Lavoro";
+const formatCurrency = (amount) => new Intl.NumberFormat("it-IT", {
+  style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 2,
+}).format(Number(amount) || 0);
 const minutesOf = (date) => date.getHours() * 60 + date.getMinutes();
 const eventAreaId = (event) => event.resource_id ||
   (["postazione 1", "area principale"].includes((event.resource || "").trim().toLowerCase())
@@ -50,12 +65,16 @@ const defaultForm = () => {
   return { title: "", starts_at: localDateTime(base), ends_at: localDateTime(end),
     resource: DEFAULT_WORK_AREA.name, resource_id: DEFAULT_WORK_AREA.area_id,
     job_id: "", job_type: "altro", client_name: "",
-    client_email: "", vehicle_info: "", notes: "", reminder_minutes: [30] };
+    client_email: "", client_phone: "", quote_amount: null, vehicle_info: "",
+    vehicle_make: "", vehicle_model: "", vehicle_plate: "", work_subject: "",
+    notes: "", reminder_minutes: [30] };
 };
 const eventToForm = (e) => ({ ...e, starts_at: localDateTime(new Date(e.starts_at)),
   ends_at: localDateTime(new Date(e.ends_at)), job_id: e.job_id || "",
   resource: eventAreaId(e) === DEFAULT_WORK_AREA.area_id ? DEFAULT_WORK_AREA.name : e.resource,
-  resource_id: eventAreaId(e), client_email: e.client_email || "",
+  resource_id: eventAreaId(e), client_email: e.client_email || "", client_phone: e.client_phone || "",
+  vehicle_make: e.vehicle_make || "", vehicle_model: e.vehicle_model || "",
+  vehicle_plate: e.vehicle_plate || "", work_subject: e.work_subject || "",
   reminder_minutes: e.reminder_minutes || [] });
 const escIcs = (v) => String(v || "").replace(/\\/g, "\\\\").replace(/\r?\n/g, "\\n").replace(/[,;]/g, "\\$&");
 const icsDate = (v) => new Date(v).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
@@ -126,6 +145,7 @@ export const CalendarPage = () => {
   const [areaDrafts, setAreaDrafts] = useState([DEFAULT_WORK_AREA]);
   const [savingAreas, setSavingAreas] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [acceptedQuote, setAcceptedQuote] = useState(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(defaultForm);
@@ -254,8 +274,18 @@ export const CalendarPage = () => {
   const fillQuote = (current, quote) => ({
     ...current, job_id: quote.job_id, title: typeName(quote.job_type) + " • " + quote.client_name,
     job_type: quote.job_type, client_name: quote.client_name, client_email: quote.client_email || "",
-    vehicle_info: quote.vehicle_info || "",
+    client_phone: quote.client_phone || "", quote_amount: quote.quote_amount ?? null,
+    vehicle_info: quote.vehicle_info || "", vehicle_model: quote.vehicle_info || "",
   });
+  const contactQuote = (channel, quote) => {
+    const phone = (quote.client_phone || "").replace(/[^\d+]/g, "");
+    const whatsappPhone = phone.startsWith("+") ? phone.slice(1) : phone.startsWith("39") ? phone : `39${phone}`;
+    const subject = encodeURIComponent(`Preventivo ${quote.client_name} • Beside`);
+    const message = encodeURIComponent(`Ciao ${quote.client_name}, ti contatto in merito al preventivo accettato.`);
+    if (channel === "whatsapp" && phone) window.location.href = `https://wa.me/${whatsappPhone}?text=${message}`;
+    if (channel === "phone" && phone) window.location.href = `tel:${phone}`;
+    if (channel === "email" && quote.client_email) window.location.href = `mailto:${quote.client_email}?subject=${subject}&body=${message}`;
+  };
   const openAreaManager = () => {
     setAreaDrafts(workAreas.map((area) => ({ ...area })));
     setAreasDialogOpen(true);
@@ -327,16 +357,20 @@ export const CalendarPage = () => {
     const job = searchParams.get("job");
     if (!job || busy || deepLinkUsed.current === job || quotes.length === 0) return;
     const match = quotes.find((q) => q.job_id === job);
-    if (match) { deepLinkUsed.current = job; openNew(null, match); }
+    if (match) { deepLinkUsed.current = job; setAcceptedQuote(match); }
     else { deepLinkUsed.current = job; toast.info("Il preventivo potrebbe essere già pianificato."); }
     setSearchParams({}, { replace: true });
   }, [quotes, busy, searchParams, setSearchParams]);
 
   const saveEvent = async (event) => {
+    const vehicleInfo = AUTOMOTIVE_TYPES.has(event.job_type)
+      ? [event.vehicle_make, event.vehicle_model, event.vehicle_plate].filter(Boolean).join(" · ") || event.vehicle_info
+      : event.work_subject || event.vehicle_info;
     const payload = {
       ...event, starts_at: new Date(event.starts_at).toISOString(),
       ends_at: new Date(event.ends_at).toISOString(), job_id: event.job_id || null,
       client_email: event.client_email || null,
+      vehicle_info: vehicleInfo || "",
       reminder_minutes: event.reminder_minutes.map(Number),
     };
     if (new Date(payload.ends_at) <= new Date(payload.starts_at)) {
@@ -471,13 +505,13 @@ export const CalendarPage = () => {
         <h1 className="text-2xl font-bold text-primary flex gap-2 items-center"><CalendarDays className="w-6 h-6" />Pianificazione</h1>
       </div>
 
-      {quotes.length > 0 && <Card className="max-h-[22dvh] shrink-0 overflow-y-auto border-primary/20">
-        <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileCheck2 className="w-5 h-5" />Preventivi accettati da pianificare ({quotes.length})</CardTitle></CardHeader>
+      {quotes.length > 0 && <Card className="max-h-[22dvh] shrink-0 overflow-y-auto border-emerald-200 bg-emerald-50/40">
+        <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileCheck2 className="w-5 h-5 text-emerald-600" />Preventivi accettati da pianificare ({quotes.length})</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {quotes.slice(0, 12).map((quote) => <div key={quote.job_id} className="border rounded-lg p-3 flex gap-2 items-center justify-between">
             <div className="min-w-0"><p className="font-medium truncate">{quote.client_name}</p>
-              <p className="text-sm text-muted-foreground">{typeName(quote.job_type)} · {quote.vehicle_info || "Veicolo da definire"}</p></div>
-            <Button size="sm" onClick={() => openNew(null, quote)}>Pianifica lavoro</Button>
+              <p className="text-sm text-muted-foreground">{typeName(quote.job_type)} · {formatCurrency(quote.quote_amount)}</p></div>
+            <Button size="sm" className="rounded-full" onClick={() => setAcceptedQuote(quote)}>Apri</Button>
           </div>)}
         </CardContent>
       </Card>}
@@ -582,25 +616,60 @@ export const CalendarPage = () => {
           <p className="text-[11px] opacity-80 truncate">{dragGhost.event.resource}</p>
         </div></div>
       </div>}
+      <Dialog open={Boolean(acceptedQuote)} onOpenChange={(open) => { if (!open) setAcceptedQuote(null); }}>
+        <DialogContent className="w-[calc(100vw-2rem)] max-w-sm rounded-3xl px-6 py-7 text-center">
+          {acceptedQuote && <>
+            <CheckCircle2 className="mx-auto h-16 w-16 text-emerald-500" strokeWidth={1.8} />
+            <DialogHeader className="mt-2 text-center">
+              <DialogTitle className="text-center text-2xl">Preventivo accettato</DialogTitle>
+            </DialogHeader>
+            <div className="mt-2 space-y-1">
+              <p className="text-lg font-semibold text-primary">{acceptedQuote.client_name}</p>
+              <p className="text-muted-foreground">{typeName(acceptedQuote.job_type)}</p>
+              <p className="pt-1 text-2xl font-bold text-primary">{formatCurrency(acceptedQuote.quote_amount)}</p>
+            </div>
+            <div className="mt-6 grid gap-2">
+              <Button type="button" className="h-12 rounded-full text-base" onClick={() => {
+                const quote = acceptedQuote;
+                setAcceptedQuote(null);
+                openNew(null, quote);
+              }}>
+                Aggiungi al calendario
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" className="h-12 rounded-full text-base">Contatta</Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="center" className="min-w-[220px] rounded-xl p-2">
+                  <DropdownMenuItem disabled={!acceptedQuote.client_phone} onSelect={() => contactQuote("whatsapp", acceptedQuote)} className="rounded-lg py-3">
+                    <MessageCircle className="mr-2 h-4 w-4" />WhatsApp
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={!acceptedQuote.client_phone} onSelect={() => contactQuote("phone", acceptedQuote)} className="rounded-lg py-3">
+                    <Phone className="mr-2 h-4 w-4" />Chiama
+                  </DropdownMenuItem>
+                  <DropdownMenuItem disabled={!acceptedQuote.client_email} onSelect={() => contactQuote("email", acceptedQuote)} className="rounded-lg py-3">
+                    <Mail className="mr-2 h-4 w-4" />Email
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          </>}
+        </DialogContent>
+      </Dialog>
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="flex h-[calc(100dvh-1rem)] w-[calc(100vw-1rem)] max-w-xl flex-col gap-0 overflow-hidden rounded-3xl p-0 sm:h-auto sm:max-h-[90dvh] sm:rounded-2xl">
           <DialogHeader className="shrink-0 border-b bg-background px-5 py-5 pr-14">
             <DialogTitle>{editing ? "Modifica appuntamento" : "Pianifica lavoro"}</DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col overflow-hidden">
-            <div className="appointment-form-fields min-h-0 flex-1 touch-pan-y space-y-3 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-4">
-            <div><Label>Titolo *</Label><Input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Installazione PPF • Mario Rossi" /></div>
-            <div><Label>Preventivo accettato (opzionale)</Label>
-              <select className="w-full rounded-md border bg-background p-2 text-sm" value={form.job_id} onChange={(e) => {
-                const q = quotes.find((item) => item.job_id === e.target.value);
-                setForm(q ? fillQuote(form, q) : { ...form, job_id: "" });
-              }}>
-                <option value="">Appuntamento inserito manualmente</option>
-                {editing?.job_id && !quotes.some((q) => q.job_id === editing.job_id) &&
-                  <option value={editing.job_id}>Preventivo già associato</option>}
-                {quotes.map((q) => <option key={q.job_id} value={q.job_id}>{q.client_name} · {typeName(q.job_type)}</option>)}
-              </select></div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="appointment-form-fields min-h-0 flex-1 touch-pan-y space-y-5 overflow-y-auto overflow-x-hidden overscroll-contain px-5 py-5">
+            <div className="space-y-1.5"><Label>Titolo *</Label><Input required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} placeholder="Installazione PPF • Mario Rossi" /></div>
+            {form.job_id && <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+              <CheckCircle2 className="h-6 w-6 shrink-0 text-emerald-600" />
+              <div className="min-w-0"><p className="font-semibold text-emerald-900">Collegato al preventivo accettato</p>
+                <p className="truncate text-sm text-emerald-800">{form.client_name} · {typeName(form.job_type)}</p></div>
+            </div>}
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
               <DateTimeField label="Inizio" value={form.starts_at} onChange={(value) => setForm({ ...form, starts_at: value })} />
               <DateTimeField label="Fine" value={form.ends_at} onChange={(value) => setForm({ ...form, ends_at: value })} />
               <div className="min-w-0">
@@ -623,16 +692,30 @@ export const CalendarPage = () => {
                   Indica dove verrà eseguito il lavoro. Beside evita appuntamenti sovrapposti nella stessa area.
                 </p>
               </div>
-              <div><Label>Lavorazione</Label><select className="w-full rounded-md border p-2 bg-background text-sm" value={form.job_type}
+              <div className="space-y-1.5"><Label>Lavorazione</Label><select className="w-full rounded-md border bg-background p-2.5" value={form.job_type}
                 onChange={(e) => setForm({ ...form, job_type: e.target.value })}>
+                {!WORK_TYPES.some(([id]) => id === form.job_type) && form.job_type &&
+                  <option value={form.job_type}>{typeName(form.job_type)}</option>}
                 {WORK_TYPES.map(([id, label]) => <option value={id} key={id}>{label}</option>)}
               </select></div>
-              <div><Label>Cliente</Label><Input value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} /></div>
-              <div><Label>Email cliente (facoltativa)</Label><Input type="email" value={form.client_email} onChange={(e) => setForm({ ...form, client_email: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Cliente</Label><Input value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Telefono cliente (facoltativo)</Label><Input type="tel" value={form.client_phone} onChange={(e) => setForm({ ...form, client_phone: e.target.value })} /></div>
+              <div className="space-y-1.5"><Label>Email cliente (facoltativa)</Label><Input type="email" value={form.client_email} onChange={(e) => setForm({ ...form, client_email: e.target.value })} /></div>
             </div>
-            <div><Label>Veicolo</Label><Input value={form.vehicle_info} onChange={(e) => setForm({ ...form, vehicle_info: e.target.value })} placeholder="Modello / targa / note" /></div>
-            <div><Label>Note</Label><Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
-            <div><Label htmlFor="appointment-reminder" className="flex gap-2 items-center"><Clock className="w-4 h-4" />Promemoria email all'installatore</Label>
+            {AUTOMOTIVE_TYPES.has(form.job_type) ? <div className="space-y-2">
+              <Label>Veicolo (facoltativo)</Label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                <Input value={form.vehicle_make} onChange={(e) => setForm({ ...form, vehicle_make: e.target.value })} placeholder="Marca" aria-label="Marca veicolo" />
+                <Input value={form.vehicle_model} onChange={(e) => setForm({ ...form, vehicle_model: e.target.value })} placeholder="Modello" aria-label="Modello veicolo" />
+                <Input value={form.vehicle_plate} onChange={(e) => setForm({ ...form, vehicle_plate: e.target.value.toUpperCase() })} placeholder="Targa" aria-label="Targa veicolo" />
+              </div>
+            </div> : <div className="space-y-1.5">
+              <Label>{(WORK_SUBJECT_FIELDS[form.job_type] || WORK_SUBJECT_FIELDS.altro)[0]}</Label>
+              <Input value={form.work_subject} onChange={(e) => setForm({ ...form, work_subject: e.target.value })}
+                placeholder={(WORK_SUBJECT_FIELDS[form.job_type] || WORK_SUBJECT_FIELDS.altro)[1]} />
+            </div>}
+            <div className="space-y-1.5"><Label>Note</Label><Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
+            <div className="space-y-1.5"><Label htmlFor="appointment-reminder" className="flex gap-2 items-center"><Clock className="w-4 h-4" />Promemoria email all'installatore</Label>
               <select
                 id="appointment-reminder"
                 className="mt-2 w-full rounded-md border bg-background p-2.5 shadow-sm"
@@ -650,7 +733,7 @@ export const CalendarPage = () => {
                 <Button type="button" variant="outline" onClick={() => downloadCalendar(editing)}><Download className="w-4 h-4 mr-1" />Esporta .ics</Button>
                 <Button type="button" variant="destructive" onClick={cancelEvent} disabled={saving}><Trash2 className="w-4 h-4" /></Button>
               </div> : <span />}
-              <Button type="submit" className="ml-auto rounded-full px-5" disabled={saving}>{saving ? "Salvataggio..." : editing ? "Salva modifiche" : "Pianifica lavoro"}</Button>
+              <Button type="submit" className="ml-auto rounded-full px-6" disabled={saving}>{saving ? "Salvataggio..." : "Salva"}</Button>
             </div>
           </form>
         </DialogContent>
