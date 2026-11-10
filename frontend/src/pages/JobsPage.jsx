@@ -576,7 +576,7 @@ export const JobsPage = () => {
                         </p>
                       </div>
                       
-                      <div className="flex items-center gap-4">
+                      <div className="flex flex-wrap items-center gap-2 sm:gap-4">
                         <div className="text-center">
                           <p className="text-xs text-muted-foreground">Importo</p>
                           <p className="font-semibold text-lg">{formatCurrency(quote.quote_amount)}</p>
