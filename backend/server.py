@@ -3971,7 +3971,7 @@ async def get_public_quote(token: str, request: Request):
     }
 
 @api_router.post("/quote/{token}/accept")
-async def accept_quote(token: str, acceptance: QuoteAcceptance, request: Request):
+async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks: BackgroundTasks, request: Request):
     """Public endpoint to accept or reject a quote"""
     await enforce_rate_limit(request, "public_quote_accept", limit=20, window_seconds=60 * 60)
     quote_token = await db.quote_tokens.find_one({"token": token}, {"_id": 0})
@@ -4002,11 +4002,30 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, request: Request
         "client_notes": acceptance.notes
     }
     
-    await db.jobs.update_one(
-        {"job_id": quote_token["job_id"], "company_id": job["company_id"]},
+    result = await db.jobs.update_one(
+        {"job_id": quote_token["job_id"], "company_id": job["company_id"],
+         "quote_status": "pending"},
         {"$set": update_fields}
     )
-    
+    if result.modified_count != 1:
+        raise HTTPException(status_code=409, detail="Preventivo già processato")
+
+    if acceptance.accepted:
+        company = await db.companies.find_one(
+            {"company_id": job["company_id"]}, {"_id": 0, "owner_user_id": 1})
+        owner = await db.users.find_one(
+            {"user_id": (company or {}).get("owner_user_id"),
+             "company_id": job["company_id"], "is_active": {"$ne": False}},
+            {"_id": 0, "email": 1})
+        if owner and owner.get("email"):
+            calendar_url = f"{FRONTEND_PUBLIC_URL}/calendar?job={job['job_id']}"
+            background_tasks.add_task(
+                send_email_sendgrid, owner["email"], "Preventivo accettato • Beside",
+                "<p>Un cliente ha accettato il tuo preventivo.</p>"
+                f"<p>Cliente: <strong>{html.escape(job['client_name'])}</strong></p>"
+                f'<p><a href="{html.escape(calendar_url, quote=True)}">Pianifica lavoro</a></p>',
+            )
+
     # If accepted, add to lead sources
     if acceptance.accepted and job.get("lead_source"):
         await db.lead_sources.insert_one({
