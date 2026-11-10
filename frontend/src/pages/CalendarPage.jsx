@@ -138,7 +138,11 @@ export const CalendarPage = () => {
     else await axios.post(API + "/calendar/events", payload);
   };
   const handleSubmit = async (e) => {
-    e.preventDefault(); setSaving(true);
+    e.preventDefault();
+    if (form.reminder_minutes.length > 4) {
+      toast.error("Puoi selezionare al massimo quattro promemoria."); return;
+    }
+    setSaving(true);
     try {
       await saveEvent(form);
       toast.success(editing ? "Appuntamento aggiornato" : "Appuntamento pianificato");
@@ -190,15 +194,17 @@ export const CalendarPage = () => {
   const calendarRange = view === "week"
     ? dayLabel(start) + " – " + dayLabel(addDays(end, -1))
     : new Intl.DateTimeFormat("it-IT", { dateStyle: "full" }).format(start);
-  const eventStyle = (e) => {
-    const startDate = new Date(e.starts_at);
-    const endDate = new Date(e.ends_at);
-    const startMinutes = minutesOf(startDate);
-    const endMinutes = startMinutes + (endDate - startDate) / 60000;
-    const top = Math.max(0, startMinutes - HOUR_FIRST * 60) * HOUR_HEIGHT / 60;
-    const visibleMinutes = Math.max(0, Math.min(HOUR_LAST * 60, endMinutes) - Math.max(HOUR_FIRST * 60, startMinutes));
-    const maxHeight = TRACK_HEIGHT - top;
-    return { top: top + "px", height: Math.min(maxHeight, Math.max(32, visibleMinutes * HOUR_HEIGHT / 60)) + "px" };
+  const eventStyle = (e, day) => {
+    const firstVisible = new Date(day);
+    firstVisible.setHours(HOUR_FIRST, 0, 0, 0);
+    const lastVisible = new Date(day);
+    lastVisible.setHours(HOUR_LAST, 0, 0, 0);
+    const starts = new Date(e.starts_at), ends = new Date(e.ends_at);
+    const clippedStart = new Date(Math.max(firstVisible.getTime(), starts.getTime()));
+    const clippedEnd = new Date(Math.min(lastVisible.getTime(), ends.getTime()));
+    const top = (clippedStart - firstVisible) / 60000 * HOUR_HEIGHT / 60;
+    const height = (clippedEnd - clippedStart) / 60000 * HOUR_HEIGHT / 60;
+    return { top: top + "px", height: Math.max(24, height) + "px" };
   };
 
   return (
@@ -254,7 +260,9 @@ export const CalendarPage = () => {
                 const key = dayKey(d);
                 const dayEvents = events.filter((event) => {
                   const first = new Date(event.starts_at), last = new Date(event.ends_at);
-                  return first < addDays(d, 1) && last > d && minutesOf(first) < HOUR_LAST * 60;
+                  const visibleStart = new Date(d); visibleStart.setHours(HOUR_FIRST, 0, 0, 0);
+                  const visibleEnd = new Date(d); visibleEnd.setHours(HOUR_LAST, 0, 0, 0);
+                  return first < visibleEnd && last > visibleStart;
                 });
                 return <div key={key} className={"shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
                   <div className={"h-12 border-b px-2 flex items-center justify-center text-sm font-semibold " + (key === dayKey(new Date()) ? "bg-primary/10 text-primary" : "bg-muted/30")}>{dayLabel(d)}</div>
@@ -276,7 +284,7 @@ export const CalendarPage = () => {
                         onPointerDown={(e) => pointerDown(e, ev)}
                         onPointerUp={(e) => pointerUp(e, ev)}
                         onPointerCancel={() => { dragRef.current = null; }}
-                        style={{ ...eventStyle(ev), touchAction: "none" }}
+                        style={{ ...eventStyle(ev, d), touchAction: "none" }}
                         className="absolute left-1 right-1 z-10 rounded border border-primary/30 bg-primary/10 px-2 py-1 overflow-hidden text-left cursor-grab active:cursor-grabbing select-none text-primary shadow-sm">
                         <div className="flex gap-1 items-start"><GripVertical className="h-3 w-3 shrink-0 mt-0.5" /><div className="min-w-0">
                           <p className="text-xs font-bold break-words leading-tight">{ev.title}</p>
