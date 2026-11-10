@@ -284,11 +284,13 @@ export const CalendarPage = () => {
 
       <Card className="overflow-hidden">
         <CardContent className="px-3 pb-3 pt-3 sm:p-4 space-y-3">
-          <div className="flex items-center gap-2 px-1">
-            <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
-            <h2 className="min-w-0 flex-1 text-center font-semibold text-sm sm:text-base">{calendarRange}</h2>
-            <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
-            <Button size="icon" onClick={() => openNew()} aria-label="Nuovo appuntamento" title="Nuovo appuntamento"><Plus className="w-5 h-5" /></Button>
+          <div className="flex items-center gap-4 px-1">
+            <div className="flex min-w-0 flex-1 items-center justify-center gap-1">
+              <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
+              <h2 className="min-w-0 whitespace-nowrap px-1 text-center font-semibold text-sm sm:text-base">{calendarRange}</h2>
+              <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
+            </div>
+            <Button size="icon" className="!h-10 !w-10 shrink-0 [&_svg]:!size-5" onClick={() => openNew()} aria-label="Nuovo appuntamento" title="Nuovo appuntamento"><Plus /></Button>
           </div>
           <div className="flex justify-center px-1">
             <div className="flex gap-1">
