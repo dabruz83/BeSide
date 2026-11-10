@@ -71,6 +71,7 @@ export const CalendarPage = () => {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(defaultForm);
   const [saving, setSaving] = useState(false);
+  const [dragGhost, setDragGhost] = useState(null);
   const dragRef = useRef(null);
   const deepLinkUsed = useRef("");
 
@@ -166,8 +167,15 @@ export const CalendarPage = () => {
     dragRef.current = { id: e.pointerId, event, x: e.clientX, y: e.clientY };
     e.currentTarget.setPointerCapture(e.pointerId);
   };
+  const pointerMove = (e, event) => {
+    const drag = dragRef.current;
+    if (!drag || drag.id !== e.pointerId) return;
+    if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 12) return;
+    setDragGhost({ x: e.clientX, y: e.clientY, title: event.title });
+  };
   const pointerUp = async (e, event) => {
     const drag = dragRef.current; dragRef.current = null;
+    setDragGhost(null);
     if (!drag || drag.id !== e.pointerId) return;
     const distance = Math.hypot(e.clientX - drag.x, e.clientY - drag.y);
     if (distance < 12) { openEdit(event); return; }
@@ -295,8 +303,9 @@ export const CalendarPage = () => {
                         aria-label={"Modifica " + ev.title}
                         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openEdit(ev); } }}
                         onPointerDown={(e) => pointerDown(e, ev)}
+                        onPointerMove={(e) => pointerMove(e, ev)}
                         onPointerUp={(e) => pointerUp(e, ev)}
-                        onPointerCancel={() => { dragRef.current = null; }}
+                        onPointerCancel={() => { dragRef.current = null; setDragGhost(null); }}
                         style={{ ...eventStyle(ev, d), touchAction: "none" }}
                         className="absolute left-1 right-1 z-10 rounded border border-primary/30 bg-primary/10 px-2 py-1 overflow-hidden text-left cursor-grab active:cursor-grabbing select-none text-primary shadow-sm">
                         <div className="flex gap-1 items-start"><GripVertical className="h-3 w-3 shrink-0 mt-0.5" /><div className="min-w-0">
@@ -315,6 +324,10 @@ export const CalendarPage = () => {
         </CardContent>
       </Card>
 
+      {dragGhost && <div className="fixed z-[100] pointer-events-none rounded-lg bg-primary px-3 py-2 text-primary-foreground text-sm font-semibold shadow-lg max-w-[200px] truncate"
+        style={{ left: dragGhost.x + 12, top: dragGhost.y + 12 }}>
+        {dragGhost.title}
+      </div>}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-xl max-h-[90dvh] overflow-y-auto">
           <DialogHeader><DialogTitle>{editing ? "Modifica appuntamento" : "Pianifica lavoro"}</DialogTitle></DialogHeader>
