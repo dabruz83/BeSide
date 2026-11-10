@@ -272,7 +272,7 @@ export const CalendarPage = () => {
                 <option key={name} value={name}>{name}</option>)}
             </select>
           </div>
-          <p className="text-xs text-muted-foreground">Tocca uno slot libero per inserirlo; su telefono trascina l'icona a righe per spostare un appuntamento. Le sovrapposizioni sulla stessa postazione sono bloccate.</p>
+          <p className="text-xs text-muted-foreground">Scorri il riquadro degli orari; tocca uno slot libero per inserire un appuntamento. Su telefono trascina l'icona a righe per spostarlo. Le sovrapposizioni sulla stessa postazione sono bloccate.</p>
           <div className="max-h-[65dvh] overflow-auto overscroll-contain border rounded-lg"
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
