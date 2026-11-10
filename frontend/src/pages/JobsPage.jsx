@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { API } from "@/App";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -68,6 +68,7 @@ const CHART_COLORS = ["#1E3A5F", "#2E86AB", "#1A7A4A", "#F39C12", "#C0392B", "#8
 
 export const JobsPage = () => {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState([]);
   const [analytics, setAnalytics] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -581,6 +582,11 @@ export const JobsPage = () => {
                           <p className="font-semibold text-lg">{formatCurrency(quote.quote_amount)}</p>
                         </div>
                         
+                        {quote.quote_status === "accepted" && (
+                          <Button size="sm" onClick={() => navigate("/calendar?job=" + encodeURIComponent(quote.job_id))}>
+                            Pianifica lavoro
+                          </Button>
+                        )}
                         {quote.quote_link && (
                           <div className="flex items-center gap-2">
                             <Button
