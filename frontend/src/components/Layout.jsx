@@ -14,7 +14,7 @@ import {
   Palette,
   MessageSquare
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
@@ -34,6 +34,62 @@ export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [navCompact, setNavCompact] = useState(false);
+  const scrollIntentRef = useRef({ direction: 0, distance: 0 });
+  const isCalendarPage = location.pathname.startsWith("/calendar");
+
+  useEffect(() => {
+    setNavCompact(false);
+    scrollIntentRef.current = { direction: 0, distance: 0 };
+  }, [location.pathname]);
+
+  useEffect(() => {
+    const scrollPositions = new WeakMap();
+
+    const trackVerticalScroll = (target) => {
+      if (!target || typeof target.scrollTop !== "number") return;
+      const currentTop = target.scrollTop;
+      const previousTop = scrollPositions.get(target);
+      scrollPositions.set(target, currentTop);
+      if (previousTop === undefined) return;
+
+      const delta = currentTop - previousTop;
+      if (Math.abs(delta) < 1) return;
+      if (currentTop <= 1) {
+        setNavCompact(false);
+        scrollIntentRef.current = { direction: 0, distance: 0 };
+        return;
+      }
+
+      const direction = delta > 0 ? 1 : -1;
+      const intent = scrollIntentRef.current;
+      if (intent.direction !== direction) {
+        intent.direction = direction;
+        intent.distance = 0;
+      }
+      intent.distance += Math.abs(delta);
+
+      if (direction > 0 && intent.distance >= 18) {
+        setNavCompact(true);
+        intent.distance = 0;
+      } else if (direction < 0 && intent.distance >= 12) {
+        setNavCompact(false);
+        intent.distance = 0;
+      }
+    };
+
+    const handleElementScroll = (event) => {
+      if (event.target !== document) trackVerticalScroll(event.target);
+    };
+    const handleWindowScroll = () => trackVerticalScroll(document.scrollingElement);
+
+    document.addEventListener("scroll", handleElementScroll, { capture: true, passive: true });
+    window.addEventListener("scroll", handleWindowScroll, { passive: true });
+    return () => {
+      document.removeEventListener("scroll", handleElementScroll, true);
+      window.removeEventListener("scroll", handleWindowScroll);
+    };
+  }, []);
 
   const handleLogout = async () => {
     await logout();
@@ -45,7 +101,10 @@ export const Layout = ({ children }) => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div
+      className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background"}
+      style={{ "--mobile-nav-height": navCompact ? "54px" : "72px" }}
+    >
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 bg-primary text-primary-foreground h-screen fixed left-0 top-0 z-40">
         {/* Logo */}
@@ -124,7 +183,7 @@ export const Layout = ({ children }) => {
 
       {/* Mobile Sidebar */}
       <aside 
-        className={`md:hidden fixed top-14 left-0 bottom-[72px] w-64 bg-white border-r border-border z-50 transform transition-transform duration-200 ${
+        className={`mobile-sidebar md:hidden fixed top-14 left-0 w-64 bg-white border-r border-border z-50 transform transition-transform duration-200 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -164,25 +223,25 @@ export const Layout = ({ children }) => {
         </nav>
       </aside>
 
-      {/* Mobile Bottom Navigation - 15% larger */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center h-[72px] z-40 pb-safe">
+      {/* Mobile Bottom Navigation */}
+      <nav className={`mobile-bottom-nav md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center z-40 ${navCompact ? "is-compact" : ""}`}>
         {navItems.slice(0, 5).map((item) => (
           <NavLink
             key={item.path}
             to={item.path}
             className={({ isActive }) =>
-              `nav-item ${isActive ? "active" : ""}`
+              `nav-item mobile-bottom-nav-item ${isActive ? "active" : ""}`
             }
           >
-            <item.icon className="w-6 h-6" />
-            <span className="text-xs mt-1">{item.shortLabel || item.label}</span>
+            <item.icon className="mobile-bottom-nav-icon w-6 h-6" />
+            <span className="mobile-bottom-nav-label">{item.shortLabel || item.label}</span>
           </NavLink>
         ))}
       </nav>
 
       {/* Main Content */}
-      <main className="md:ml-64 pt-14 md:pt-0 pb-24 md:pb-8 min-h-screen">
-        <div className="p-4 md:p-8 max-w-7xl mx-auto animate-fade-in">
+      <main className={`md:ml-64 pt-14 md:pt-0 ${isCalendarPage ? "calendar-main h-[100dvh] overflow-hidden md:pb-0" : "pb-24 md:pb-8 min-h-screen"}`}>
+        <div className={`${isCalendarPage ? "h-full overflow-hidden " : ""}p-4 md:p-8 max-w-7xl mx-auto animate-fade-in`}>
           {children}
         </div>
       </main>

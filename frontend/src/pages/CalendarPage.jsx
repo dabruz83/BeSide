@@ -331,12 +331,12 @@ export const CalendarPage = () => {
   };
 
   return (
-    <div className="space-y-3" data-testid="calendar-page">
-      <div>
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-hidden" data-testid="calendar-page">
+      <div className="shrink-0">
         <h1 className="text-2xl font-bold text-primary flex gap-2 items-center"><CalendarDays className="w-6 h-6" />Pianificazione</h1>
       </div>
 
-      {quotes.length > 0 && <Card className="border-primary/20">
+      {quotes.length > 0 && <Card className="max-h-[22dvh] shrink-0 overflow-y-auto border-primary/20">
         <CardHeader className="pb-2"><CardTitle className="text-base flex items-center gap-2"><FileCheck2 className="w-5 h-5" />Preventivi accettati da pianificare ({quotes.length})</CardTitle></CardHeader>
         <CardContent className="space-y-2">
           {quotes.slice(0, 12).map((quote) => <div key={quote.job_id} className="border rounded-lg p-3 flex gap-2 items-center justify-between">
@@ -347,9 +347,9 @@ export const CalendarPage = () => {
         </CardContent>
       </Card>}
 
-      <Card className="overflow-hidden">
-        <CardContent className="px-3 pb-3 pt-3 sm:p-4 space-y-3">
-          <div className="flex items-center gap-2 px-1">
+      <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <CardContent className="flex min-h-0 flex-1 flex-col gap-3 px-3 pb-3 pt-3 sm:p-4">
+          <div className="flex shrink-0 items-center gap-2 px-1">
             <h2 className="min-w-0 flex-1 truncate px-1 font-semibold text-sm sm:text-base">{calendarRange}</h2>
             <div className="flex shrink-0 items-center gap-2">
               <DropdownMenu>
@@ -364,7 +364,7 @@ export const CalendarPage = () => {
               <Button size="icon" className="!h-10 !w-10 rounded-full [&_svg]:!size-5" onClick={openNewOnFocus} aria-label="Nuovo appuntamento" title="Nuovo appuntamento"><Plus /></Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3 px-1 text-sm">
+          <div className="flex shrink-0 flex-wrap items-center gap-3 px-1 text-sm">
             <Label htmlFor="calendar-resource">Postazione visualizzata</Label>
             <select id="calendar-resource" value={resourceFilter}
               onChange={(e) => setResourceFilter(e.target.value)}
@@ -375,7 +375,7 @@ export const CalendarPage = () => {
             </select>
           </div>
           <div ref={calendarScrollRef} onScroll={handleCalendarScroll}
-            className={"-mx-3 min-h-[58dvh] max-h-[72dvh] overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border " + (view === "day" ? "snap-x snap-mandatory" : "snap-x snap-proximity")}
+            className={"-mx-3 min-h-0 flex-1 overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border " + (view === "day" ? "snap-x snap-mandatory" : "snap-x snap-proximity")}
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
               <div className="sticky left-0 z-[60] w-14 shrink-0 bg-background">
