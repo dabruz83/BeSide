@@ -196,8 +196,9 @@ export const CalendarPage = () => {
     const startMinutes = minutesOf(startDate);
     const endMinutes = startMinutes + (endDate - startDate) / 60000;
     const top = Math.max(0, startMinutes - HOUR_FIRST * 60) * HOUR_HEIGHT / 60;
-    const bottom = Math.min(HOUR_LAST * 60, endMinutes) * HOUR_HEIGHT / 60;
-    return { top: top + "px", height: Math.max(36, bottom - top) + "px" };
+    const visibleMinutes = Math.max(0, Math.min(HOUR_LAST * 60, endMinutes) - Math.max(HOUR_FIRST * 60, startMinutes));
+    const maxHeight = TRACK_HEIGHT - top;
+    return { top: top + "px", height: Math.min(maxHeight, Math.max(32, visibleMinutes * HOUR_HEIGHT / 60)) + "px" };
   };
 
   return (
