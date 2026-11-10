@@ -181,11 +181,61 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
     )
 
 
+async def _extend_verified_staging_contact_hold_to_seven_days_once() -> None:
+    """One-time staging-only extension for the contact accepted during the 48h test.
+
+    Limits the update to a known owner and contact, requires the original
+    accepted-at date and exactly the previous two-day hold. Does not touch MFA.
+    """
+    if (APP_ENV != "staging"
+            or os.environ.get("RAILWAY_ENVIRONMENT_NAME") != "staging"
+            or DB_NAME != "beside_staging"
+            or RECOVERY_CONTACT_SECURITY_DAYS != 7):
+        logger.info("Staging seven-day contact hold: environment guard prevented update")
+        return
+    owner = await db.users.find_one({
+        "email": "cameleondesign83@gmail.com", "role": "owner",
+        "platform_role": {"$ne": "super_admin"},
+    }, {"_id": 0, "user_id": 1})
+    if not owner:
+        logger.warning("Staging seven-day contact hold: test owner not found")
+        return
+    contact = await db.recovery_contacts.find_one({
+        "user_id": owner["user_id"],
+        "contact_email": "davide831@hotmail.it",
+        "status": "security_period",
+        "verification_method": "email_link",
+        "contact_verified_at": {"$exists": True},
+    })
+    if not contact:
+        logger.info("Staging seven-day contact hold: no qualifying contact")
+        return
+    accepted = parse_datetime(contact["accepted_at"])
+    original_end = parse_datetime(contact["security_period_ends_at"])
+    if (accepted.date().isoformat() != "2026-11-10"
+            or not timedelta(hours=47) <= original_end - accepted <= timedelta(hours=49)):
+        logger.info("Staging seven-day contact hold: existing period was not the 48h test")
+        return
+    seven_day_end = (accepted + timedelta(days=7)).isoformat()
+    updated = await db.recovery_contacts.update_one({
+        "_id": contact["_id"], "status": "security_period",
+        "security_period_ends_at": contact["security_period_ends_at"],
+        "accepted_at": contact["accepted_at"],
+    }, {"$set": {
+        "security_period_ends_at": seven_day_end,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }})
+    if updated.modified_count != 1:
+        raise RuntimeError("Staging seven-day contact hold could not be extended atomically")
+    logger.info("STAGING_CONTACT_HOLD_EXTENDED_TO_7_DAYS deadline=%s", seven_day_end)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
+        await _extend_verified_staging_contact_hold_to_seven_days_once()
         if APP_ENV == "staging":
             cleanup = await db.users.update_many(
                 {"$or": [{"totp_recovery_codes": {"$exists": True}},
