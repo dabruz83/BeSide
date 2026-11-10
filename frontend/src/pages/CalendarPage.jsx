@@ -9,12 +9,15 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, FileCheck2, GripVertical, Plus, Trash2, Download } from "lucide-react";
+import { DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { CalendarDays, CalendarRange, Clock, FileCheck2, GripVertical, Plus, Trash2, Download } from "lucide-react";
 
 const HOUR_FIRST = 7;
 const HOUR_LAST = 20;
 const HOUR_HEIGHT = 64;
 const TRACK_HEIGHT = (HOUR_LAST - HOUR_FIRST) * HOUR_HEIGHT;
+const INITIAL_WINDOW_DAYS = 42;
+const WINDOW_EXTENSION_DAYS = 14;
 const WORK_TYPES = [
   ["ppf_full", "PPF completo"], ["ppf_partial", "PPF parziale"],
   ["wrap_decorative", "Wrap decorativo"], ["wrap_commercial", "Wrap commerciale"],
@@ -63,6 +66,8 @@ export const CalendarPage = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [focusDate, setFocusDate] = useState(() => new Date());
   const [view, setView] = useState("week");
+  const [windowStart, setWindowStart] = useState(() => addDays(weekStart(new Date()), -14));
+  const [windowDays, setWindowDays] = useState(INITIAL_WINDOW_DAYS);
   const [resourceFilter, setResourceFilter] = useState("Postazione 1");
   const [events, setEvents] = useState([]);
   const [quotes, setQuotes] = useState([]);
@@ -75,12 +80,15 @@ export const CalendarPage = () => {
   const dragRef = useRef(null);
   const calendarScrollRef = useRef(null);
   const scrollGestureRef = useRef(null);
+  const scrollFrameRef = useRef(null);
+  const expandingWindowRef = useRef(false);
+  const pendingScrollAdjustmentRef = useRef(0);
   const deepLinkUsed = useRef("");
 
-  const start = useMemo(() => view === "week" ? weekStart(focusDate) : dayAt(dayKey(focusDate)), [view, focusDate]);
-  const end = useMemo(() => addDays(start, view === "week" ? 7 : 1), [start, view]);
-  const dates = useMemo(() => Array.from({ length: view === "week" ? 7 : 1 },
-    (_, i) => addDays(start, i)), [start, view]);
+  const start = windowStart;
+  const end = useMemo(() => addDays(windowStart, windowDays), [windowStart, windowDays]);
+  const dates = useMemo(() => Array.from({ length: windowDays },
+    (_, i) => addDays(windowStart, i)), [windowStart, windowDays]);
 
   const reload = useCallback(async () => {
     setBusy(true);
@@ -140,6 +148,28 @@ export const CalendarPage = () => {
       calendar.removeEventListener("touchend", touchEnd);
       calendar.removeEventListener("touchcancel", touchEnd);
     };
+  }, []);
+  useEffect(() => {
+    const calendar = calendarScrollRef.current;
+    if (!calendar) return undefined;
+    const frame = requestAnimationFrame(() => {
+      const target = calendar.querySelector(`[data-calendar-column="${dayKey(focusDate)}"]`);
+      if (target) calendar.scrollLeft = Math.max(0, target.offsetLeft - 56);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [view]);
+  useEffect(() => {
+    const calendar = calendarScrollRef.current;
+    const adjustment = pendingScrollAdjustmentRef.current;
+    const frame = requestAnimationFrame(() => {
+      if (calendar && adjustment) calendar.scrollLeft += adjustment;
+      pendingScrollAdjustmentRef.current = 0;
+      expandingWindowRef.current = false;
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [windowStart, windowDays]);
+  useEffect(() => () => {
+    if (scrollFrameRef.current) cancelAnimationFrame(scrollFrameRef.current);
   }, []);
   const fillQuote = (current, quote) => ({
     ...current, job_id: quote.job_id, title: typeName(quote.job_type) + " • " + quote.client_name,
@@ -248,10 +278,45 @@ export const CalendarPage = () => {
     } catch (error) { toast.error(error.response?.data?.detail || "Spostamento non riuscito"); }
     finally { setSaving(false); }
   };
-  const shift = (step) => setFocusDate((d) => addDays(d, step * (view === "week" ? 7 : 1)));
+  const handleCalendarScroll = (event) => {
+    const calendar = event.currentTarget;
+    if (scrollFrameRef.current) return;
+    scrollFrameRef.current = requestAnimationFrame(() => {
+      scrollFrameRef.current = null;
+      const columns = [...calendar.querySelectorAll("[data-calendar-column]")];
+      if (columns.length === 0) return;
+      const viewportLeft = calendar.getBoundingClientRect().left + 56;
+      const visibleColumn = columns.reduce((nearest, column) =>
+        Math.abs(column.getBoundingClientRect().left - viewportLeft) <
+          Math.abs(nearest.getBoundingClientRect().left - viewportLeft) ? column : nearest);
+      const visibleDay = visibleColumn.dataset.calendarColumn;
+      if (visibleDay) {
+        setFocusDate((current) => dayKey(current) === visibleDay ? current : dayAt(visibleDay));
+      }
+
+      if (expandingWindowRef.current) return;
+      const columnWidth = columns[0].getBoundingClientRect().width;
+      const remainingRight = calendar.scrollWidth - calendar.clientWidth - calendar.scrollLeft;
+      if (calendar.scrollLeft < columnWidth * 2) {
+        expandingWindowRef.current = true;
+        pendingScrollAdjustmentRef.current = columnWidth * WINDOW_EXTENSION_DAYS;
+        setWindowStart((current) => addDays(current, -WINDOW_EXTENSION_DAYS));
+        setWindowDays((current) => current + WINDOW_EXTENSION_DAYS);
+      } else if (remainingRight < columnWidth * 3) {
+        expandingWindowRef.current = true;
+        setWindowDays((current) => current + WINDOW_EXTENSION_DAYS);
+      }
+    });
+  };
+  const displayedWeekStart = weekStart(focusDate);
   const calendarRange = view === "week"
-    ? dayLabel(start) + " – " + dayLabel(addDays(end, -1))
-    : new Intl.DateTimeFormat("it-IT", { dateStyle: "full" }).format(start);
+    ? dayLabel(displayedWeekStart) + " – " + dayLabel(addDays(displayedWeekStart, 6))
+    : new Intl.DateTimeFormat("it-IT", { dateStyle: "full" }).format(focusDate);
+  const openNewOnFocus = () => {
+    const starts = dayAt(dayKey(focusDate));
+    starts.setHours(9, 0, 0, 0);
+    openNew(starts);
+  };
   const eventStyle = (e, day) => {
     const firstVisible = new Date(day);
     firstVisible.setHours(HOUR_FIRST, 0, 0, 0);
@@ -284,18 +349,19 @@ export const CalendarPage = () => {
 
       <Card className="overflow-hidden">
         <CardContent className="px-3 pb-3 pt-3 sm:p-4 space-y-3">
-          <div className="flex items-center gap-4 px-1">
-            <div className="flex min-w-0 flex-1 items-center justify-center gap-1">
-              <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
-              <h2 className="min-w-0 whitespace-nowrap px-1 text-center font-semibold text-sm sm:text-base">{calendarRange}</h2>
-              <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
-            </div>
-            <Button size="icon" className="!h-10 !w-10 shrink-0 [&_svg]:!size-5" onClick={() => openNew()} aria-label="Nuovo appuntamento" title="Nuovo appuntamento"><Plus /></Button>
-          </div>
-          <div className="flex justify-center px-1">
-            <div className="flex gap-1">
-              <Button size="sm" variant={view === "day" ? "default" : "outline"} onClick={() => setView("day")}>Giorno</Button>
-              <Button size="sm" variant={view === "week" ? "default" : "outline"} onClick={() => setView("week")}>Settimana</Button>
+          <div className="flex items-center gap-2 px-1">
+            <h2 className="min-w-0 flex-1 truncate px-1 font-semibold text-sm sm:text-base">{calendarRange}</h2>
+            <div className="flex shrink-0 items-center gap-2">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" size="icon" className="!h-10 !w-10 rounded-full [&_svg]:!size-5" aria-label="Scegli visualizzazione" title="Visualizzazione calendario"><CalendarRange /></Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" sideOffset={8} className="min-w-[190px] rounded-xl p-2">
+                  <DropdownMenuCheckboxItem checked={view === "day"} onSelect={() => setView("day")} className="rounded-lg py-2.5">Giorno</DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem checked={view === "week"} onSelect={() => setView("week")} className="rounded-lg py-2.5">Settimana</DropdownMenuCheckboxItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+              <Button size="icon" className="!h-10 !w-10 rounded-full [&_svg]:!size-5" onClick={openNewOnFocus} aria-label="Nuovo appuntamento" title="Nuovo appuntamento"><Plus /></Button>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-3 px-1 text-sm">
@@ -308,7 +374,8 @@ export const CalendarPage = () => {
                 <option key={name} value={name}>{name}</option>)}
             </select>
           </div>
-          <div ref={calendarScrollRef} className="-mx-3 min-h-[58dvh] max-h-[72dvh] overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border"
+          <div ref={calendarScrollRef} onScroll={handleCalendarScroll}
+            className={"-mx-3 min-h-[58dvh] max-h-[72dvh] overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border " + (view === "day" ? "snap-x snap-mandatory" : "snap-x snap-proximity")}
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
               <div className="sticky left-0 z-[60] w-14 shrink-0 bg-background">
@@ -329,7 +396,7 @@ export const CalendarPage = () => {
                 });
                 const isToday = key === dayKey(new Date());
                 const isSelected = key === dayKey(focusDate);
-                return <div key={key} className={"relative isolate shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
+                return <div key={key} data-calendar-column={key} className={"relative isolate snap-start shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
                   <div className={"sticky top-0 z-50 h-12 border-b px-2 flex flex-col items-center justify-center text-xs font-semibold leading-tight text-primary " + (isToday ? "bg-sky-200" : "bg-sky-100")}>
                     <span className="uppercase">{new Intl.DateTimeFormat("it-IT", { weekday: "short" }).format(d)}</span>
                     <span className={"flex h-6 min-w-6 items-center justify-center rounded-full text-sm " + (isSelected ? "bg-primary text-primary-foreground" : "")}>{d.getDate()}</span>
