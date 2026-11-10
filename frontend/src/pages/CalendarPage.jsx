@@ -73,6 +73,8 @@ export const CalendarPage = () => {
   const [saving, setSaving] = useState(false);
   const [dragGhost, setDragGhost] = useState(null);
   const dragRef = useRef(null);
+  const calendarScrollRef = useRef(null);
+  const scrollGestureRef = useRef(null);
   const deepLinkUsed = useRef("");
 
   const start = useMemo(() => view === "week" ? weekStart(focusDate) : dayAt(dayKey(focusDate)), [view, focusDate]);
@@ -97,6 +99,48 @@ export const CalendarPage = () => {
   }, [start, end]);
 
   useEffect(() => { reload(); }, [reload]);
+  useEffect(() => {
+    const calendar = calendarScrollRef.current;
+    if (!calendar) return undefined;
+
+    const touchStart = (event) => {
+      if (event.touches.length !== 1 || event.target.closest?.("[data-calendar-event]")) {
+        scrollGestureRef.current = null;
+        return;
+      }
+      const touch = event.touches[0];
+      scrollGestureRef.current = {
+        x: touch.clientX, y: touch.clientY,
+        left: calendar.scrollLeft, top: calendar.scrollTop, direction: null,
+      };
+    };
+    const touchMove = (event) => {
+      const gesture = scrollGestureRef.current;
+      if (!gesture || event.touches.length !== 1) return;
+      const touch = event.touches[0];
+      const deltaX = touch.clientX - gesture.x;
+      const deltaY = touch.clientY - gesture.y;
+      if (!gesture.direction && Math.hypot(deltaX, deltaY) >= 10) {
+        gesture.direction = Math.abs(deltaY) > Math.abs(deltaX) * 1.2 ? "vertical" : "free";
+      }
+      if (gesture.direction !== "vertical") return;
+      event.preventDefault();
+      calendar.scrollLeft = gesture.left;
+      calendar.scrollTop = gesture.top - deltaY;
+    };
+    const touchEnd = () => { scrollGestureRef.current = null; };
+
+    calendar.addEventListener("touchstart", touchStart, { passive: true });
+    calendar.addEventListener("touchmove", touchMove, { passive: false });
+    calendar.addEventListener("touchend", touchEnd, { passive: true });
+    calendar.addEventListener("touchcancel", touchEnd, { passive: true });
+    return () => {
+      calendar.removeEventListener("touchstart", touchStart);
+      calendar.removeEventListener("touchmove", touchMove);
+      calendar.removeEventListener("touchend", touchEnd);
+      calendar.removeEventListener("touchcancel", touchEnd);
+    };
+  }, []);
   const fillQuote = (current, quote) => ({
     ...current, job_id: quote.job_id, title: typeName(quote.job_type) + " • " + quote.client_name,
     job_type: quote.job_type, client_name: quote.client_name, client_email: quote.client_email || "",
@@ -245,20 +289,20 @@ export const CalendarPage = () => {
         </CardContent>
       </Card>}
 
-      <Card>
-        <CardContent className="pt-4 space-y-3">
-          <div className="flex items-center gap-2">
+      <Card className="overflow-hidden">
+        <CardContent className="px-3 pb-3 pt-3 sm:p-4 space-y-3">
+          <div className="flex items-center gap-2 px-1">
             <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
             <h2 className="min-w-0 flex-1 text-center font-semibold text-sm sm:text-base">{calendarRange}</h2>
             <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
           </div>
-          <div className="flex justify-center">
+          <div className="flex justify-center px-1">
             <div className="flex gap-1">
               <Button size="sm" variant={view === "day" ? "default" : "outline"} onClick={() => setView("day")}>Giorno</Button>
               <Button size="sm" variant={view === "week" ? "default" : "outline"} onClick={() => setView("week")}>Settimana</Button>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-3 text-sm">
+          <div className="flex flex-wrap items-center gap-3 px-1 text-sm">
             <Label htmlFor="calendar-resource">Postazione visualizzata</Label>
             <select id="calendar-resource" value={resourceFilter}
               onChange={(e) => setResourceFilter(e.target.value)}
@@ -268,8 +312,7 @@ export const CalendarPage = () => {
                 <option key={name} value={name}>{name}</option>)}
             </select>
           </div>
-          <p className="text-xs text-muted-foreground">Scorri il riquadro degli orari; tocca uno slot libero per inserire un appuntamento. Trascina il blocco per spostarlo. Le sovrapposizioni sulla stessa postazione sono bloccate.</p>
-          <div className="max-h-[65dvh] overflow-auto overscroll-contain border rounded-lg"
+          <div ref={calendarScrollRef} className="-mx-3 min-h-[58dvh] max-h-[72dvh] overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border"
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
               <div className="sticky left-0 z-[60] w-14 shrink-0 bg-background">
@@ -329,7 +372,6 @@ export const CalendarPage = () => {
               })}
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">Gli orari visibili sono dalle 07:00 alle 20:00. È possibile inserire orari diversi dal modulo di modifica.</p>
         </CardContent>
       </Card>
 
