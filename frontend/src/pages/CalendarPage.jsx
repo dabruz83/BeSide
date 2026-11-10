@@ -9,7 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { CalendarDays, ChevronLeft, ChevronRight, Clock, FileCheck2, GripVertical, Plus, RefreshCw, Trash2, Download } from "lucide-react";
+import { CalendarDays, ChevronLeft, ChevronRight, Clock, FileCheck2, GripVertical, Plus, Trash2, Download } from "lucide-react";
 
 const HOUR_FIRST = 7;
 const HOUR_LAST = 20;
@@ -266,16 +266,9 @@ export const CalendarPage = () => {
   };
 
   return (
-    <div className="space-y-5" data-testid="calendar-page">
-      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
-        <div>
-          <h1 className="text-2xl font-bold text-primary flex gap-2 items-center"><CalendarDays className="w-6 h-6" />Pianificazione</h1>
-          <p className="text-sm text-muted-foreground">Organizza lavorazioni, postazioni e appuntamenti in Beside.</p>
-        </div>
-        <div className="flex gap-2 flex-wrap">
-          <Button variant="outline" onClick={reload} disabled={busy}><RefreshCw className="w-4 h-4 mr-1" />Aggiorna</Button>
-          <Button onClick={() => openNew()}><Plus className="w-4 h-4 mr-1" />Nuovo appuntamento</Button>
-        </div>
+    <div className="space-y-3" data-testid="calendar-page">
+      <div>
+        <h1 className="text-2xl font-bold text-primary flex gap-2 items-center"><CalendarDays className="w-6 h-6" />Pianificazione</h1>
       </div>
 
       {quotes.length > 0 && <Card className="border-primary/20">
@@ -295,6 +288,7 @@ export const CalendarPage = () => {
             <Button variant="outline" size="icon" onClick={() => shift(-1)} aria-label="Periodo precedente"><ChevronLeft className="w-4 h-4" /></Button>
             <h2 className="min-w-0 flex-1 text-center font-semibold text-sm sm:text-base">{calendarRange}</h2>
             <Button variant="outline" size="icon" onClick={() => shift(1)} aria-label="Periodo successivo"><ChevronRight className="w-4 h-4" /></Button>
+            <Button size="icon" onClick={() => openNew()} aria-label="Nuovo appuntamento" title="Nuovo appuntamento"><Plus className="w-5 h-5" /></Button>
           </div>
           <div className="flex justify-center px-1">
             <div className="flex gap-1">
