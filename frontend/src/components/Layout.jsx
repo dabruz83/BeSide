@@ -233,7 +233,9 @@ export const Layout = ({ children }) => {
               `nav-item mobile-bottom-nav-item ${isActive ? "active" : ""}`
             }
           >
-            <item.icon className="mobile-bottom-nav-icon w-6 h-6" />
+            <span className="mobile-bottom-nav-icon-shell">
+              <item.icon className="mobile-bottom-nav-icon w-6 h-6" />
+            </span>
             <span className="mobile-bottom-nav-label">{item.shortLabel || item.label}</span>
           </NavLink>
         ))}
