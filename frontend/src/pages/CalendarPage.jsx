@@ -164,14 +164,20 @@ export const CalendarPage = () => {
   };
   const pointerDown = (e, event) => {
     if (e.button !== 0) return;
-    dragRef.current = { id: e.pointerId, event, x: e.clientX, y: e.clientY };
-    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    const touchCanDrag = e.pointerType !== "touch" || Boolean(e.target.closest("[data-calendar-drag-handle]"));
+    dragRef.current = { id: e.pointerId, event, x: e.clientX, y: e.clientY,
+      offsetX: e.clientX - rect.left, offsetY: e.clientY - rect.top,
+      width: rect.width, height: rect.height, touchCanDrag };
+    if (e.pointerType !== "touch" || touchCanDrag) e.currentTarget.setPointerCapture(e.pointerId);
   };
   const pointerMove = (e, event) => {
     const drag = dragRef.current;
     if (!drag || drag.id !== e.pointerId) return;
+    if (!drag.touchCanDrag) return;
     if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 12) return;
-    setDragGhost({ x: e.clientX, y: e.clientY, title: event.title });
+    setDragGhost({ x: e.clientX - drag.offsetX, y: e.clientY - drag.offsetY,
+      width: drag.width, height: drag.height, event });
   };
   const pointerUp = async (e, event) => {
     const drag = dragRef.current; dragRef.current = null;
@@ -179,11 +185,12 @@ export const CalendarPage = () => {
     if (!drag || drag.id !== e.pointerId) return;
     const distance = Math.hypot(e.clientX - drag.x, e.clientY - drag.y);
     if (distance < 12) { openEdit(event); return; }
+    if (!drag.touchCanDrag) return;
     const drop = document.elementFromPoint(e.clientX, e.clientY)?.closest("[data-calendar-day]");
     if (!drop) { toast.info("Trascina l'appuntamento su una fascia visibile."); return; }
     const rect = drop.getBoundingClientRect();
-    const offset = Math.max(0, Math.min(TRACK_HEIGHT, e.clientY - rect.top));
-    const minutes = Math.round((offset / HOUR_HEIGHT * 60) / 30) * 30 + HOUR_FIRST * 60;
+    const offset = Math.max(0, Math.min(TRACK_HEIGHT, e.clientY - drag.offsetY - rect.top));
+    const minutes = Math.round((offset / HOUR_HEIGHT * 60) / 15) * 15 + HOUR_FIRST * 60;
     const day = dayAt(drop.dataset.calendarDay);
     day.setMinutes(minutes);
     const length = new Date(event.ends_at).getTime() - new Date(event.starts_at).getTime();
@@ -265,11 +272,12 @@ export const CalendarPage = () => {
                 <option key={name} value={name}>{name}</option>)}
             </select>
           </div>
-          <p className="text-xs text-muted-foreground">Tocca uno slot libero per inserirlo; trascina un appuntamento per spostarlo. Le sovrapposizioni sulla stessa postazione sono bloccate.</p>
-          <div className="overflow-x-auto border rounded-lg">
+          <p className="text-xs text-muted-foreground">Tocca uno slot libero per inserirlo; su telefono trascina l'icona a righe per spostare un appuntamento. Le sovrapposizioni sulla stessa postazione sono bloccate.</p>
+          <div className="max-h-[65dvh] overflow-auto overscroll-contain border rounded-lg"
+            style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
-              <div className="w-14 shrink-0">
-                <div className="h-12 border-b bg-muted/50" />
+              <div className="sticky left-0 z-30 w-14 shrink-0 bg-background">
+                <div className="sticky top-0 h-12 border-b bg-muted/50" />
                 <div className="relative" style={{ height: TRACK_HEIGHT }}>
                   {Array.from({ length: HOUR_LAST - HOUR_FIRST + 1 }, (_, i) =>
                     <div key={i} className="absolute right-1 text-xs text-muted-foreground -translate-y-1/2"
@@ -285,7 +293,7 @@ export const CalendarPage = () => {
                   return event.resource === resourceFilter && first < visibleEnd && last > visibleStart;
                 });
                 return <div key={key} className={"shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
-                  <div className={"h-12 border-b px-2 flex items-center justify-center text-sm font-semibold " + (key === dayKey(new Date()) ? "bg-primary/10 text-primary" : "bg-muted/30")}>{dayLabel(d)}</div>
+                  <div className={"sticky top-0 z-20 h-12 border-b px-2 flex items-center justify-center text-sm font-semibold " + (key === dayKey(new Date()) ? "bg-primary/10 text-primary" : "bg-muted/30")}>{dayLabel(d)}</div>
                   <div data-calendar-day={key} className="relative cursor-crosshair"
                     style={{ height: TRACK_HEIGHT, backgroundImage: "repeating-linear-gradient(to bottom, transparent 0, transparent 31px, hsl(var(--border)) 31px, hsl(var(--border)) 32px)", backgroundSize: "100% 32px" }}
                     onClick={(e) => {
@@ -306,9 +314,9 @@ export const CalendarPage = () => {
                         onPointerMove={(e) => pointerMove(e, ev)}
                         onPointerUp={(e) => pointerUp(e, ev)}
                         onPointerCancel={() => { dragRef.current = null; setDragGhost(null); }}
-                        style={{ ...eventStyle(ev, d), touchAction: "none" }}
+                        style={{ ...eventStyle(ev, d), opacity: dragGhost?.event.event_id === ev.event_id ? 0.28 : 1 }}
                         className="absolute left-1 right-1 z-10 rounded border border-primary/30 bg-primary/10 px-2 py-1 overflow-hidden text-left cursor-grab active:cursor-grabbing select-none text-primary shadow-sm">
-                        <div className="flex gap-1 items-start"><GripVertical className="h-3 w-3 shrink-0 mt-0.5" /><div className="min-w-0">
+                        <div className="flex gap-1 items-start"><span data-calendar-drag-handle className="touch-none cursor-grab active:cursor-grabbing"><GripVertical className="h-3 w-3 shrink-0 mt-0.5" /></span><div className="min-w-0">
                           <p className="text-xs font-bold break-words leading-tight">{ev.title}</p>
                           <p className="text-[11px] font-medium">{pad(startMoment.getHours())}:{pad(startMoment.getMinutes())}</p>
                           <p className="text-[11px] opacity-80 truncate">{ev.resource}</p>
@@ -324,9 +332,13 @@ export const CalendarPage = () => {
         </CardContent>
       </Card>
 
-      {dragGhost && <div className="fixed z-[100] pointer-events-none rounded-lg bg-primary px-3 py-2 text-primary-foreground text-sm font-semibold shadow-lg max-w-[200px] truncate"
-        style={{ left: dragGhost.x + 12, top: dragGhost.y + 12 }}>
-        {dragGhost.title}
+      {dragGhost && <div className="fixed z-[100] pointer-events-none rounded border border-primary bg-primary/95 px-2 py-1 overflow-hidden text-left select-none text-primary-foreground shadow-xl"
+        style={{ left: dragGhost.x, top: dragGhost.y, width: dragGhost.width, height: dragGhost.height }}>
+        <div className="flex gap-1 items-start"><GripVertical className="h-3 w-3 shrink-0 mt-0.5" /><div className="min-w-0">
+          <p className="text-xs font-bold break-words leading-tight">{dragGhost.event.title}</p>
+          <p className="text-[11px] font-medium">{pad(new Date(dragGhost.event.starts_at).getHours())}:{pad(new Date(dragGhost.event.starts_at).getMinutes())}</p>
+          <p className="text-[11px] opacity-80 truncate">{dragGhost.event.resource}</p>
+        </div></div>
       </div>}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent className="max-w-xl max-h-[90dvh] overflow-y-auto">
