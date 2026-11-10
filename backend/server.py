@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks, Query, UploadFile, File, Form
+import asyncio
 from fastapi.responses import JSONResponse, StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -38,6 +39,8 @@ from photo_ai import (
     photo_ai_adapter,
     read_upload_limited,
 )
+
+from calendar_api import register_calendar_routes, run_calendar_reminder_worker
 
 from multitenancy import (
     COMPANY_ROLES,
@@ -183,6 +186,7 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    reminder_task = None
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
@@ -194,8 +198,15 @@ async def lifespan(_app: FastAPI):
             )
             logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
+        reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email))
         yield
     finally:
+        if reminder_task is not None:
+            reminder_task.cancel()
+            try:
+                await reminder_task
+            except asyncio.CancelledError:
+                pass
         client.close()
 
 
@@ -3784,7 +3795,10 @@ async def change_company_user_role(
     )
     return {"user_id": user_id, "role": data.role}
 
-# ==================== JOBS ENDPOINTS ====================
+# ==================== JOBS AND PLANNING ENDPOINTS ====================
+
+register_calendar_routes(api_router, db, company_scope, require_company_roles)
+
 
 @api_router.post("/jobs", response_model=JobResponse)
 async def create_job(
