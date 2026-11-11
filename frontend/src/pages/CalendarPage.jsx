@@ -21,16 +21,18 @@ const WINDOW_EXTENSION_DAYS = 14;
 const DEFAULT_WORK_AREA = { area_id: "area_default", name: "Area principale" };
 const WORK_TYPES = [
   ["ppf_full", "PPF completo"], ["ppf_partial", "PPF parziale"],
-  ["wrap_decorative", "Wrapping auto"], ["tint", "Vetri auto"],
+  ["wrap_full", "Wrapping completo"], ["wrap_partial", "Wrapping parziale"],
+  ["tint", "Vetri auto"],
   ["interior_decor", "Interior decor"], ["exterior_decor", "Decorazioni esterne"],
   ["altro", "Altro"]
 ];
 const WORK_TYPE_LABELS = Object.fromEntries([
   ...WORK_TYPES,
+  ["wrap_decorative", "Wrapping auto (storico)"],
   ["wrap_commercial", "Wrapping commerciale"],
   ["upholstery", "Tappezzeria"],
 ]);
-const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint"]);
+const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_full", "wrap_partial", "wrap_decorative", "wrap_commercial", "tint"]);
 const WORK_SUBJECT_FIELDS = {
   interior_decor: ["Ambiente / oggetto", "Es. parete reception, arredo o pannello"],
   exterior_decor: ["Lavorazione esterna", "Es. vetrina, facciata o insegna"],
@@ -546,8 +548,8 @@ export const CalendarPage = () => {
             className={"-mx-3 min-h-0 flex-1 scroll-pl-14 overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border " + (view === "day" ? "snap-x snap-mandatory" : "snap-x snap-proximity")}
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
-              <div className="sticky left-0 z-[60] w-14 shrink-0 bg-background">
-                <div className="sticky top-0 z-[60] h-12 border-b bg-muted/50" />
+              <div className="sticky left-0 z-[70] w-16 shrink-0 bg-sky-200">
+                <div className="sticky top-0 z-[70] h-12 border-b border-sky-300 bg-sky-200" />
                 <div className="relative" style={{ height: TRACK_HEIGHT }}>
                   {Array.from({ length: HOUR_LAST - HOUR_FIRST + 1 }, (_, i) =>
                     <div key={i} className="absolute right-1 text-xs text-muted-foreground -translate-y-1/2"
@@ -564,10 +566,10 @@ export const CalendarPage = () => {
                 });
                 const isToday = key === dayKey(new Date());
                 const isSelected = key === dayKey(focusDate);
-                return <div key={key} data-calendar-column={key} className={"relative isolate snap-start shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
-                  <div className={"sticky top-0 z-50 h-12 border-b px-2 flex flex-col items-center justify-center text-xs font-semibold leading-tight text-primary " + (isToday ? "bg-sky-200" : "bg-sky-100")}>
+                return <div key={key} data-calendar-column={key} className={"relative isolate snap-start shrink-0 border-l border-sky-300 " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
+                  <div className="sticky top-0 z-[60] flex h-12 flex-col items-center justify-center border-b border-sky-300 bg-sky-200 px-2 text-xs font-semibold leading-tight text-primary">
                     <span className="uppercase">{new Intl.DateTimeFormat("it-IT", { weekday: "short" }).format(d)}</span>
-                    <span className={"flex h-6 min-w-6 items-center justify-center rounded-full text-sm " + (isSelected ? "bg-primary text-primary-foreground" : "")}>{d.getDate()}</span>
+                    <span className={"flex h-7 min-w-7 items-center justify-center rounded-full text-sm " + (isToday ? "bg-white font-bold text-primary" : isSelected ? "bg-primary text-primary-foreground" : "")}>{d.getDate()}</span>
                   </div>
                   <div data-calendar-day={key} className="relative cursor-crosshair"
                     style={{ height: TRACK_HEIGHT, backgroundImage: "repeating-linear-gradient(to bottom, transparent 0, transparent 31px, hsl(var(--border)) 31px, hsl(var(--border)) 32px)", backgroundSize: "100% 32px" }}

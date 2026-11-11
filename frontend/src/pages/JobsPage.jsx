@@ -43,14 +43,19 @@ const formatCurrency = (amount) => {
 const JOB_TYPES = [
   { value: "ppf_full", label: "PPF Completo" },
   { value: "ppf_partial", label: "PPF Parziale" },
-  { value: "wrap_decorative", label: "Wrapping Auto" },
+  { value: "wrap_full", label: "Wrapping Completo" },
+  { value: "wrap_partial", label: "Wrapping Parziale" },
   { value: "tint", label: "Vetri Auto" },
   { value: "interior_decor", label: "Interior Decor" },
   { value: "exterior_decor", label: "Decorazioni Esterne" },
   { value: "altro", label: "Altro" }
 ];
-const LEGACY_JOB_TYPE_LABELS = { wrap_commercial: "Wrapping Commerciale", upholstery: "Tappezzeria" };
-const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_decorative", "wrap_commercial", "tint"]);
+const LEGACY_JOB_TYPE_LABELS = {
+  wrap_decorative: "Wrapping auto (storico)",
+  wrap_commercial: "Wrapping Commerciale",
+  upholstery: "Tappezzeria",
+};
+const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_full", "wrap_partial", "wrap_decorative", "wrap_commercial", "tint"]);
 
 const VEHICLE_TYPES = [
   { value: "sedan", label: "Berlina" },
