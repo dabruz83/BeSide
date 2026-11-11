@@ -545,7 +545,7 @@ export const CalendarPage = () => {
             </select>
           </div>
           <div ref={calendarScrollRef} onScroll={handleCalendarScroll}
-            className={"-mx-3 min-h-0 flex-1 scroll-pl-14 overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border " + (view === "day" ? "snap-x snap-mandatory" : "snap-x snap-proximity")}
+            className="-mx-3 min-h-0 flex-1 snap-x snap-mandatory scroll-pl-14 overflow-auto overscroll-contain border-y sm:mx-0 sm:rounded-lg sm:border"
             style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-x pan-y" }}>
             <div className="flex min-w-max">
               <div className="sticky left-0 z-[60] w-14 shrink-0 bg-background">
