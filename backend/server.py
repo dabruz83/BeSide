@@ -4071,6 +4071,12 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks
     if not job:
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
     
+    quote_company = await db.companies.find_one(
+        {"company_id": job["company_id"]}, {"_id": 0, "subscription_pause_effective_at": 1},
+    )
+    if _billing_is_suspended(quote_company or {}):
+        raise HTTPException(status_code=403, detail="Preventivo non disponibile: attività temporaneamente sospesa")
+
     if job.get("quote_status") != "pending":
         raise HTTPException(status_code=400, detail="Preventivo già processato")
     
