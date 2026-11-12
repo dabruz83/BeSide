@@ -48,6 +48,17 @@ const SERVICES = [
   { id: "upholstery", label: "Tappezzeria" }
 ];
 
+const SUPPORT_CATEGORIES = [
+  ["technical", "Problema tecnico"],
+  ["authentication", "Accesso/autenticazione"],
+  ["password", "Password"],
+  ["billing", "Abbonamenti/pagamenti"],
+  ["privacy", "Privacy"],
+  ["other", "Altro"],
+];
+
+const SUPPORT_STATUS_LABELS = { open: "Aperto", pending: "In lavorazione", closed: "Chiuso" };
+
 export const ProfilePage = () => {
   const { user, logout, checkAuth } = useAuth();
   const navigate = useNavigate();
@@ -63,6 +74,13 @@ export const ProfilePage = () => {
   const [contactPassword, setContactPassword] = useState("");
   const [contactTotp, setContactTotp] = useState("");
   const [contactBusy, setContactBusy] = useState(false);
+  const [supportCategory, setSupportCategory] = useState("technical");
+  const [supportSubject, setSupportSubject] = useState("");
+  const [supportMessage, setSupportMessage] = useState("");
+  const [supportTickets, setSupportTickets] = useState([]);
+  const [supportSelectedTicket, setSupportSelectedTicket] = useState(null);
+  const [supportLoading, setSupportLoading] = useState(false);
+  const [supportBusy, setSupportBusy] = useState(false);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -127,6 +145,47 @@ export const ProfilePage = () => {
       .then((response) => setRecoveryContact(response.data.contact))
       .catch(() => setRecoveryContact(null));
   }, [user?.user_id, user?.totp_enabled]);
+
+  const loadSupportTickets = async () => {
+    setSupportLoading(true);
+    try {
+      const response = await axios.get(`${API}/auth/support/tickets`);
+      setSupportTickets(response.data.tickets || []);
+      setSupportSelectedTicket((current) => current
+        ? (response.data.tickets || []).find((ticket) => ticket.ticket_id === current.ticket_id) || null
+        : null);
+    } catch (error) {
+      setSupportTickets([]);
+      toast.error(error.response?.data?.detail || "Impossibile caricare le richieste.");
+    } finally {
+      setSupportLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (section === "support" && user?.user_id) loadSupportTickets();
+  }, [section, user?.user_id]);
+
+  const submitSupportTicket = async (event) => {
+    event.preventDefault();
+    if (!supportSubject.trim() || !supportMessage.trim()) return;
+    setSupportBusy(true);
+    try {
+      await axios.post(`${API}/auth/support/tickets`, {
+        category: supportCategory,
+        subject: supportSubject.trim(),
+        message: supportMessage.trim(),
+      });
+      setSupportSubject("");
+      setSupportMessage("");
+      await loadSupportTickets();
+      toast.success("Richiesta inviata.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile inviare la richiesta.");
+    } finally {
+      setSupportBusy(false);
+    }
+  };
 
   const handleContactInvite = async () => {
     if (!contactEmail.trim() || !contactPassword || !/^\d{6}$/.test(contactTotp)) {
@@ -269,6 +328,8 @@ export const ProfilePage = () => {
     { key: "notifications", title: "Notifiche", subtitle: "Promemoria e comunicazioni", icon: Bell },
     { key: "security", title: "Sicurezza e privacy", subtitle: "MFA, contatto fidato e consensi", icon: ShieldCheck },
     { key: "subscription", title: "Abbonamento", subtitle: "Piano e rinnovi", icon: CreditCard },
+    { key: "support", title: "Assistenza", subtitle: "Nuove richieste e risposte", icon: LifeBuoy },
+    { key: "account", title: "Gestione account", subtitle: "Rinnovi e richieste account", icon: Settings2 },
   ];
   const current = menu.find(item => item.key === section);
   return (
@@ -302,7 +363,6 @@ export const ProfilePage = () => {
             })}
           </CardContent></Card>
           <div className="space-y-2">
-            <Button className="w-full justify-between" variant="outline" onClick={() => setSection("support")}><span className="flex gap-2 items-center"><LifeBuoy className="h-4 w-4" /> Assistenza e gestione account</span><ChevronRight className="h-4 w-4" /></Button>
             <Button onClick={handleLogout} variant="ghost" className="w-full text-destructive"><LogOut className="mr-2 h-4 w-4"/>Esci dall'account</Button>
           </div>
         </>
@@ -746,24 +806,24 @@ export const ProfilePage = () => {
           </Card>
       </>}
 
-      {section === "support" && <Card><CardHeader><CardTitle className="text-lg">Assistenza e gestione account</CardTitle></CardHeader><CardContent className="space-y-4">
-        <Button variant="outline" className="w-full" onClick={() => navigate("/support")}><LifeBuoy className="mr-2 h-4 w-4"/>Contatta l'assistenza</Button>
-        <div className="rounded-md border p-3 space-y-2">
-          <p className="font-medium flex items-center gap-2"><PauseCircle className="h-4 w-4"/>Sospendi temporaneamente l'account</p>
-          <p className="text-sm text-muted-foreground">La sospensione diventerà effettiva alla scadenza del periodo pagato, senza perdere il tempo residuo. Per gli abbonamenti annuali si disattiva il rinnovo alla scadenza.</p>
-          <Button variant="outline" onClick={() => navigate("/subscription")}>Gestisci il rinnovo</Button>
-        </div>
-        <div className="rounded-md border p-3 space-y-3">
-          <p className="font-medium flex items-center gap-2"><Trash2 className="h-4 w-4 text-destructive"/>Richiedi eliminazione account</p>
-          <p className="text-sm text-muted-foreground">La richiesta viene gestita dall'assistenza, previa verifica e nel rispetto degli obblighi di conservazione.</p>
-          <Label>Motivo (facoltativo)</Label>
-          <select className="w-full rounded-md border bg-background p-2.5 text-sm" value={accountReason} onChange={e => setAccountReason(e.target.value)}>
-            <option value="">Preferisco non rispondere</option><option value="pausa">Pausa attività</option><option value="utilizzo">Utilizzo limitato</option><option value="costo">Costo</option><option value="funzioni">Funzionalità mancanti</option><option value="alternativa">Altra soluzione</option><option value="altro">Altro</option>
-          </select>
-          {accountReason === "altro" && <Textarea rows={2} placeholder="Dettagli facoltativi" value={accountReasonDetails} onChange={e => setAccountReasonDetails(e.target.value)}/>}
-          <Button variant="outline" className="w-full text-destructive" onClick={() => navigate("/support", {state: {category: "privacy", subject: "Richiesta eliminazione account", message: "Motivo: " + (accountReason || "non indicato") + (accountReasonDetails ? "\nDettagli: " + accountReasonDetails : "")}})}>Apri richiesta di eliminazione</Button>
-        </div>
-      </CardContent></Card>}
+      {section === "support" && <div className="space-y-4">
+        <Card><CardHeader><CardTitle className="text-lg">Nuova richiesta</CardTitle></CardHeader><CardContent>
+          <form onSubmit={submitSupportTicket} className="space-y-4">
+            <div className="space-y-1.5"><Label htmlFor="settings-support-category">Categoria</Label><select id="settings-support-category" className="w-full rounded-md border bg-background p-2.5" value={supportCategory} onChange={(event) => setSupportCategory(event.target.value)}>{SUPPORT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
+            <div className="space-y-1.5"><Label htmlFor="settings-support-subject">Oggetto</Label><Input id="settings-support-subject" required maxLength={200} value={supportSubject} onChange={(event) => setSupportSubject(event.target.value)} /></div>
+            <div className="space-y-1.5"><Label htmlFor="settings-support-message">Descrizione del problema</Label><Textarea id="settings-support-message" required maxLength={4000} rows={5} value={supportMessage} onChange={(event) => setSupportMessage(event.target.value)} /></div>
+            <Button type="submit" disabled={supportBusy || !supportSubject.trim() || !supportMessage.trim()} className="w-full">{supportBusy ? "Invio..." : "Invia richiesta"}</Button>
+          </form>
+        </CardContent></Card>
+        <Card><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg">Le mie richieste</CardTitle><Button type="button" variant="ghost" size="sm" onClick={loadSupportTickets} disabled={supportLoading}>{supportLoading ? "Caricamento..." : "Aggiorna"}</Button></div></CardHeader><CardContent className="space-y-3">
+          {supportSelectedTicket ? <div className="space-y-4"><Button type="button" variant="ghost" className="px-0" onClick={() => setSupportSelectedTicket(null)}>← Tutte le richieste</Button><div><p className="font-semibold">{supportSelectedTicket.subject}</p><p className="text-xs text-muted-foreground">{supportSelectedTicket.ticket_id} · {new Date(supportSelectedTicket.created_at).toLocaleString("it-IT")}</p></div><div className="space-y-3">{(supportSelectedTicket.messages || []).map((item, index) => <div key={`${supportSelectedTicket.ticket_id}-${index}`} className="rounded-lg border bg-muted/20 p-3"><div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><span>{item.author_type === "platform_owner" ? "Assistenza Beside" : "Tu"}</span><span>{new Date(item.created_at).toLocaleString("it-IT")}</span></div><p className="mt-1 whitespace-pre-wrap text-sm">{item.message}</p></div>)}</div></div> : supportLoading ? <p className="text-sm text-muted-foreground">Caricamento richieste...</p> : supportTickets.length === 0 ? <p className="text-sm text-muted-foreground">Non hai ancora inviato richieste.</p> : <div className="divide-y rounded-lg border">{supportTickets.map((ticket) => <button key={ticket.ticket_id} type="button" onClick={() => setSupportSelectedTicket(ticket)} className="flex w-full items-center justify-between gap-3 p-3 text-left hover:bg-muted/40"><span className="min-w-0"><span className="block truncate font-medium">{ticket.subject}</span><span className="block text-xs text-muted-foreground">{ticket.ticket_id} · {new Date(ticket.created_at).toLocaleDateString("it-IT")}</span></span><span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">{SUPPORT_STATUS_LABELS[ticket.status] || ticket.status}</span></button>)}</div>}
+        </CardContent></Card>
+      </div>}
+
+      {section === "account" && <div className="space-y-4">
+        <Card><CardHeader><CardTitle className="text-lg flex items-center gap-2"><PauseCircle className="h-5 w-5"/>Gestione account</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">Gestisci rinnovi e richieste relative al tuo account.</p><Button variant="outline" className="w-full" onClick={() => navigate("/subscription")}>Gestisci il rinnovo</Button></CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-lg flex items-center gap-2"><Trash2 className="h-5 w-5 text-destructive"/>Richiedi eliminazione account</CardTitle></CardHeader><CardContent className="space-y-3"><p className="text-sm text-muted-foreground">La richiesta viene gestita dall'assistenza, previa verifica e nel rispetto degli obblighi di conservazione.</p><Label>Motivo (facoltativo)</Label><select className="w-full rounded-md border bg-background p-2.5 text-sm" value={accountReason} onChange={e => setAccountReason(e.target.value)}><option value="">Preferisco non rispondere</option><option value="pausa">Pausa attività</option><option value="utilizzo">Utilizzo limitato</option><option value="costo">Costo</option><option value="funzioni">Funzionalità mancanti</option><option value="alternativa">Altra soluzione</option><option value="altro">Altro</option></select>{accountReason === "altro" && <Textarea rows={2} placeholder="Dettagli facoltativi" value={accountReasonDetails} onChange={e => setAccountReasonDetails(e.target.value)}/>}<Button variant="outline" className="w-full text-destructive" onClick={() => navigate("/support", {state: {category: "privacy", subject: "Richiesta eliminazione account", message: "Motivo: " + (accountReason || "non indicato") + (accountReasonDetails ? "\nDettagli: " + accountReasonDetails : "")}})}>Apri richiesta di eliminazione</Button></CardContent></Card>
+      </div>}
     </div>
   );
 };
