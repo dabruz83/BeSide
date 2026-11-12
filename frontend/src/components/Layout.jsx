@@ -138,7 +138,7 @@ export const Layout = ({ children }) => {
       </aside>
 
       {/* Mobile Header */}
-      <header className="md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-border z-40 flex items-center justify-start px-4">
+      <header className={`md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-border z-40 flex items-center justify-start px-4 transition-opacity duration-150 ${sidebarOpen ? "pointer-events-none opacity-0" : "opacity-100"}`}>
         <NavLink to="/dashboard" aria-label="Beside — Bacheca" className="inline-flex h-10 items-center">
           <img src="/beside-logo.svg" alt="Beside" className="h-8 w-auto max-w-[9.5rem] object-contain object-left sm:h-9 sm:max-w-[11rem]" />
         </NavLink>
@@ -167,7 +167,7 @@ export const Layout = ({ children }) => {
 
       {/* Mobile Sidebar */}
       <aside 
-        className={`mobile-sidebar md:hidden fixed top-14 left-0 w-72 bg-white border-r border-border rounded-r-2xl shadow-[8px_0_28px_rgba(15,23,42,0.18)] z-50 transform transition-transform duration-200 ${
+        className={`mobile-sidebar md:hidden fixed top-0 left-0 w-72 bg-white border-r border-border rounded-r-2xl shadow-[8px_0_28px_rgba(15,23,42,0.18)] z-50 transform transition-transform duration-200 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >

@@ -151,7 +151,8 @@
 
 .mobile-sidebar {
     bottom: calc(var(--mobile-nav-height, 72px) + env(safe-area-inset-bottom, 0px));
-    max-height: calc(100dvh - 3.5rem - var(--mobile-nav-height, 72px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - var(--mobile-nav-height, 72px) - env(safe-area-inset-bottom, 0px));
+    padding-top: calc(3.5rem + env(safe-area-inset-top, 0px));
     overflow-y: auto;
     overscroll-behavior: contain;
 }
