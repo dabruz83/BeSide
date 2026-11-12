@@ -249,6 +249,11 @@ const ProtectedRoute = ({ children }) => {
     return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
+  // A suspended customer can still manage billing and seek assistance.
+  if (user.subscription_suspended && !["/subscription", "/subscription/success", "/profile"].includes(location.pathname)) {
+    return <Navigate to="/subscription" replace />;
+  }
+
   return children;
 };
 
