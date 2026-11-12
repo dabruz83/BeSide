@@ -1,6 +1,6 @@
 import { useState } from "react";
 import axios from "axios";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { API, useAuth } from "@/App";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,9 +19,10 @@ const categories = [
 
 export const SupportTicketPage = () => {
   const { user } = useAuth();
-  const [category, setCategory] = useState("technical");
-  const [subject, setSubject] = useState("");
-  const [message, setMessage] = useState("");
+  const { state } = useLocation();
+  const [category, setCategory] = useState(state?.category || "technical");
+  const [subject, setSubject] = useState(state?.subject || "");
+  const [message, setMessage] = useState(state?.message || "");
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState(null);
