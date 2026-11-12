@@ -37,7 +37,6 @@ const TAX_REGIMES = [
 
 const BUSINESS_TYPES = [
   { value: "ditta_individuale", label: "Ditta Individuale" },
-  { value: "forfettario", label: "Forfettario" },
   { value: "societa_persone", label: "Società di Persone (SNC, SAS)" },
   { value: "societa_capitali", label: "Società di Capitali (SRL, SRLS, SPA)" }
 ];
@@ -190,7 +189,7 @@ export const ProfilePage = () => {
     setSaving(true);
     try {
       const payload = section === "personal" ? personal
-        : section === "activity" ? { business_name: formData.business_name, team_size: formData.team_size, services: formData.services }
+        : section === "activity" ? { business_name: formData.business_name, team_size: formData.team_size, services: formData.services, business_info: { email: businessInfo.email, telefono: businessInfo.telefono } }
         : section === "fiscal" ? { tax_regime: formData.tax_regime, business_info: businessInfo }
         : section === "quotes" ? { business_info: businessInfo } : null;
       if (!payload) return;
@@ -360,24 +359,7 @@ export const ProfilePage = () => {
                       </div>
                     </div>
 
-                    <div className="space-y-2">
-                      <Label>Tipo Azienda</Label>
-                      <Select
-                        value={businessInfo.business_type}
-                        onValueChange={(value) => setBusinessInfo({ ...businessInfo, business_type: value })}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Seleziona tipo" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {BUSINESS_TYPES.map((type) => (
-                            <SelectItem key={type.value} value={type.value}>
-                              {type.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
+
                   </div>
 
                   <div className="space-y-2">
@@ -416,12 +398,60 @@ export const ProfilePage = () => {
                   </div>
                 </CardContent>
               </Card>
+        <Card><CardHeader><CardTitle className="text-lg">Recapiti pubblici</CardTitle></CardHeader><CardContent className="space-y-3">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="email_business">Email</Label>
+                      <Input
+                        id="email_business"
+                        type="email"
+                        value={businessInfo.email}
+                        onChange={(e) => setBusinessInfo({ ...businessInfo, email: e.target.value })}
+                        placeholder="info@azienda.it"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="telefono">Telefono</Label>
+                      <div className="relative">
+                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                        <Input
+                          id="telefono"
+                          value={businessInfo.telefono}
+                          onChange={(e) => setBusinessInfo({ ...businessInfo, telefono: e.target.value })}
+                          className="pl-10"
+                          placeholder="+39 02 1234567"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+
+        </CardContent></Card>
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva attività</Button>
       </>}
 
       {section === "fiscal" && <>
-        <Card><CardContent className="pt-5 space-y-3"><Label>Regime fiscale</Label><div className="space-y-2">
-                    <Label>Regime Fiscale</Label>
+        <Card><CardContent className="pt-5 space-y-3">
+                    <div className="space-y-2">
+                      <Label>Forma giuridica</Label>
+                      <Select
+                        value={businessInfo.business_type}
+                        onValueChange={(value) => setBusinessInfo({ ...businessInfo, business_type: value })}
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Seleziona tipo" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {BUSINESS_TYPES.map((type) => (
+                            <SelectItem key={type.value} value={type.value}>
+                              {type.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+<div className="space-y-2">
+                    <Label>Regime fiscale</Label>
                     <Select
                       value={formData.tax_regime}
                       onValueChange={(value) => setFormData({ ...formData, tax_regime: value })}
@@ -532,32 +562,6 @@ export const ProfilePage = () => {
                         onChange={(e) => setBusinessInfo({ ...businessInfo, pec: e.target.value })}
                         placeholder="azienda@pec.it"
                       />
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="email_business">Email</Label>
-                      <Input
-                        id="email_business"
-                        type="email"
-                        value={businessInfo.email}
-                        onChange={(e) => setBusinessInfo({ ...businessInfo, email: e.target.value })}
-                        placeholder="info@azienda.it"
-                      />
-                    </div>
-                    <div className="space-y-2">
-                      <Label htmlFor="telefono">Telefono</Label>
-                      <div className="relative">
-                        <Phone className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                        <Input
-                          id="telefono"
-                          value={businessInfo.telefono}
-                          onChange={(e) => setBusinessInfo({ ...businessInfo, telefono: e.target.value })}
-                          className="pl-10"
-                          placeholder="+39 02 1234567"
-                        />
-                      </div>
                     </div>
                   </div>
 
