@@ -416,6 +416,8 @@ class BusinessInfo(BaseModel):
     intestazione_extra: Optional[str] = None
 
 class UserUpdate(BaseModel):
+    first_name: Optional[str] = Field(default=None, max_length=100)
+    last_name: Optional[str] = Field(default=None, max_length=100)
     business_name: Optional[str] = None
     team_size: Optional[int] = None
     services: Optional[List[str]] = None
@@ -2965,6 +2967,17 @@ async def update_profile(
 ):
     """Update user profile"""
     update_fields = {}
+    if update_data.first_name is not None or update_data.last_name is not None:
+        old_personal = current_user.get("onboarding_profile") or {}
+        first_name = (update_data.first_name if update_data.first_name is not None else old_personal.get("first_name") or current_user.get("first_name", "")).strip()
+        last_name = (update_data.last_name if update_data.last_name is not None else old_personal.get("last_name", "")).strip()
+        if not first_name and not last_name:
+            raise HTTPException(status_code=422, detail="Inserisci almeno il nome o il cognome")
+        full_name = " ".join(part for part in (first_name, last_name) if part)
+        update_fields.update({
+            "first_name": first_name, "full_name": full_name, "name": full_name,
+            "onboarding_profile.first_name": first_name, "onboarding_profile.last_name": last_name,
+        })
     
     if update_data.business_name is not None:
         update_fields["business_name"] = update_data.business_name
@@ -2977,9 +2990,25 @@ async def update_profile(
     if update_data.services is not None:
         update_fields["services"] = update_data.services
     if update_data.tax_regime is not None:
+        if update_data.tax_regime not in TAX_REGIMES:
+            raise HTTPException(status_code=422, detail="Regime fiscale non valido")
         update_fields["tax_regime"] = update_data.tax_regime
+        await db.companies.update_one(
+            {"company_id": current_user["company_id"]},
+            {"$set": {"onboarding_profile.tax_regime": update_data.tax_regime}},
+        )
     if update_data.business_info is not None:
-        update_fields["business_info"] = update_data.business_info.model_dump()
+        previous = current_user.get("business_info") or {}
+        merged = {**previous, **update_data.business_info.model_dump(exclude_unset=True)}
+        if merged.get("logo_url") and len(merged["logo_url"]) > 500000:
+            raise HTTPException(status_code=422, detail="Logo troppo grande")
+        update_fields["business_info"] = merged
+        legal_form = merged.get("business_type")
+        if legal_form in {"ditta_individuale", "societa_persone", "societa_capitali"}:
+            await db.companies.update_one(
+                {"company_id": current_user["company_id"]},
+                {"$set": {"onboarding_profile.legal_form": legal_form}},
+            )
     if update_data.marketing_emails_opt_in is not None or update_data.marketing_profiling_opt_in is not None:
         preferences = (current_user.get("marketing_preferences") or {}).copy()
         if update_data.marketing_emails_opt_in is not None:
