@@ -1,20 +1,26 @@
 {
-  "short_name": "BESIDE",
-  "name": "BESIDE - Gestione Installatori",
+  "short_name": "Beside",
+  "name": "Beside",
   "id": "/",
   "description": "Dashboard per installatori auto wrap e PPF italiani",
   "icons": [
     {
-      "src": "logo192.png",
+      "src": "/pwa-icons/icon-192.png",
       "type": "image/png",
       "sizes": "192x192",
-      "purpose": "any maskable"
+      "purpose": "any"
     },
     {
-      "src": "logo512.png",
+      "src": "/pwa-icons/icon-512.png",
       "type": "image/png",
       "sizes": "512x512",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/pwa-icons/icon-512-maskable.png",
+      "type": "image/png",
+      "sizes": "512x512",
+      "purpose": "maskable"
     }
   ],
   "start_url": "/dashboard",

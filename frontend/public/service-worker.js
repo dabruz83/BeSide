@@ -1,9 +1,14 @@
 /* eslint-disable no-restricted-globals */
 
-const CACHE_NAME = 'beside-static-v2';
+const CACHE_NAME = 'beside-static-v3';
 const STATIC_ASSETS = [
   '/manifest.json',
-  '/offline.html'
+  '/offline.html',
+  '/pwa-icons/apple-touch-icon-180.png',
+  '/pwa-icons/icon-192.png',
+  '/pwa-icons/icon-512.png',
+  '/pwa-icons/icon-512-maskable.png',
+  '/pwa-icons/icon-master-1024.png'
 ];
 
 // Install event - cache static assets
