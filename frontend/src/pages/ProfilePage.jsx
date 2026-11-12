@@ -189,11 +189,12 @@ export const ProfilePage = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await axios.put(`${API}/auth/profile`, {
-        ...formData,
-        business_info: businessInfo,
-        ...(section === "personal" ? personal : {})
-      });
+      const payload = section === "personal" ? personal
+        : section === "activity" ? { business_name: formData.business_name, team_size: formData.team_size, services: formData.services }
+        : section === "fiscal" ? { tax_regime: formData.tax_regime, business_info: businessInfo }
+        : section === "quotes" ? { business_info: businessInfo } : null;
+      if (!payload) return;
+      await axios.put(`${API}/auth/profile`, payload);
       await checkAuth();
       toast.success("Profilo aggiornato!");
     } catch (error) {
@@ -593,7 +594,7 @@ export const ProfilePage = () => {
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="logo_url">URL Logo</Label>
+                        <Label htmlFor="logo_url">Indirizzo logo esistente (facoltativo)</Label>
                         <Input
                           id="logo_url"
                           value={businessInfo.logo_url}
