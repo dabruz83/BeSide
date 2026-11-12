@@ -27,10 +27,9 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js')
       .then((registration) => {
-        console.log('ServiceWorker registered:', registration.scope);
+        // Ask for updates on each app load without caching any authenticated data.
+        return registration.update();
       })
-      .catch((error) => {
-        console.log('ServiceWorker registration failed:', error);
-      });
+      .catch(() => {});
   });
 }

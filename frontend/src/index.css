@@ -151,6 +151,28 @@
 
 .mobile-sidebar {
     bottom: calc(var(--mobile-nav-height, 72px) + env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 3.5rem - var(--mobile-nav-height, 72px) - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+}
+
+.mobile-menu-tab {
+    position: fixed;
+    left: 0;
+    top: 42%;
+    z-index: 45;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.35rem;
+    height: 4.5rem;
+    border: 1px solid hsl(var(--primary) / 0.2);
+    border-left: 0;
+    border-radius: 0 0.75rem 0.75rem 0;
+    background: white;
+    color: hsl(var(--secondary));
+    box-shadow: 0 2px 8px rgb(15 23 42 / 0.12);
+    touch-action: manipulation;
 }
 
 .mobile-bottom-nav-item {

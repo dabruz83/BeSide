@@ -9,8 +9,7 @@ import {
   UserCog,
   ClipboardList,
   LogOut,
-  Menu,
-  X,
+  ChevronRight,
   Palette,
   MessageSquare
 } from "lucide-react";
@@ -35,6 +34,7 @@ export const Layout = ({ children }) => {
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [navCompact, setNavCompact] = useState(false);
+  const touchStartRef = useRef(null);
   const scrollIntentRef = useRef({ direction: 0, distance: 0 });
   const isCalendarPage = location.pathname.startsWith("/calendar");
 
@@ -95,6 +95,28 @@ export const Layout = ({ children }) => {
     await logout();
   };
 
+  const handleTouchStart = (event) => {
+    if (event.touches.length !== 1) return;
+    const touch = event.touches[0];
+    if (!sidebarOpen && touch.clientX <= 28) {
+      touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+    } else if (sidebarOpen) {
+      touchStartRef.current = { x: touch.clientX, y: touch.clientY };
+    }
+  };
+
+  const handleTouchEnd = (event) => {
+    const start = touchStartRef.current;
+    touchStartRef.current = null;
+    if (!start || event.changedTouches.length !== 1) return;
+    const touch = event.changedTouches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 56 || Math.abs(dy) > 80) return;
+    if (!sidebarOpen && dx > 0) setSidebarOpen(true);
+    if (sidebarOpen && dx < 0) setSidebarOpen(false);
+  };
+
   const getInitials = (name) => {
     if (!name) return "U";
     return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
@@ -104,6 +126,8 @@ export const Layout = ({ children }) => {
     <div
       className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background"}
       style={{ "--mobile-nav-height": navCompact ? "54px" : "72px" }}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
     >
       {/* Desktop Sidebar */}
       <aside className="hidden md:flex flex-col w-64 bg-primary text-primary-foreground h-screen fixed left-0 top-0 z-40">
@@ -162,16 +186,20 @@ export const Layout = ({ children }) => {
         <h1 className="text-xl font-bold text-primary" style={{ fontFamily: 'Barlow, sans-serif' }}>
           BESIDE
         </h1>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-12 w-12"
-          onClick={() => setSidebarOpen(!sidebarOpen)}
-          data-testid="mobile-menu-btn"
-        >
-          {sidebarOpen ? <X className="w-7 h-7" /> : <Menu className="w-7 h-7" />}
-        </Button>
       </header>
+
+      {!sidebarOpen && (
+        <button
+          type="button"
+          aria-label="Apri menu"
+          aria-expanded={sidebarOpen}
+          className="mobile-menu-tab md:hidden"
+          onClick={() => setSidebarOpen(true)}
+          data-testid="mobile-menu-tab"
+        >
+          <ChevronRight className="h-4 w-4" aria-hidden="true" />
+        </button>
+      )}
 
       {/* Mobile Sidebar Overlay */}
       {sidebarOpen && (
@@ -187,6 +215,22 @@ export const Layout = ({ children }) => {
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
+        <div className="border-b border-border p-4">
+          <div className="flex items-center gap-3 mb-3">
+            <Avatar className="h-10 w-10">
+              <AvatarImage src={user?.picture} alt={user?.name || "Profilo"} />
+              <AvatarFallback className="bg-primary text-white">
+                {getInitials(user?.name || user?.business_name)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-primary">{user?.name || "Utente"}</p>
+              <p className="truncate text-xs text-muted-foreground">{user?.business_name || user?.email}</p>
+              {user?.role && <p className="truncate text-[11px] text-muted-foreground">{user.role}</p>}
+            </div>
+          </div>
+          <p className="text-xs font-bold tracking-[0.18em] text-primary">BESIDE</p>
+        </div>
         <nav className="p-4 space-y-1">
           {navItems.map((item) => (
             <NavLink
@@ -225,7 +269,7 @@ export const Layout = ({ children }) => {
 
       {/* Mobile Bottom Navigation */}
       <nav className={`mobile-bottom-nav md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center z-40 ${navCompact ? "is-compact" : ""}`}>
-        {navItems.slice(0, 5).map((item) => (
+        {[navItems[0], navItems[1], navItems[2], navItems[4]].map((item) => (
           <NavLink
             key={item.path}
             to={item.path}

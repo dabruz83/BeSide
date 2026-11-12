@@ -1,13 +1,9 @@
 {
   "short_name": "BESIDE",
   "name": "BESIDE - Gestione Installatori",
+  "id": "/",
   "description": "Dashboard per installatori auto wrap e PPF italiani",
   "icons": [
-    {
-      "src": "favicon.ico",
-      "sizes": "64x64 32x32 24x24 16x16",
-      "type": "image/x-icon"
-    },
     {
       "src": "logo192.png",
       "type": "image/png",
@@ -21,7 +17,7 @@
       "purpose": "any maskable"
     }
   ],
-  "start_url": ".",
+  "start_url": "/dashboard",
   "display": "standalone",
   "theme_color": "#1e3a5f",
   "background_color": "#f8fafc",
@@ -30,5 +26,6 @@
   "lang": "it-IT",
   "dir": "ltr",
   "scope": "/",
+  "display_override": ["standalone"],
   "prefer_related_applications": false
 }
