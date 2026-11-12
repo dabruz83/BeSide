@@ -4,12 +4,14 @@ import { useAuth, API } from "@/App";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
 import {
   CreditCard,
   Check,
   CheckCircle2,
-  Loader2
+  Loader2, PauseCircle, RotateCcw
 } from "lucide-react";
 
 const TIERS = [
@@ -53,8 +55,57 @@ export const SubscriptionPage = () => {
   const { user, checkAuth } = useAuth();
   const [searchParams] = useSearchParams();
   const [loading, setLoading] = useState(false);
+  const [interval, setInterval] = useState("month");
   const [billing, setBilling] = useState({ enabled: false, tiers: {} });
-  useEffect(() => { axios.get(`${API}/subscription/config`).then(r => setBilling(r.data)).catch(() => {}); }, []);
+  const [lifecycle, setLifecycle] = useState(null);
+  const [pauseReason, setPauseReason] = useState("");
+  const [pauseDetails, setPauseDetails] = useState("");
+  const [pauseConfirm, setPauseConfirm] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
+  useEffect(() => {
+    axios.get(`${API}/subscription/config`).then(r => setBilling(r.data)).catch(() => {});
+    axios.get(`${API}/subscription/lifecycle`).then(r => setLifecycle(r.data)).catch(() => {});
+  }, []);
+
+  const dateLabel = (value) => value ? new Date(value).toLocaleDateString("it-IT", {
+    day: "numeric", month: "long", year: "numeric"
+  }) : "la scadenza del periodo";
+  const configuredPrice = (tier) => billing.tiers?.[tier]?.[interval];
+  const formatPrice = (tier) => {
+    const amount = configuredPrice(tier.id)?.amount_cents;
+    if (typeof amount === "number") return new Intl.NumberFormat("it-IT", {
+      style: "currency", currency: "EUR", maximumFractionDigits: 2
+    }).format(amount / 100);
+    return interval === "month" ? "€" + tier.price : "Prezzo al checkout";
+  };
+  const refreshLifecycle = async () => {
+    const response = await axios.get(`${API}/subscription/lifecycle`);
+    setLifecycle(response.data);
+    await checkAuth();
+  };
+  const schedulePause = async () => {
+    setPauseBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/subscription/suspend`, {
+        reason: pauseReason, details: pauseDetails.trim(),
+      });
+      setPauseConfirm(false);
+      await refreshLifecycle();
+      toast.success("Sospensione programmata per " + dateLabel(data.pause_effective_at));
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Sospensione non disponibile.");
+    } finally { setPauseBusy(false); }
+  };
+  const undoPause = async () => {
+    setPauseBusy(true);
+    try {
+      await axios.post(`${API}/subscription/suspend/cancel`, {});
+      await refreshLifecycle();
+      toast.success("Rinnovo riattivato.");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Ripristino non disponibile.");
+    } finally { setPauseBusy(false); }
+  };
   const [checkingPayment, setCheckingPayment] = useState(false);
   const [paymentSuccess, setPaymentSuccess] = useState(false);
 
@@ -89,6 +140,7 @@ export const SubscriptionPage = () => {
     try {
       const response = await axios.post(`${API}/subscription/checkout`, {
         tier: tier,
+        interval,
         origin_url: window.location.origin
       }, { withCredentials: true });
 
@@ -142,12 +194,32 @@ export const SubscriptionPage = () => {
           Scegli il tuo Piano
         </h1>
         <p className="text-muted-foreground mt-2">
-          Tutti i piani includono 7 giorni di prova gratuita
+          Scegli il piano e la periodicità di fatturazione
         </p>
       </div>
 
+      <div className="flex justify-center gap-2" role="group" aria-label="Periodicità abbonamento">
+        <Button variant={interval === "month" ? "default" : "outline"} onClick={() => setInterval("month")}>Mensile</Button>
+        <Button variant={interval === "year" ? "default" : "outline"} onClick={() => setInterval("year")}>Annuale</Button>
+      </div>
+      {interval === "year" && <p className="text-sm text-center text-muted-foreground">I prezzi annuali saranno selezionabili solo dopo la configurazione dei relativi prezzi Stripe. Il rinnovo si può disattivare per la scadenza annuale.</p>}
+
+      {lifecycle?.suspended && <Card className="border-primary/25">
+        <CardContent className="pt-5 space-y-2">
+          <p className="font-semibold text-primary">Il tuo account è sospeso</p>
+          <p className="text-sm text-muted-foreground">I dati sono conservati secondo le condizioni applicabili. Seleziona un piano per riattivare l'accesso; il nuovo periodo inizierà dopo il pagamento.</p>
+        </CardContent>
+      </Card>}
+      {lifecycle?.pause_requested && !lifecycle?.suspended && <Card className="border-primary/25">
+        <CardContent className="pt-5 space-y-3">
+          <p className="font-semibold">Sospensione programmata</p>
+          <p className="text-sm text-muted-foreground">Puoi utilizzare Beside fino al {dateLabel(lifecycle.pause_effective_at)}. Il rinnovo successivo è disattivato.</p>
+          {user?.role === "owner" && <Button disabled={pauseBusy} variant="outline" onClick={undoPause}><RotateCcw className="mr-2 h-4 w-4" />Annulla sospensione</Button>}
+        </CardContent>
+      </Card>}
+
       {/* Current Plan Info */}
-      {user?.subscription_status === "active" && (
+      {user?.subscription_status === "active" && !lifecycle?.suspended && (
         <Card className="bg-success/10 border-success/30">
           <CardContent className="py-4 text-center">
             <p className="text-success font-medium">
@@ -158,10 +230,36 @@ export const SubscriptionPage = () => {
       )}
 
       {!billing.enabled && <p className="text-center text-muted-foreground" role="status">Pagamenti non attivi in questo ambiente. Puoi esplorare i piani senza addebiti.</p>}
-      {billing.enabled && user?.subscription_status === 'active' && <Button onClick={async () => {
+      {billing.enabled && user?.subscription_status === 'active' && !lifecycle?.suspended && <Button onClick={async () => {
         try { const { data } = await axios.post(`${API}/subscription/portal`); window.location.href = data.url; }
         catch (error) { toast.error(error.response?.data?.detail || 'Portale non disponibile'); }
       }}>Gestisci abbonamento</Button>}
+      {user?.role === "owner" && lifecycle?.subscription_status === "active" && !lifecycle?.pause_requested && !lifecycle?.suspended && billing.enabled && (
+        <Card><CardContent className="pt-5 space-y-3">
+          <div className="flex gap-2 items-center font-medium"><PauseCircle className="h-5 w-5" />Sospendi temporaneamente l'account</div>
+          <p className="text-sm text-muted-foreground">Il rinnovo sarà disattivato. Potrai utilizzare Beside fino al termine del periodo già pagato ({dateLabel(lifecycle.current_period_end)}). Nessun giorno pagato viene perso.</p>
+          {!pauseConfirm ? (
+            <Button variant="outline" onClick={() => setPauseConfirm(true)}>Programma sospensione</Button>
+          ) : (
+            <div className="rounded-md border p-3 space-y-3">
+              <Label htmlFor="pause-reason">Per quale motivo vuoi sospendere il tuo account? (facoltativo)</Label>
+              <select id="pause-reason" className="w-full rounded-md border bg-background p-2.5 text-sm" value={pauseReason} onChange={e => setPauseReason(e.target.value)}>
+                <option value="">Preferisco non rispondere</option>
+                <option value="pausa">Pausa o chiusura temporanea dell'attività</option>
+                <option value="utilizzo">Utilizzo limitato</option>
+                <option value="costo">Costo dell'abbonamento</option>
+                <option value="funzioni">Funzionalità mancanti</option>
+                <option value="alternativa">Altra soluzione</option>
+                <option value="altro">Altro motivo</option>
+              </select>
+              {pauseReason === "altro" && <Textarea rows={2} value={pauseDetails} onChange={e => setPauseDetails(e.target.value)} maxLength={500} placeholder="Puoi aggiungere dettagli (facoltativo)"/>}
+              <p className="text-xs text-muted-foreground">Confermando, disattivi il prossimo rinnovo e programmi la sospensione per la fine del periodo pagato.</p>
+              <div className="flex flex-wrap gap-2"><Button disabled={pauseBusy} onClick={schedulePause}>Conferma sospensione</Button><Button variant="ghost" onClick={() => setPauseConfirm(false)}>Indietro</Button></div>
+            </div>
+          )}
+        </CardContent></Card>
+      )}
+
       {/* Pricing Cards */}
       <div className="grid md:grid-cols-3 gap-6">
         {TIERS.map((tier) => (
@@ -180,8 +278,9 @@ export const SubscriptionPage = () => {
             <CardHeader className="text-center pb-2">
               <CardTitle className="text-xl">{tier.name}</CardTitle>
               <div className="mt-4">
-                <span className="text-4xl font-bold text-primary">€{tier.price}</span>
-                <span className="text-muted-foreground">/mese</span>
+                <span className="text-3xl font-bold text-primary">{formatPrice(tier)}</span>
+                {typeof configuredPrice(tier.id)?.amount_cents === "number" && <span className="text-muted-foreground">/{interval === "month" ? "mese" : "anno"}</span>}
+                {!configuredPrice(tier.id)?.available && <p className="text-xs text-muted-foreground mt-2">Prezzo {interval === "year" ? "annuale" : "mensile"} non attivo</p>}
               </div>
             </CardHeader>
             <CardContent className="space-y-6">
@@ -195,7 +294,7 @@ export const SubscriptionPage = () => {
               </ul>
               <Button
                 onClick={() => handleSubscribe(tier.id)}
-                disabled={loading || !billing.tiers[tier.id] || (user?.subscription_status === "active" && user?.subscription_tier === tier.id)}
+                disabled={loading || !configuredPrice(tier.id)?.available || (user?.subscription_status === "active" && !lifecycle?.suspended && user?.subscription_tier === tier.id)}
                 className={`w-full ${tier.popular ? "" : "variant-outline"}`}
                 variant={tier.popular ? "default" : "outline"}
                 data-testid={`subscribe-${tier.id}-btn`}
@@ -205,7 +304,7 @@ export const SubscriptionPage = () => {
                     <Loader2 className="w-4 h-4 mr-2 animate-spin" />
                     Caricamento...
                   </>
-                ) : user?.subscription_status === "active" && user?.subscription_tier === tier.id ? (
+                ) : user?.subscription_status === "active" && !lifecycle?.suspended && user?.subscription_tier === tier.id ? (
                   "Piano Attuale"
                 ) : (
                   "Scegli Piano"
@@ -225,19 +324,19 @@ export const SubscriptionPage = () => {
           <div>
             <p className="font-medium">Posso cancellare in qualsiasi momento?</p>
             <p className="text-sm text-muted-foreground">
-              Sì, puoi cancellare il tuo abbonamento in qualsiasi momento. Avrai accesso fino alla fine del periodo pagato.
+              Puoi disattivare il rinnovo in qualsiasi momento. L'accesso resta attivo fino alla fine del periodo già pagato; nell'annuale fino alla scadenza dell'annualità.
             </p>
           </div>
           <div>
             <p className="font-medium">Come funziona la prova gratuita?</p>
             <p className="text-sm text-muted-foreground">
-              Hai 7 giorni per provare tutte le funzionalità. La prova è senza addebiti automatici. Un pagamento richiede la conferma del checkout.
+              Le condizioni di prova, se disponibili per il tuo piano, sono mostrate nel checkout. Nessun pagamento viene avviato senza conferma.
             </p>
           </div>
           <div>
             <p className="font-medium">Posso cambiare piano?</p>
             <p className="text-sm text-muted-foreground">
-              Sì, puoi passare a un piano superiore o inferiore in qualsiasi momento. La differenza verrà calcolata proporzionalmente.
+              Le modifiche del piano e gli eventuali conguagli vengono presentati nel portale di fatturazione.
             </p>
           </div>
         </CardContent>
