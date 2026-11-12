@@ -1074,6 +1074,35 @@ def _ensure_recovery_contact_scope(request: Request, user: Dict[str, Any]) -> No
     if request.url.path not in allowed:
         raise HTTPException(status_code=403, detail="Account contatto limitato all'autenticazione")
 
+def _billing_is_suspended(company: Dict[str, Any]) -> bool:
+    deadline = (company or {}).get("subscription_pause_effective_at")
+    if not deadline:
+        return False
+    try:
+        parsed = datetime.fromisoformat(deadline.replace("Z", "+00:00"))
+        return parsed <= datetime.now(timezone.utc)
+    except (ValueError, TypeError):
+        return False
+
+
+def _ensure_billing_scope(request: Request, user: Dict[str, Any]) -> None:
+    """Keep authenticated recovery and billing access, block operational tenant data."""
+    if user.get("platform_role") == "super_admin" or not _billing_is_suspended(user.get("company") or {}):
+        return
+    path = request.url.path
+    allowed = {
+        "/api/auth/me", "/api/auth/logout", "/api/auth/support/tickets",
+        "/api/subscription/config", "/api/subscription/lifecycle",
+        "/api/subscription/checkout", "/api/subscription/portal",
+    }
+    if (path in allowed or path.startswith("/api/subscription/status/")
+            or path.startswith("/api/auth/2fa/")
+            or path.startswith("/api/auth/recovery-contact/")
+            or path.startswith("/api/auth/2fa/recovery/")):
+        return
+    raise HTTPException(status_code=403, detail="Account sospeso: riattiva l'abbonamento.")
+
+
 def _ensure_mfa_setup_scope(request: Request) -> None:
     """Allow setup sessions to reach only the minimum MFA enrollment API."""
     allowed = {"/api/auth/2fa/setup", "/api/auth/2fa/confirm", "/api/auth/logout"}
@@ -1106,6 +1135,7 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=401, detail="Sessione scaduta")
         user = await _load_active_user(session["user_id"])
         _ensure_recovery_contact_scope(request, user)
+        _ensure_billing_scope(request, user)
         if user.get("totp_enabled") and not session.get("mfa_verified", False):
             raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
@@ -1132,6 +1162,7 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
             raise HTTPException(status_code=401, detail="Sessione revocata o scaduta")
         user = await _load_active_user(payload["user_id"])
         _ensure_recovery_contact_scope(request, user)
+        _ensure_billing_scope(request, user)
         if user.get("totp_enabled") and not session.get("mfa_verified", False):
             raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
@@ -1217,6 +1248,10 @@ def public_user(user: Dict[str, Any]) -> Dict[str, Any]:
         "business_info": user.get("business_info", {}),
         "subscription_tier": company.get("plan_id") or user.get("subscription_tier", "essential"),
         "subscription_status": company.get("subscription_status") or user.get("subscription_status", "trialing"),
+        "billing_interval": company.get("billing_interval", "month"),
+        "subscription_pause_requested_at": company.get("subscription_pause_requested_at"),
+        "subscription_pause_effective_at": company.get("subscription_pause_effective_at"),
+        "subscription_suspended": _billing_is_suspended(company),
         "trial_started_at": company.get("trial_started_at"),
         "trial_ends_at": company.get("trial_ends_at"),
         "role": user.get("role", "member"),
