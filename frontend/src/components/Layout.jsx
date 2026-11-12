@@ -171,7 +171,7 @@ export const Layout = ({ children }) => {
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="border-b border-slate-200/80 p-4">
+        <div className="mobile-sidebar-header border-b border-slate-200/80 p-4">
           <img src="/beside-logo.svg" alt="Beside" className="mb-4 h-8 w-auto max-w-full object-contain object-left" />
           <NavLink to="/profile" onClick={() => setSidebarOpen(false)} className="mobile-user-card block">
             <div className="flex items-center gap-3">
