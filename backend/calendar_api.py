@@ -416,7 +416,11 @@ async def run_calendar_reminder_worker(db, send_email, every_seconds: int = 45):
                         continue
                     company = await db.companies.find_one(
                         {"company_id": event["company_id"]},
-                        {"_id": 0, "owner_user_id": 1})
+                        {"_id": 0, "owner_user_id": 1, "subscription_pause_effective_at": 1})
+                    deadline = (company or {}).get("subscription_pause_effective_at")
+                    if deadline and datetime.fromisoformat(deadline.replace("Z", "+00:00")) <= now:
+                        await db.calendar_reminder_claims.delete_one(key)
+                        continue
                     owner = await db.users.find_one(
                         {"user_id": (company or {}).get("owner_user_id"),
                          "company_id": event["company_id"], "is_active": {"$ne": False}},
