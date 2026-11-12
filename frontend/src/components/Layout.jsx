@@ -138,10 +138,10 @@ export const Layout = ({ children }) => {
       </aside>
 
       {/* Mobile Header */}
-      <header className="md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-border z-40 flex items-center justify-between px-4">
-        <h1 className="text-xl font-bold text-primary" style={{ fontFamily: 'Barlow, sans-serif' }}>
-          BESIDE
-        </h1>
+      <header className="md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-border z-40 flex items-center justify-start px-4">
+        <NavLink to="/dashboard" aria-label="Beside — Bacheca" className="inline-flex h-10 items-center">
+          <img src="/beside-logo.svg" alt="Beside" className="h-8 w-auto max-w-[9.5rem] object-contain object-left sm:h-9 sm:max-w-[11rem]" />
+        </NavLink>
       </header>
 
       {!sidebarOpen && (
