@@ -472,7 +472,7 @@ export const ProfilePage = () => {
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
                     <FileText className="w-5 h-5 text-secondary" />
-                    Dati Fiscali e Contatti
+                    Dati fiscali e sede legale
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -599,12 +599,19 @@ export const ProfilePage = () => {
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <Label htmlFor="logo_url">Indirizzo logo esistente (facoltativo)</Label>
-                        <Input
-                          id="logo_url"
-                          value={businessInfo.logo_url}
-                          onChange={(e) => setBusinessInfo({ ...businessInfo, logo_url: e.target.value })}
-                          placeholder="https://esempio.it/logo.png"
-                        />
+                        {businessInfo.logo_url?.startsWith("data:image/") ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm text-muted-foreground">Logo caricato dal dispositivo</span>
+                            <Button type="button" variant="outline" size="sm" onClick={() => setBusinessInfo(v => ({...v, logo_url: ""}))}>Rimuovi</Button>
+                          </div>
+                        ) : (
+                          <Input
+                            id="logo_url"
+                            value={businessInfo.logo_url}
+                            onChange={(e) => setBusinessInfo({ ...businessInfo, logo_url: e.target.value })}
+                            placeholder="https://esempio.it/logo.png"
+                          />
+                        )}
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="logo_width">Larghezza Logo (px)</Label>
