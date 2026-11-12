@@ -85,6 +85,9 @@ export const ProfilePage = () => {
   const [collaboratorEmail, setCollaboratorEmail] = useState("");
   const [collaboratorRole, setCollaboratorRole] = useState("member");
   const [collaboratorBusy, setCollaboratorBusy] = useState(false);
+  const [deletionForm, setDeletionForm] = useState({ reason: "", details: "", confirmation: "", code: "" });
+  const [deletionBusy, setDeletionBusy] = useState(false);
+  const [deletionStatus, setDeletionStatus] = useState(null);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -250,6 +253,25 @@ export const ProfilePage = () => {
       toast.error(error.response?.data?.detail || "Impossibile aggiornare il ruolo.");
     } finally {
       setCollaboratorBusy(false);
+    }
+  };
+
+  const requestAccountDeletion = async (event) => {
+    event.preventDefault();
+    if (deletionForm.confirmation !== "ELIMINA" || !/^\d{6}$/.test(deletionForm.code)) {
+      toast.error("Digita ELIMINA e inserisci un codice Authenticator valido.");
+      return;
+    }
+    setDeletionBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/company/delete`, deletionForm);
+      setDeletionStatus(response.data);
+      toast.success("Eliminazione avviata.");
+    } catch (error) {
+      setDeletionForm(current => ({ ...current, code: "" }));
+      toast.error(error.response?.data?.detail || "Impossibile avviare l'eliminazione.");
+    } finally {
+      setDeletionBusy(false);
     }
   };
 
@@ -477,6 +499,26 @@ export const ProfilePage = () => {
           {collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"><span className="min-w-0 flex-1 truncate">{invite.email} · {invite.role}</span><div className="flex gap-1"><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => resendCollaboratorInvite(invite.invitation_id)}>Reinvia invito</Button><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div></div>)}</div>}
           {collaborators.members?.filter(member => member.user_id !== user?.user_id).length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Utenti attivi</p>{collaborators.members.filter(member => member.user_id !== user?.user_id).map(member => <div key={member.user_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{member.email}</span><select className="rounded-md border bg-background px-2 py-1 text-xs" value={member.role} disabled={collaboratorBusy} onChange={e => changeCollaboratorRole(member.user_id, e.target.value)}><option value="admin">Amministratore</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={collaboratorBusy} onClick={() => revokeCollaborator(member.user_id)}>Revoca</Button></div>)}</div>}
           {!collaborators.invitations?.length && !collaborators.members?.some(member => member.user_id !== user?.user_id) && <p className="text-sm text-muted-foreground">Nessun collaboratore collegato.</p>}
+        </CardContent>
+      </Card>}
+
+      {section === "personal" && user?.role === "owner" && <Card className="border-destructive/40">
+        <CardHeader><CardTitle className="text-lg flex items-center gap-2 text-destructive"><Trash2 className="h-5 w-5"/>Elimina definitivamente account</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          {deletionStatus ? <div className="space-y-3 text-sm"><p className="font-medium text-destructive">Eliminazione avviata</p><p>L'accesso operativo è stato bloccato. Lo stato persistente è: {deletionStatus.status}.</p><Button type="button" className="w-full" onClick={() => logout().then(() => navigate("/login"))}>Torna al login</Button></div> : <>
+            <p className="text-sm text-muted-foreground">L'operazione è irreversibile: perderai subito l'accesso e l'eventuale periodo di abbonamento residuo, senza rimborso automatico.</p>
+            <form onSubmit={requestAccountDeletion} className="space-y-3">
+              <select className="w-full rounded-md border bg-background p-2.5 text-sm" value={deletionForm.reason} onChange={e => setDeletionForm(f => ({ ...f, reason: e.target.value }))}>
+                <option value="">Motivo (facoltativo)</option><option value="pausa">Pausa o chiusura attività</option><option value="utilizzo">Utilizzo insufficiente</option><option value="costo">Costo abbonamento</option><option value="funzioni">Funzionalità mancanti</option><option value="alternativa">Altra soluzione</option><option value="altro">Altro</option>
+              </select>
+              {deletionForm.reason === "altro" && (
+                <Textarea rows={2} placeholder="Note facoltative" value={deletionForm.details} onChange={e => setDeletionForm(f => ({ ...f, details: e.target.value }))}/>
+              )}
+              <Input placeholder="Digita ELIMINA" value={deletionForm.confirmation} onChange={e => setDeletionForm(f => ({ ...f, confirmation: e.target.value }))} autoComplete="off" />
+              <Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator" value={deletionForm.code} onChange={e => setDeletionForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code" />
+              <Button type="submit" variant="destructive" className="w-full" disabled={deletionBusy}>{deletionBusy ? "Eliminazione in corso…" : "Elimina definitivamente"}</Button>
+            </form>
+          </>}
         </CardContent>
       </Card>}
 
@@ -924,7 +966,6 @@ export const ProfilePage = () => {
 
       {section === "account" && <div className="space-y-4">
         <Card><CardHeader><CardTitle className="text-lg flex items-center gap-2"><PauseCircle className="h-5 w-5"/>Sospendi temporaneamente l’account</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">La sospensione disattiva il rinnovo alla scadenza naturale del periodo pagato, senza perdere i giorni residui. Puoi annullarla finché non è diventata effettiva.</p><Button variant="outline" className="w-full" onClick={() => navigate("/subscription")}>Gestisci sospensione e rinnovo</Button></CardContent></Card>
-        <Card><CardHeader><CardTitle className="text-lg flex items-center gap-2"><Trash2 className="h-5 w-5 text-destructive"/>Elimina definitivamente l’account</CardTitle></CardHeader><CardContent className="space-y-3"><p className="text-sm text-muted-foreground">L’eliminazione autonoma è temporaneamente disabilitata: il backend non dispone ancora di una procedura atomica e riprendibile che separi i dati fiscali obbligatori dai dati operativi.</p><Button type="button" variant="outline" className="w-full text-destructive" disabled>Eliminazione non ancora disponibile</Button></CardContent></Card>
       </div>}
     </div>
   );

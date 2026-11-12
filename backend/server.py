@@ -187,6 +187,7 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     reminder_task = None
+    deletion_tasks = []
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
         await synchronize_platform_admin_password()
@@ -199,6 +200,7 @@ async def lifespan(_app: FastAPI):
             logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
         reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email))
+        deletion_tasks = await _resume_account_deletions()
         yield
     finally:
         if reminder_task is not None:
@@ -207,6 +209,9 @@ async def lifespan(_app: FastAPI):
                 await reminder_task
             except asyncio.CancelledError:
                 pass
+        for task in deletion_tasks:
+            if not task.done():
+                task.cancel()
         client.close()
 
 
@@ -403,6 +408,12 @@ class CompanyInvitationAccept(BaseModel):
     password: str = Field(min_length=10, max_length=128)
     first_name: str = Field(default="", max_length=100)
     last_name: str = Field(default="", max_length=100)
+
+class AccountDeletionRequest(BaseModel):
+    confirmation: str = Field(min_length=7, max_length=7)
+    code: str = Field(min_length=6, max_length=6)
+    reason: Optional[str] = Field(default="", max_length=60)
+    details: Optional[str] = Field(default="", max_length=500)
 
 class CompanyStatusUpdate(BaseModel):
     status: str
@@ -1113,6 +1124,18 @@ def _ensure_billing_scope(request: Request, user: Dict[str, Any]) -> None:
     raise HTTPException(status_code=403, detail="Account sospeso: riattiva l'abbonamento.")
 
 
+def _ensure_deletion_scope(request: Request, user: Dict[str, Any]) -> None:
+    if not (user.get("company") or {}).get("deletion_requested"):
+        return
+    allowed = {
+        "/api/auth/me", "/api/auth/logout", "/api/auth/company/delete",
+    }
+    if request.url.path.startswith("/api/auth/company/deletion-status/"):
+        return
+    if request.url.path not in allowed:
+        raise HTTPException(status_code=403, detail="Eliminazione account in corso")
+
+
 def _ensure_mfa_setup_scope(request: Request) -> None:
     """Allow setup sessions to reach only the minimum MFA enrollment API."""
     allowed = {"/api/auth/2fa/setup", "/api/auth/2fa/confirm", "/api/auth/logout"}
@@ -1146,6 +1169,7 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
         user = await _load_active_user(session["user_id"])
         _ensure_recovery_contact_scope(request, user)
         _ensure_billing_scope(request, user)
+        _ensure_deletion_scope(request, user)
         if user.get("totp_enabled") and not session.get("mfa_verified", False):
             raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
@@ -1173,6 +1197,7 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
         user = await _load_active_user(payload["user_id"])
         _ensure_recovery_contact_scope(request, user)
         _ensure_billing_scope(request, user)
+        _ensure_deletion_scope(request, user)
         if user.get("totp_enabled") and not session.get("mfa_verified", False):
             raise HTTPException(status_code=401, detail="Verifica 2FA richiesta")
         if email_verification_blocks_access(user):
@@ -4124,6 +4149,150 @@ async def accept_company_invitation(
     return {"status": "accepted", "email": invite["email"], "email_verification_required": True,
             "message": "Account creato. Verifica l'email, poi accedi per configurare il tuo Authenticator."}
 
+
+ACCOUNT_DELETION_REASONS = {"", "pausa", "utilizzo", "costo", "funzioni", "alternativa", "altro"}
+ACCOUNT_DELETION_OPERATIONAL_COLLECTIONS = (
+    "users", "companies", "jobs", "lead_sources", "finance_settings", "cash_plan_entries",
+    "cash_plan_settings", "tax_accruals", "onboardings", "marketing_efforts", "ai_content_history",
+    "admin_chat", "payment_transactions", "user_sessions", "recovery_contacts", "company_invitations",
+    "quote_tokens", "calendar_events", "calendar_locks", "calendar_reminder_claims", "support_tickets",
+    "email_verification_tokens", "password_reset_tokens", "email_recovery_tokens",
+)
+
+
+async def _run_account_deletion(operation_id: str) -> None:
+    operation = await db.account_deletion_operations.find_one({"operation_id": operation_id}, {"_id": 0})
+    if not operation or operation.get("status") == "completed":
+        return
+    company_id = operation["company_id"]
+    now = datetime.now(timezone.utc).isoformat()
+    await db.account_deletion_operations.update_one(
+        {"operation_id": operation_id, "status": {"$in": ["billing_cancelled", "deleting", "error"]}},
+        {"$set": {"status": "deleting", "phase": "operational_data", "updated_at": now}},
+    )
+    # Retain only the minimum fiscal/accounting snapshot in a separate,
+    # non-operational collection. It is never returned by customer APIs.
+    retained = await db.retained_fiscal_records.find_one({"company_id": company_id}, {"_id": 1})
+    if not retained:
+        company = await db.companies.find_one({"company_id": company_id}, {"_id": 0})
+        transactions = await db.payment_transactions.find(
+            {"company_id": company_id},
+            {"_id": 0, "session_id": 1, "payment_status": 1, "status": 1, "amount": 1,
+             "currency": 1, "tier": 1, "interval": 1, "created_at": 1},
+        ).to_list(1000)
+        if company:
+            info = company.get("business_info") or {}
+            await db.retained_fiscal_records.insert_one({
+                "company_id": company_id,
+                "retained_at": now,
+                "reason": "account_deletion",
+                "fiscal": {key: info.get(key) for key in ("partita_iva", "codice_fiscale", "pec", "sdi", "banca", "iban") if info.get(key)},
+                "accounting_transactions": transactions,
+            })
+    await db.account_deletion_operations.update_one(
+        {"operation_id": operation_id}, {"$set": {"phase": "operational_data", "updated_at": now}}
+    )
+    # Delete only documents explicitly scoped to this company. Recovery-contact
+    # accounts with company_id=None remain untouched.
+    for collection_name in ACCOUNT_DELETION_OPERATIONAL_COLLECTIONS:
+        collection = getattr(db, collection_name, None)
+        if collection is None:
+            continue
+        if collection_name == "users":
+            await collection.delete_many({"company_id": company_id})
+        elif collection_name == "companies":
+            await collection.delete_many({"company_id": company_id})
+        else:
+            await collection.delete_many({"company_id": company_id})
+    await db.account_deletion_operations.update_one(
+        {"operation_id": operation_id},
+        {"$set": {"status": "completed", "phase": "completed", "completed_at": datetime.now(timezone.utc).isoformat(),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+
+async def _resume_account_deletions() -> List[asyncio.Task]:
+    operations = await db.account_deletion_operations.find(
+        {"status": {"$in": ["billing_cancelled", "deleting"]}}, {"_id": 0, "operation_id": 1}
+    ).to_list(100)
+    return [asyncio.create_task(_run_account_deletion(operation["operation_id"])) for operation in operations]
+
+
+@api_router.post("/auth/company/delete")
+async def request_account_deletion(
+    data: AccountDeletionRequest,
+    background_tasks: BackgroundTasks,
+    response: Response,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner")),
+):
+    if current_user.get("platform_role") == "super_admin" or current_user.get("role") == RECOVERY_CONTACT_ROLE:
+        raise HTTPException(status_code=403, detail="Questa funzione non è disponibile per questo account")
+    if data.confirmation != "ELIMINA":
+        raise HTTPException(status_code=400, detail="Digita ELIMINA per confermare")
+    if data.reason not in ACCOUNT_DELETION_REASONS:
+        raise HTTPException(status_code=400, detail="Motivo non valido")
+    await enforce_rate_limit(request, "auth_company_delete", limit=3, window_seconds=60 * 60,
+                             identifier=current_user["user_id"])
+    if not await _consume_current_totp(current_user, data.code):
+        raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    existing = await db.account_deletion_operations.find_one(
+        {"company_id": current_user["company_id"], "status": {"$in": ["requested", "billing_cancelled", "deleting", "completed"]}},
+        {"_id": 0},
+        sort=[("created_at", -1)],
+    )
+    if existing:
+        if existing.get("status") == "completed":
+            raise HTTPException(status_code=410, detail="Account già eliminato")
+        return {"status": existing.get("status"), "operation_id": existing["operation_id"]}
+    now = datetime.now(timezone.utc)
+    operation_id = f"account_deletion_{uuid.uuid4().hex[:20]}"
+    await db.account_deletion_operations.insert_one({
+        "operation_id": operation_id, "company_id": current_user["company_id"],
+        "requested_by": current_user["user_id"], "status": "requested", "phase": "billing",
+        "reason": data.reason or "non_indicato", "details": (data.details or "").strip()[:500],
+        "created_at": now.isoformat(), "updated_at": now.isoformat(),
+    })
+    company = await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0})
+    subscription_id = (company or {}).get("stripe_subscription_id")
+    if subscription_id:
+        try:
+            await cancel_subscription_immediately(subscription_id)
+        except Exception as exc:
+            await db.account_deletion_operations.update_one(
+                {"operation_id": operation_id},
+                {"$set": {"status": "error", "phase": "billing", "error_code": type(exc).__name__,
+                          "updated_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            raise HTTPException(status_code=502, detail="Non è stato possibile confermare la cessazione dell'abbonamento")
+    await db.account_deletion_operations.update_one(
+        {"operation_id": operation_id, "status": "requested"},
+        {"$set": {"status": "billing_cancelled", "phase": "operational_data", "billing_cancelled_at": datetime.now(timezone.utc).isoformat(),
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    await db.companies.update_one({"company_id": current_user["company_id"]},
+                                  {"$set": {"deletion_requested": True, "updated_at": datetime.now(timezone.utc).isoformat()}})
+    await db.user_sessions.update_many(
+        {"company_id": current_user["company_id"], "revoked_at": None},
+        {"$set": {"revoked_at": datetime.now(timezone.utc).isoformat(), "revoked_reason": "account_deletion"}},
+    )
+    background_tasks.add_task(_run_account_deletion, operation_id)
+    await audit_event("account_deletion_requested", user=current_user, request=request,
+                      metadata={"operation_id": operation_id})
+    clear_session_cookie(response)
+    return {"status": "deleting", "operation_id": operation_id, "message": "Eliminazione avviata"}
+
+
+@api_router.get("/auth/company/deletion-status/{operation_id}")
+async def account_deletion_status(operation_id: str, current_user: Dict = Depends(get_current_user)):
+    operation = await db.account_deletion_operations.find_one(
+        {"operation_id": operation_id, "company_id": current_user.get("company_id")},
+        {"_id": 0, "operation_id": 1, "status": 1, "phase": 1, "created_at": 1, "completed_at": 1, "error_code": 1},
+    )
+    if not operation:
+        raise HTTPException(status_code=404, detail="Operazione non trovata")
+    return operation
+
 # ==================== JOBS AND PLANNING ENDPOINTS ====================
 
 register_calendar_routes(api_router, db, company_scope, require_company_roles)
@@ -6161,7 +6330,7 @@ async def add_security_headers(request: Request, call_next):
     return response
 
 # Independent payment integration; shares existing tenant-aware authentication.
-from billing import build_billing_router
+from billing import build_billing_router, cancel_subscription_immediately
 app.include_router(build_billing_router(
     db, get_current_user, require_company_roles, FRONTEND_PUBLIC_URL,
     lambda: EXTERNAL_SERVICES_ENABLED,

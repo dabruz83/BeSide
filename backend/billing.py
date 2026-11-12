@@ -60,6 +60,26 @@ def _stripe_field(resource, name, default=None):
     return default if value is None else value
 
 
+async def cancel_subscription_immediately(subscription_id: str):
+    """Cancel a subscription now and verify Stripe reports it as cancelled.
+
+    Used by the account-deletion workflow. It deliberately does not fall back
+    to ``cancel_at_period_end``: deletion must not leave future billing active.
+    """
+    if not subscription_id or not os.getenv('STRIPE_SECRET_KEY'):
+        raise RuntimeError('Stripe non configurato')
+    api = stripe.StripeClient(os.environ['STRIPE_SECRET_KEY'])
+    subscription = await api.v1.subscriptions.retrieve_async(subscription_id)
+    status = _stripe_field(subscription, 'status')
+    if status in {'canceled', 'incomplete_expired'}:
+        return subscription
+    await api.v1.subscriptions.cancel_async(subscription_id)
+    verified = await api.v1.subscriptions.retrieve_async(subscription_id)
+    if _stripe_field(verified, 'status') != 'canceled':
+        raise RuntimeError('Stripe non ha confermato la cessazione dell’abbonamento')
+    return verified
+
+
 def build_billing_router(db, current_user, require_roles, frontend_url, external_enabled):
     router = APIRouter(prefix='/api')
 
