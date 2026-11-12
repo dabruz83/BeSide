@@ -14,6 +14,7 @@ import { VerifyEmailPage } from "@/pages/VerifyEmailPage";
 import { EmailVerificationPendingPage } from "@/pages/EmailVerificationPendingPage";
 import { SupportTicketPage } from "@/pages/SupportTicketPage";
 import { RecoveryEmailVerifyPage } from "@/pages/RecoveryEmailVerifyPage";
+import { EmailChangeVerifyPage } from "@/pages/EmailChangeVerifyPage";
 import { RecoveryContactAcceptPage } from "@/pages/RecoveryContactAcceptPage";
 import { CompanyInviteAcceptPage } from "@/pages/CompanyInviteAcceptPage";
 import { Recovery2FARequestPage } from "@/pages/Recovery2FARequestPage";
@@ -281,6 +282,7 @@ const AppRouter = () => {
       <Route path="/verify-email/pending" element={<EmailVerificationPendingPage />} />
       <Route path="/support" element={<SupportTicketPage />} />
       <Route path="/verify-recovery-email" element={<RecoveryEmailVerifyPage />} />
+      <Route path="/change-email/verify" element={<EmailChangeVerifyPage />} />
       <Route path="/recovery-contact/accept" element={<RecoveryContactAcceptPage />} />
       <Route path="/company-invite/accept" element={<CompanyInviteAcceptPage />} />
       <Route path="/recovery-2fa" element={<Recovery2FARequestPage />} />

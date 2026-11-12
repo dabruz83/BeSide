@@ -88,6 +88,10 @@ export const ProfilePage = () => {
   const [deletionForm, setDeletionForm] = useState({ reason: "", details: "", confirmation: "", code: "" });
   const [deletionBusy, setDeletionBusy] = useState(false);
   const [deletionStatus, setDeletionStatus] = useState(null);
+  const [emailChange, setEmailChange] = useState({ status: "none", email: "", expires_at: null });
+  const [emailChangeForm, setEmailChangeForm] = useState({ email: "", code: "" });
+  const [emailChangeOpen, setEmailChangeOpen] = useState(false);
+  const [emailChangeBusy, setEmailChangeBusy] = useState(false);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -187,6 +191,11 @@ export const ProfilePage = () => {
     if (section === "personal" && user?.role === "owner") loadCollaborators();
   }, [section, user?.user_id, user?.role]);
 
+  useEffect(() => {
+    if (section !== "personal" || !user?.user_id) return;
+    axios.get(`${API}/auth/email-change/status`).then(({ data }) => setEmailChange(data)).catch(() => {});
+  }, [section, user?.user_id]);
+
   const inviteCollaborator = async (event) => {
     event.preventDefault();
     if (!collaboratorEmail.trim()) return;
@@ -272,6 +281,40 @@ export const ProfilePage = () => {
       toast.error(error.response?.data?.detail || "Impossibile avviare l'eliminazione.");
     } finally {
       setDeletionBusy(false);
+    }
+  };
+
+  const requestEmailChange = async (event) => {
+    event.preventDefault();
+    if (!emailChangeForm.email.trim() || !/^\d{6}$/.test(emailChangeForm.code)) {
+      toast.error("Inserisci il nuovo indirizzo e un codice Authenticator valido.");
+      return;
+    }
+    setEmailChangeBusy(true);
+    try {
+      const response = await axios.post(`${API}/auth/email-change/request`, emailChangeForm);
+      setEmailChange({ status: "pending", email: response.data.email, expires_at: response.data.expires_at });
+      setEmailChangeForm({ email: "", code: "" });
+      setEmailChangeOpen(false);
+      toast.success("Controlla la nuova email per confermare il cambio.");
+    } catch (error) {
+      setEmailChangeForm(current => ({ ...current, code: "" }));
+      toast.error(error.response?.data?.detail || "Impossibile richiedere il cambio email.");
+    } finally {
+      setEmailChangeBusy(false);
+    }
+  };
+
+  const cancelEmailChange = async () => {
+    setEmailChangeBusy(true);
+    try {
+      await axios.post(`${API}/auth/email-change/cancel`);
+      setEmailChange({ status: "none", email: "", expires_at: null });
+      toast.success("Richiesta annullata.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile annullare la richiesta.");
+    } finally {
+      setEmailChangeBusy(false);
     }
   };
 
@@ -480,7 +523,7 @@ export const ProfilePage = () => {
           <div className="space-y-1"><Label>Nome</Label><Input value={personal.first_name} onChange={e => setPersonal(p => ({...p, first_name: e.target.value}))} /></div>
           <div className="space-y-1"><Label>Cognome</Label><Input value={personal.last_name} onChange={e => setPersonal(p => ({...p, last_name: e.target.value}))} /></div>
         </div>
-        <div className="space-y-1"><Label>Email di accesso</Label><Input value={user?.email || ""} disabled /><p className="text-xs text-muted-foreground">Per cambiare l'email di accesso contatta l'assistenza.</p></div>
+        <div className="space-y-2"><Label>Email di accesso</Label><div className="flex gap-2"><Input value={user?.email || ""} disabled /><Button type="button" variant="outline" onClick={() => setEmailChangeOpen(value => !value)}>Modifica</Button></div>{emailChange.status === "pending" && <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs"><p>Verifica richiesta in attesa per {emailChange.email}.</p><Button type="button" variant="link" className="h-auto px-0" disabled={emailChangeBusy} onClick={cancelEmailChange}>Annulla richiesta</Button></div>}{emailChangeOpen && <form onSubmit={requestEmailChange} className="space-y-2 rounded-md border p-3"><Input type="email" required placeholder="Nuovo indirizzo email" value={emailChangeForm.email} onChange={e => setEmailChangeForm(f => ({ ...f, email: e.target.value }))}/><Input inputMode="numeric" maxLength={6} required placeholder="Codice Authenticator" value={emailChangeForm.code} onChange={e => setEmailChangeForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code"/><p className="text-xs text-muted-foreground">L'indirizzo attuale resta attivo fino alla verifica del nuovo.</p><Button type="submit" className="w-full" disabled={emailChangeBusy}>Invia verifica</Button></form>}</div>
         <div className="space-y-1"><Label>Ruolo</Label><Input value={user?.role || ""} disabled /></div>
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva modifiche</Button>
       </CardContent></Card>}

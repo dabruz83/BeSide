@@ -89,6 +89,7 @@ JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_DAYS = 7
 PASSWORD_RESET_TOKEN_MINUTES = 30
 EMAIL_VERIFICATION_TOKEN_HOURS = 24
+EMAIL_CHANGE_TOKEN_MINUTES = 30
 RECOVERY_EMAIL_TOKEN_HOURS = 1
 RECOVERY_CONTACT_INVITE_HOURS = 24
 RECOVERY_CONTACT_SECURITY_DAYS = int(os.environ.get("RECOVERY_CONTACT_SECURITY_DAYS", "7"))
@@ -414,6 +415,10 @@ class AccountDeletionRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
     reason: Optional[str] = Field(default="", max_length=60)
     details: Optional[str] = Field(default="", max_length=500)
+
+class EmailChangeRequest(BaseModel):
+    email: EmailStr
+    code: str = Field(min_length=6, max_length=6)
 
 class CompanyStatusUpdate(BaseModel):
     status: str
@@ -2533,6 +2538,21 @@ async def send_email_verification(user_email: str, token: str) -> bool:
         ),
     )
 
+async def send_email_change_verification(user_email: str, token: str) -> bool:
+    verification_url = f"{PUBLIC_APP_URL}/change-email/verify?token={token}"
+    return await send_email_sendgrid(
+        user_email,
+        "Conferma il nuovo indirizzo email BESIDE",
+        f"<p>Conferma il nuovo indirizzo email per il tuo account BESIDE.</p><p><a href=\"{html.escape(verification_url, quote=True)}\">Conferma nuovo indirizzo</a></p><p>Il link scade tra {EMAIL_CHANGE_TOKEN_MINUTES} minuti ed è monouso.</p>",
+    )
+
+async def send_email_change_notice(old_email: str, new_email: str) -> bool:
+    return await send_email_sendgrid(
+        old_email,
+        "Richiesta di modifica email BESIDE",
+        f"<p>È stata richiesta la modifica dell'indirizzo di accesso del tuo account BESIDE.</p><p>Nuovo indirizzo indicato: {html.escape(new_email)}</p><p>Se non sei stato tu, accedi all'account e contatta l'assistenza.</p>",
+    )
+
 async def send_recovery_email_verification(user_email: str, token: str) -> bool:
     verification_url = f"{FRONTEND_PUBLIC_URL}/verify-recovery-email?token={token}"
     return await send_email_sendgrid(
@@ -3125,6 +3145,95 @@ async def update_profile(
 
     updated_user = await _load_active_user(current_user["user_id"])
     return public_user(updated_user)
+
+@api_router.post("/auth/email-change/request")
+async def request_email_change(
+    data: EmailChangeRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Start a verified change of the authentication email without changing the company email."""
+    if current_user.get("role") == RECOVERY_CONTACT_ROLE or current_user.get("platform_role") == "super_admin":
+        raise HTTPException(status_code=403, detail="Modifica email non disponibile per questo account")
+    await enforce_rate_limit(request, "auth_email_change", limit=3, window_seconds=60 * 60,
+                             identifier=current_user["user_id"])
+    target_email = normalize_email(str(data.email))
+    if target_email == normalize_email(current_user["email"]):
+        raise HTTPException(status_code=400, detail="Inserisci un indirizzo diverso da quello attuale")
+    if not await _consume_current_totp(current_user, data.code):
+        raise HTTPException(status_code=401, detail="Codice TOTP non valido o già utilizzato")
+    if await db.users.find_one({"email": target_email}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Email già associata a un account")
+    if await db.email_claims.find_one({"_id": email_claim_id(target_email)}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Email già in uso")
+    if await db.company_invitations.find_one({"email": target_email, "status": "pending",
+                                              "expires_at_dt": {"$gt": datetime.now(timezone.utc)}}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Email già collegata a un invito attivo")
+    now = datetime.now(timezone.utc)
+    await db.email_change_tokens.update_many(
+        {"user_id": current_user["user_id"], "used_at": None},
+        {"$set": {"used_at": now.isoformat(), "invalidated_reason": "replaced"}},
+    )
+    token = secrets.token_urlsafe(32)
+    await db.email_change_tokens.insert_one({
+        "token_id": f"email_change_{uuid.uuid4().hex[:16]}",
+        "token_hash": hash_token(token), "user_id": current_user["user_id"],
+        "company_id": current_user["company_id"], "old_email": current_user["email"],
+        "new_email": target_email, "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(minutes=EMAIL_CHANGE_TOKEN_MINUTES)).isoformat(),
+        "expires_at_dt": now + timedelta(minutes=EMAIL_CHANGE_TOKEN_MINUTES), "used_at": None,
+    })
+    background_tasks.add_task(send_email_change_verification, target_email, token)
+    background_tasks.add_task(send_email_change_notice, current_user["email"], target_email)
+    return {"status": "pending", "email": target_email, "expires_at": (now + timedelta(minutes=EMAIL_CHANGE_TOKEN_MINUTES)).isoformat()}
+
+@api_router.post("/auth/email-change/cancel")
+async def cancel_email_change(current_user: Dict = Depends(get_current_user)):
+    await db.email_change_tokens.update_many(
+        {"user_id": current_user["user_id"], "used_at": None},
+        {"$set": {"used_at": datetime.now(timezone.utc).isoformat(), "invalidated_reason": "cancelled"}},
+    )
+    return {"status": "cancelled"}
+
+@api_router.get("/auth/email-change/status")
+async def email_change_status(current_user: Dict = Depends(get_current_user)):
+    pending = await db.email_change_tokens.find_one(
+        {"user_id": current_user["user_id"], "used_at": None, "expires_at_dt": {"$gt": datetime.now(timezone.utc)}},
+        {"_id": 0, "new_email": 1, "expires_at": 1},
+        sort=[("created_at", -1)],
+    )
+    return {"status": "pending" if pending else "none", "email": pending.get("new_email") if pending else None,
+            "expires_at": pending.get("expires_at") if pending else None}
+
+@api_router.post("/auth/email-change/verify")
+async def verify_email_change(data: TokenRequest, request: Request):
+    await enforce_rate_limit(request, "auth_email_change_verify", limit=10, window_seconds=60 * 60)
+    now = datetime.now(timezone.utc)
+    token_doc = await db.email_change_tokens.find_one_and_update(
+        {"token_hash": hash_token(data.token), "used_at": None, "expires_at_dt": {"$gt": now}},
+        {"$set": {"used_at": now.isoformat()}}, return_document=ReturnDocument.AFTER,
+    )
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Link non valido, già usato o scaduto")
+    user = await db.users.find_one({"user_id": token_doc["user_id"], "company_id": token_doc["company_id"], "is_active": {"$ne": False}}, {"_id": 0})
+    if not user:
+        raise HTTPException(status_code=400, detail="Account non disponibile")
+    target_email = normalize_email(token_doc["new_email"])
+    if await db.users.find_one({"email": target_email, "user_id": {"$ne": user["user_id"]}}, {"_id": 1}) or await db.email_claims.find_one({"_id": email_claim_id(target_email)}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Email già associata a un account")
+    await reserve_email_claim(target_email, user["user_id"], user["company_id"])
+    updated = await db.users.update_one(
+        {"user_id": user["user_id"], "company_id": user["company_id"], "email": token_doc["old_email"]},
+        {"$set": {"email": target_email, "updated_at": now.isoformat()}},
+    )
+    if not updated.modified_count:
+        await release_email_claim(target_email, user["user_id"])
+        raise HTTPException(status_code=409, detail="La richiesta non è più applicabile")
+    await db.email_claims.delete_one({"_id": email_claim_id(token_doc["old_email"]), "user_id": user["user_id"]})
+    await db.support_tickets.update_many({"user_id": user["user_id"], "company_id": user["company_id"]}, {"$set": {"requester_email": target_email}})
+    await audit_event("authentication_email_changed", user={**user, "email": target_email}, request=request)
+    return {"status": "verified", "email": target_email, "message": "Indirizzo email aggiornato. Accedi con il nuovo indirizzo."}
 
 @api_router.put("/auth/privacy-preferences")
 async def update_privacy_preferences(
@@ -4157,6 +4266,7 @@ ACCOUNT_DELETION_OPERATIONAL_COLLECTIONS = (
     "admin_chat", "payment_transactions", "user_sessions", "recovery_contacts", "company_invitations",
     "quote_tokens", "calendar_events", "calendar_locks", "calendar_reminder_claims", "support_tickets",
     "email_verification_tokens", "password_reset_tokens", "email_recovery_tokens",
+    "email_change_tokens",
 )
 
 
