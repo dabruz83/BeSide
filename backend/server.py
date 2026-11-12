@@ -3010,7 +3010,9 @@ async def update_profile(
                      and update_data.business_info.business_type is not None else
                      (current_user.get("business_info") or {}).get("business_type"))
     tax_choice = update_data.tax_regime if update_data.tax_regime is not None else current_user.get("tax_regime")
-    if business_form in {"societa_persone", "societa_capitali"} and tax_choice in {"forfettario_5", "forfettario_15"}:
+    fiscal_fields_changed = (update_data.tax_regime is not None or
+                             (update_data.business_info is not None and update_data.business_info.business_type is not None))
+    if fiscal_fields_changed and business_form in {"societa_persone", "societa_capitali"} and tax_choice in {"forfettario_5", "forfettario_15"}:
         raise HTTPException(status_code=422, detail="Regime fiscale incompatibile con la forma giuridica")
     update_fields = {}
     if update_data.first_name is not None or update_data.last_name is not None:
