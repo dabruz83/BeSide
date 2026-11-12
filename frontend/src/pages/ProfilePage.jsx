@@ -213,6 +213,19 @@ export const ProfilePage = () => {
     }
   };
 
+  const resendCollaboratorInvite = async (invitationId) => {
+    setCollaboratorBusy(true);
+    try {
+      await axios.post(`${API}/auth/company/invitations/${invitationId}/resend`);
+      await loadCollaborators();
+      toast.success("Invito reinviato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile reinviare l'invito.");
+    } finally {
+      setCollaboratorBusy(false);
+    }
+  };
+
   const revokeCollaborator = async (userId) => {
     if (!window.confirm("Revocare l'accesso di questo collaboratore?")) return;
     setCollaboratorBusy(true);
@@ -461,7 +474,7 @@ export const ProfilePage = () => {
             </select>
             <Button type="submit" disabled={collaboratorBusy}>Invia invito</Button>
           </form>
-          {collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{invite.email} · {invite.role}</span><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div>)}</div>}
+          {collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"><span className="min-w-0 flex-1 truncate">{invite.email} · {invite.role}</span><div className="flex gap-1"><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => resendCollaboratorInvite(invite.invitation_id)}>Reinvia invito</Button><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div></div>)}</div>}
           {collaborators.members?.filter(member => member.user_id !== user?.user_id).length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Utenti attivi</p>{collaborators.members.filter(member => member.user_id !== user?.user_id).map(member => <div key={member.user_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{member.email}</span><select className="rounded-md border bg-background px-2 py-1 text-xs" value={member.role} disabled={collaboratorBusy} onChange={e => changeCollaboratorRole(member.user_id, e.target.value)}><option value="admin">Amministratore</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={collaboratorBusy} onClick={() => revokeCollaborator(member.user_id)}>Revoca</Button></div>)}</div>}
           {!collaborators.invitations?.length && !collaborators.members?.some(member => member.user_id !== user?.user_id) && <p className="text-sm text-muted-foreground">Nessun collaboratore collegato.</p>}
         </CardContent>
