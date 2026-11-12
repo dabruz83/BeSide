@@ -394,6 +394,16 @@ class CompanyUpdate(BaseModel):
 class CompanyRoleUpdate(BaseModel):
     role: str
 
+class CompanyInvitationCreate(BaseModel):
+    email: EmailStr
+    role: str = "member"
+
+class CompanyInvitationAccept(BaseModel):
+    token: str = Field(min_length=24, max_length=512)
+    password: str = Field(min_length=10, max_length=128)
+    first_name: str = Field(default="", max_length=100)
+    last_name: str = Field(default="", max_length=100)
+
 class CompanyStatusUpdate(BaseModel):
     status: str
 
@@ -2536,6 +2546,21 @@ async def send_recovery_contact_invite(contact_email: str, token: str, inviter_e
         ),
     )
 
+async def send_company_invite(invitee_email: str, token: str, company_name: str, role: str) -> bool:
+    invite_url = f"{FRONTEND_PUBLIC_URL}/company-invite/accept?token={token}"
+    safe_company = html.escape(company_name or "Beside")
+    safe_role = html.escape(role)
+    return await send_email_sendgrid(
+        invitee_email,
+        "Invito a collaborare su Beside",
+        (
+            f"<p>Sei stato invitato a collaborare con <strong>{safe_company}</strong> su Beside.</p>"
+            f"<p>Ruolo assegnato: {safe_role}.</p>"
+            f'<p><a href="{html.escape(invite_url, quote=True)}">Accetta l\'invito</a></p>'
+            "<p>Il link è personale, monouso e scade tra 7 giorni.</p>"
+        ),
+    )
+
 
 async def send_recovery_contact_approval_email(
     contact_email: str, approval_token: str,
@@ -3884,6 +3909,220 @@ async def change_company_user_role(
         metadata={"target_user_id": user_id, "old_role": old_role, "new_role": data.role},
     )
     return {"user_id": user_id, "role": data.role}
+
+
+COMPANY_INVITE_ROLES = {"admin", "member", "viewer"}
+COMPANY_MEMBER_LIMITS = {"essential": 0, "professional": 3, "elite": 3}
+
+
+def _company_collaborator_limit(company: Dict[str, Any]) -> int:
+    return COMPANY_MEMBER_LIMITS.get((company or {}).get("plan_id", "essential"), 0)
+
+
+def _public_company_member(user: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "user_id": user.get("user_id"),
+        "email": user.get("email"),
+        "first_name": user.get("first_name", ""),
+        "last_name": user.get("last_name", ""),
+        "role": user.get("role", "member"),
+        "email_verified": bool(user.get("email_verified")),
+        "totp_enabled": bool(user.get("totp_enabled")),
+        "is_active": bool(user.get("is_active", True)),
+        "created_at": user.get("created_at"),
+    }
+
+
+@api_router.get("/auth/company/members")
+async def list_company_members(
+    current_user: Dict = Depends(require_company_roles("owner", "admin")),
+):
+    company = current_user.get("company") or {}
+    users = await db.users.find(
+        {"company_id": current_user["company_id"], "role": {"$ne": RECOVERY_CONTACT_ROLE}},
+        {"_id": 0, "password_hash": 0, "platform_role": 0, "totp_secret": 0},
+    ).sort("created_at", 1).to_list(100)
+    invitations = await db.company_invitations.find(
+        {"company_id": current_user["company_id"], "status": "pending",
+         "expires_at_dt": {"$gt": datetime.now(timezone.utc)}},
+        {"_id": 0, "token_hash": 0, "expires_at_dt": 0},
+    ).sort("created_at", -1).to_list(100)
+    return {
+        "members": [_public_company_member(user) for user in users],
+        "invitations": invitations,
+        "plan": company.get("plan_id", "essential"),
+        "collaborator_limit": _company_collaborator_limit(company),
+    }
+
+
+@api_router.post("/auth/company/invitations")
+async def create_company_invitation(
+    data: CompanyInvitationCreate,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner")),
+):
+    if data.role not in COMPANY_INVITE_ROLES:
+        raise HTTPException(status_code=400, detail="Ruolo collaboratore non valido")
+    email = normalize_email(str(data.email))
+    if email == normalize_email(current_user["email"]):
+        raise HTTPException(status_code=400, detail="Il titolare non può essere invitato come collaboratore")
+    company = current_user.get("company") or {}
+    limit = _company_collaborator_limit(company)
+    active_count = await db.users.count_documents({
+        "company_id": current_user["company_id"], "role": {"$in": list(COMPANY_INVITE_ROLES)},
+        "is_active": {"$ne": False},
+    })
+    pending_count = await db.company_invitations.count_documents({
+        "company_id": current_user["company_id"], "status": "pending",
+        "expires_at_dt": {"$gt": datetime.now(timezone.utc)},
+    })
+    if active_count + pending_count >= limit:
+        if limit == 0:
+            raise HTTPException(status_code=403, detail="Il piano Essential consente solo il titolare. Passa a Professional per aggiungere collaboratori.")
+        raise HTTPException(status_code=409, detail="Limite collaboratori raggiunto per il piano attivo")
+    if await db.users.find_one({"email": email}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Esiste già un account con questo indirizzo")
+    existing = await db.company_invitations.find_one({
+        "company_id": current_user["company_id"], "email": email, "status": "pending",
+        "expires_at_dt": {"$gt": datetime.now(timezone.utc)},
+    }, {"_id": 1})
+    if existing:
+        raise HTTPException(status_code=409, detail="Esiste già un invito in attesa per questo indirizzo")
+    now = datetime.now(timezone.utc)
+    token = secrets.token_urlsafe(32)
+    invite = {
+        "invitation_id": f"company_invite_{uuid.uuid4().hex[:16]}",
+        "company_id": current_user["company_id"],
+        "company_name": company.get("name", "Beside"),
+        "invited_by": current_user["user_id"],
+        "email": email,
+        "role": data.role,
+        "status": "pending",
+        "token_hash": hash_token(token),
+        "created_at": now.isoformat(),
+        "expires_at": (now + timedelta(days=7)).isoformat(),
+        "expires_at_dt": now + timedelta(days=7),
+    }
+    await db.company_invitations.insert_one(invite)
+    background_tasks.add_task(send_company_invite, email, token, company.get("name", "Beside"), data.role)
+    await audit_event("company_invitation_created", user=current_user, request=request,
+                      metadata={"invitation_id": invite["invitation_id"], "role": data.role})
+    return {"invitation_id": invite["invitation_id"], "status": "pending", "expires_at": invite["expires_at"]}
+
+
+@api_router.post("/auth/company/invitations/{invitation_id}/resend")
+async def resend_company_invitation(
+    invitation_id: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner")),
+):
+    invite = await db.company_invitations.find_one({
+        "invitation_id": invitation_id, "company_id": current_user["company_id"], "status": "pending",
+    }, {"_id": 0})
+    if not invite or parse_datetime(invite.get("expires_at")) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=404, detail="Invito non disponibile")
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    updated = await db.company_invitations.find_one_and_update(
+        {"invitation_id": invitation_id, "company_id": current_user["company_id"], "status": "pending"},
+        {"$set": {"token_hash": hash_token(token), "created_at": now.isoformat(),
+                   "expires_at": (now + timedelta(days=7)).isoformat(), "expires_at_dt": now + timedelta(days=7)}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not updated:
+        raise HTTPException(status_code=409, detail="Invito non più disponibile")
+    background_tasks.add_task(send_company_invite, invite["email"], token, invite.get("company_name", "Beside"), invite["role"])
+    return {"status": "pending", "expires_at": updated["expires_at"]}
+
+
+@api_router.post("/auth/company/invitations/{invitation_id}/cancel")
+async def cancel_company_invitation(
+    invitation_id: str,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner")),
+):
+    result = await db.company_invitations.update_one(
+        {"invitation_id": invitation_id, "company_id": current_user["company_id"], "status": "pending"},
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if not result.modified_count:
+        raise HTTPException(status_code=404, detail="Invito non disponibile")
+    await audit_event("company_invitation_cancelled", user=current_user, request=request,
+                      metadata={"invitation_id": invitation_id})
+    return {"status": "cancelled"}
+
+
+@api_router.delete("/auth/company/members/{user_id}")
+async def revoke_company_member(
+    user_id: str,
+    request: Request,
+    current_user: Dict = Depends(require_company_roles("owner")),
+):
+    if user_id == current_user["user_id"]:
+        raise HTTPException(status_code=400, detail="Il titolare non può revocare il proprio accesso")
+    result = await db.users.update_one(
+        {"user_id": user_id, "company_id": current_user["company_id"], "role": {"$in": list(COMPANY_INVITE_ROLES)}},
+        {"$set": {"is_active": False, "revoked_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if not result.modified_count:
+        raise HTTPException(status_code=404, detail="Collaboratore non trovato")
+    await db.user_sessions.update_many({"user_id": user_id, "revoked_at": None},
+                                       {"$set": {"revoked_at": datetime.now(timezone.utc).isoformat()}})
+    await audit_event("company_member_revoked", user=current_user, request=request,
+                      metadata={"target_user_id": user_id})
+    return {"status": "revoked", "user_id": user_id}
+
+
+@api_router.get("/auth/company/invitations/preview")
+async def preview_company_invitation(token: str = Query(..., min_length=24, max_length=512)):
+    invite = await db.company_invitations.find_one({"token_hash": hash_token(token), "status": "pending",
+        "expires_at_dt": {"$gt": datetime.now(timezone.utc)}}, {"_id": 0, "token_hash": 0, "expires_at_dt": 0})
+    if not invite:
+        raise HTTPException(status_code=400, detail="Invito non valido o scaduto")
+    return {"invitation_id": invite["invitation_id"], "company_name": invite.get("company_name", "Beside"),
+            "email": invite["email"], "role": invite["role"], "expires_at": invite["expires_at"]}
+
+
+@api_router.post("/auth/company/invitations/accept")
+async def accept_company_invitation(
+    data: CompanyInvitationAccept,
+    background_tasks: BackgroundTasks,
+    request: Request,
+):
+    validate_password_strength(data.password)
+    now = datetime.now(timezone.utc)
+    invite = await db.company_invitations.find_one({"token_hash": hash_token(data.token), "status": "pending",
+        "expires_at_dt": {"$gt": now}}, {"_id": 0})
+    if not invite:
+        raise HTTPException(status_code=400, detail="Invito non valido, scaduto o già utilizzato")
+    if await db.users.find_one({"email": invite["email"]}, {"_id": 1}):
+        raise HTTPException(status_code=409, detail="Esiste già un account per questo indirizzo; effettua il login")
+    user_id = f"user_{uuid.uuid4().hex[:12]}"
+    user_doc = {
+        "user_id": user_id, "company_id": invite["company_id"], "email": invite["email"],
+        "password_hash": hash_password(data.password), "first_name": data.first_name.strip(),
+        "last_name": data.last_name.strip(), "full_name": " ".join(filter(None, [data.first_name.strip(), data.last_name.strip()])),
+        "role": invite["role"], "is_active": True, "email_verified": False,
+        "email_verification_exempt": False, "totp_enabled": False,
+        "created_at": now.isoformat(), "updated_at": now.isoformat(), "last_login_at": None,
+    }
+    verification_token = await create_one_time_token(db.email_verification_tokens, user_doc, timedelta(hours=EMAIL_VERIFICATION_TOKEN_HOURS))
+    await db.users.insert_one(user_doc)
+    consumed = await db.company_invitations.find_one_and_update(
+        {"invitation_id": invite["invitation_id"], "status": "pending", "token_hash": hash_token(data.token)},
+        {"$set": {"status": "accepted", "accepted_at": now.isoformat(), "accepted_user_id": user_id}, "$unset": {"token_hash": ""}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not consumed:
+        await db.users.delete_one({"user_id": user_id, "company_id": invite["company_id"]})
+        raise HTTPException(status_code=409, detail="Invito già utilizzato")
+    background_tasks.add_task(send_email_verification, invite["email"], verification_token)
+    await audit_event("company_invitation_accepted", user_id=user_id, company_id=invite["company_id"], request=request,
+                      metadata={"invitation_id": invite["invitation_id"]})
+    return {"status": "accepted", "email": invite["email"], "email_verification_required": True,
+            "message": "Account creato. Verifica l'email, poi accedi per configurare il tuo Authenticator."}
 
 # ==================== JOBS AND PLANNING ENDPOINTS ====================
 

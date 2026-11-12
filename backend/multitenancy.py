@@ -33,6 +33,7 @@ TENANT_COLLECTIONS = (
     "payment_transactions",
     "user_sessions",
     "recovery_contacts",
+    "company_invitations",
 )
 
 

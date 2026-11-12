@@ -81,6 +81,10 @@ export const ProfilePage = () => {
   const [supportSelectedTicket, setSupportSelectedTicket] = useState(null);
   const [supportLoading, setSupportLoading] = useState(false);
   const [supportBusy, setSupportBusy] = useState(false);
+  const [collaborators, setCollaborators] = useState({ members: [], invitations: [], collaborator_limit: 0, plan: "essential" });
+  const [collaboratorEmail, setCollaboratorEmail] = useState("");
+  const [collaboratorRole, setCollaboratorRole] = useState("member");
+  const [collaboratorBusy, setCollaboratorBusy] = useState(false);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -166,6 +170,76 @@ export const ProfilePage = () => {
     if (section === "support" && user?.user_id) loadSupportTickets();
   }, [section, user?.user_id]);
 
+  const loadCollaborators = async () => {
+    try {
+      const response = await axios.get(`${API}/auth/company/members`);
+      setCollaborators(response.data || { members: [], invitations: [], collaborator_limit: 0, plan: "essential" });
+    } catch (error) {
+      setCollaborators({ members: [], invitations: [], collaborator_limit: 0, plan: "essential" });
+      toast.error(error.response?.data?.detail || "Impossibile caricare i collaboratori.");
+    }
+  };
+
+  useEffect(() => {
+    if (section === "personal" && user?.role === "owner") loadCollaborators();
+  }, [section, user?.user_id, user?.role]);
+
+  const inviteCollaborator = async (event) => {
+    event.preventDefault();
+    if (!collaboratorEmail.trim()) return;
+    setCollaboratorBusy(true);
+    try {
+      await axios.post(`${API}/auth/company/invitations`, { email: collaboratorEmail.trim(), role: collaboratorRole });
+      setCollaboratorEmail("");
+      await loadCollaborators();
+      toast.success("Invito inviato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile inviare l'invito.");
+    } finally {
+      setCollaboratorBusy(false);
+    }
+  };
+
+  const cancelCollaboratorInvite = async (invitationId) => {
+    setCollaboratorBusy(true);
+    try {
+      await axios.post(`${API}/auth/company/invitations/${invitationId}/cancel`);
+      await loadCollaborators();
+      toast.success("Invito annullato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile annullare l'invito.");
+    } finally {
+      setCollaboratorBusy(false);
+    }
+  };
+
+  const revokeCollaborator = async (userId) => {
+    if (!window.confirm("Revocare l'accesso di questo collaboratore?")) return;
+    setCollaboratorBusy(true);
+    try {
+      await axios.delete(`${API}/auth/company/members/${userId}`);
+      await loadCollaborators();
+      toast.success("Accesso revocato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile revocare l'accesso.");
+    } finally {
+      setCollaboratorBusy(false);
+    }
+  };
+
+  const changeCollaboratorRole = async (userId, role) => {
+    setCollaboratorBusy(true);
+    try {
+      await axios.put(`${API}/companies/current/users/${userId}/role`, { role });
+      await loadCollaborators();
+      toast.success("Ruolo aggiornato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile aggiornare il ruolo.");
+    } finally {
+      setCollaboratorBusy(false);
+    }
+  };
+
   const submitSupportTicket = async (event) => {
     event.preventDefault();
     if (!supportSubject.trim() || !supportMessage.trim()) return;
@@ -248,7 +322,7 @@ export const ProfilePage = () => {
     setSaving(true);
     try {
       const payload = section === "personal" ? personal
-        : section === "activity" ? { business_name: formData.business_name, team_size: formData.team_size, services: formData.services, business_info: { email: businessInfo.email, telefono: businessInfo.telefono } }
+        : section === "activity" ? { business_name: formData.business_name, team_size: formData.team_size, services: formData.services, tax_regime: formData.tax_regime, business_info: businessInfo }
         : section === "fiscal" ? { tax_regime: formData.tax_regime, business_info: businessInfo }
         : section === "quotes" ? { business_info: businessInfo } : null;
       if (!payload) return;
@@ -321,9 +395,7 @@ export const ProfilePage = () => {
 
   const menu = [
     { key: "personal", title: "Profilo personale", subtitle: "Nome e dati di accesso", icon: UserRound },
-    { key: "activity", title: "La mia attività", subtitle: "Azienda, servizi e collaboratori", icon: Building2 },
-    { key: "fiscal", title: "Dati fiscali e pagamenti", subtitle: "Ragione sociale, fatturazione e banca", icon: Landmark },
-    { key: "quotes", title: "Preventivi e documenti", subtitle: "Logo, intestazione e anteprima", icon: FileText },
+    { key: "activity", title: "La mia attività", subtitle: "Dati aziendali, fiscali e documenti", icon: Building2 },
     { key: "calendar", title: "Agenda e lavorazioni", subtitle: "Orari, aree e promemoria", icon: CalendarDays },
     { key: "notifications", title: "Notifiche", subtitle: "Promemoria e comunicazioni", icon: Bell },
     { key: "security", title: "Sicurezza e privacy", subtitle: "MFA, contatto fidato e consensi", icon: ShieldCheck },
@@ -377,6 +449,23 @@ export const ProfilePage = () => {
         <div className="space-y-1"><Label>Ruolo</Label><Input value={user?.role || ""} disabled /></div>
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva modifiche</Button>
       </CardContent></Card>}
+
+      {section === "personal" && user?.role === "owner" && <Card>
+        <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Users className="h-5 w-5"/>Gestione collaboratori</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">Gli utenti Beside sono distinti dal numero di dipendenti. Il piano {collaborators.plan} consente {collaborators.collaborator_limit} collaboratori oltre al titolare.</p>
+          <form onSubmit={inviteCollaborator} className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+            <Input type="email" required placeholder="Email del collaboratore" value={collaboratorEmail} onChange={e => setCollaboratorEmail(e.target.value)} />
+            <select className="rounded-md border bg-background px-3 py-2 text-sm" value={collaboratorRole} onChange={e => setCollaboratorRole(e.target.value)} aria-label="Ruolo collaboratore">
+              <option value="admin">Amministratore aziendale</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option>
+            </select>
+            <Button type="submit" disabled={collaboratorBusy}>Invia invito</Button>
+          </form>
+          {collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{invite.email} · {invite.role}</span><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div>)}</div>}
+          {collaborators.members?.filter(member => member.user_id !== user?.user_id).length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Utenti attivi</p>{collaborators.members.filter(member => member.user_id !== user?.user_id).map(member => <div key={member.user_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{member.email}</span><select className="rounded-md border bg-background px-2 py-1 text-xs" value={member.role} disabled={collaboratorBusy} onChange={e => changeCollaboratorRole(member.user_id, e.target.value)}><option value="admin">Amministratore</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={collaboratorBusy} onClick={() => revokeCollaborator(member.user_id)}>Revoca</Button></div>)}</div>}
+          {!collaborators.invitations?.length && !collaborators.members?.some(member => member.user_id !== user?.user_id) && <p className="text-sm text-muted-foreground">Nessun collaboratore collegato.</p>}
+        </CardContent>
+      </Card>}
 
       {section === "activity" && <>
 <Card>
@@ -490,7 +579,7 @@ export const ProfilePage = () => {
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva attività</Button>
       </>}
 
-      {section === "fiscal" && <>
+      {section === "activity" && <>
         <Card><CardContent className="pt-5 space-y-3">
                     <div className="space-y-2">
                       <Label>Forma giuridica</Label>
@@ -650,7 +739,7 @@ export const ProfilePage = () => {
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva dati fiscali</Button>
       </>}
 
-      {section === "quotes" && <>
+      {section === "activity" && <>
         <Card><CardHeader><CardTitle className="text-lg">Personalizzazione preventivi</CardTitle></CardHeader><CardContent className="space-y-4">
           <div className="space-y-2"><Label>Carica il logo (PNG, JPG o WebP, massimo 300 KB)</Label><Input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLogoUpload}/></div>
                   <div className="space-y-4">
