@@ -168,11 +168,24 @@
     height: 4.5rem;
     border: 1px solid hsl(var(--primary) / 0.2);
     border-left: 0;
-    border-radius: 0 0.75rem 0.75rem 0;
+    border-radius: 0 1.25rem 1.25rem 0;
     background: white;
     color: hsl(var(--secondary));
     box-shadow: 0 2px 8px rgb(15 23 42 / 0.12);
     touch-action: manipulation;
+}
+
+.mobile-user-card {
+    border-radius: 1rem;
+    background: rgb(224 242 254 / 0.72);
+    padding: 0.85rem;
+    transition: background-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.mobile-user-card:active,
+.mobile-user-card:hover {
+    background: rgb(186 230 253 / 0.72);
+    box-shadow: 0 4px 14px rgb(14 165 233 / 0.1);
 }
 
 .mobile-bottom-nav-item {

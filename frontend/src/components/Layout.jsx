@@ -29,6 +29,12 @@ const navItems = [
   { path: "/support", label: "Assistenza", icon: MessageSquare },
 ];
 
+const renderNavIcon = (item, className = "w-5 h-5") => (
+  item.path === "/dashboard"
+    ? <img src="/beside-icon.svg" alt="" aria-hidden="true" className={`${className} object-contain`} />
+    : <item.icon className={className} />
+);
+
 export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
@@ -67,6 +73,13 @@ export const Layout = ({ children }) => {
     return name.split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2);
   };
 
+  const displayName = [user?.first_name || user?.firstName, user?.last_name || user?.lastName].filter(Boolean).join(" ")
+    || user?.name
+    || user?.email
+    || "Profilo";
+  const businessName = user?.business_name || user?.businessName || user?.company_name || user?.company?.name || "La tua attività";
+  const roleLabel = user?.role_label || user?.role || "Titolare";
+
   return (
     <div
       className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background"}
@@ -78,9 +91,7 @@ export const Layout = ({ children }) => {
       <aside className="hidden md:flex flex-col w-64 bg-primary text-primary-foreground h-screen fixed left-0 top-0 z-40">
         {/* Logo */}
         <div className="p-6 border-b border-white/10">
-          <h1 className="text-2xl font-bold tracking-tight" style={{ fontFamily: 'Barlow, sans-serif' }}>
-            BESIDE
-          </h1>
+          <img src="/beside-logo.svg" alt="Beside" className="h-9 w-auto max-w-full object-contain object-left" />
           <p className="text-white/60 text-sm mt-1">Gestione Installatori</p>
         </div>
 
@@ -94,7 +105,7 @@ export const Layout = ({ children }) => {
                 `sidebar-item ${isActive ? "active" : ""}`
               }
             >
-              <item.icon className="w-5 h-5" />
+              {renderNavIcon(item)}
               <span>{item.label}</span>
             </NavLink>
           ))}
@@ -160,21 +171,24 @@ export const Layout = ({ children }) => {
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="border-b border-border p-4">
-          <div className="flex items-center gap-3 mb-3">
-            <Avatar className="h-10 w-10">
-              <AvatarImage src={user?.picture} alt={user?.name || "Profilo"} />
-              <AvatarFallback className="bg-primary text-white">
-                {getInitials(user?.name || user?.business_name)}
-              </AvatarFallback>
-            </Avatar>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-primary">{user?.name || "Utente"}</p>
-              <p className="truncate text-xs text-muted-foreground">{user?.business_name || user?.email}</p>
-              {user?.role && <p className="truncate text-[11px] text-muted-foreground">{user.role}</p>}
+        <div className="border-b border-slate-200/80 p-4">
+          <img src="/beside-logo.svg" alt="Beside" className="mb-4 h-8 w-auto max-w-full object-contain object-left" />
+          <NavLink to="/profile" onClick={() => setSidebarOpen(false)} className="mobile-user-card block">
+            <div className="flex items-center gap-3">
+              <Avatar className="h-14 w-14 shrink-0 ring-2 ring-white shadow-sm">
+                <AvatarImage src={user?.picture} alt={displayName} />
+                <AvatarFallback className="bg-primary text-white text-base">
+                  {getInitials(displayName)}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-slate-500">Benvenuto</p>
+                <p className="break-words text-base font-semibold leading-tight text-primary">{displayName}</p>
+                <p className="truncate text-xs text-slate-600">{businessName}</p>
+                <p className="truncate text-[11px] text-slate-500">{roleLabel}</p>
+              </div>
             </div>
-          </div>
-          <p className="text-xs font-bold tracking-[0.18em] text-primary">BESIDE</p>
+          </NavLink>
         </div>
         <nav className="p-4 space-y-1.5">
           {navItems.map((item) => (
@@ -191,7 +205,7 @@ export const Layout = ({ children }) => {
               }
             >
               <span className="flex min-w-0 items-center gap-3">
-                <item.icon className="w-5 h-5 shrink-0" />
+              {renderNavIcon(item, "w-5 h-5 shrink-0")}
                 <span className="truncate">{item.label}</span>
               </span>
               {(["/finance", "/onboarding", "/subscription", "/profile", "/support"].includes(item.path)) && (
@@ -228,7 +242,7 @@ export const Layout = ({ children }) => {
             }
           >
             <span className="mobile-bottom-nav-icon-shell">
-              <item.icon className="mobile-bottom-nav-icon w-6 h-6" />
+              {renderNavIcon(item, "mobile-bottom-nav-icon w-6 h-6")}
             </span>
             <span className="mobile-bottom-nav-label">{item.shortLabel || item.label}</span>
           </NavLink>
