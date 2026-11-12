@@ -24,7 +24,8 @@ import {
   Phone,
   Search,
   Loader2,
-  ShieldCheck
+  ShieldCheck,
+  ArrowLeft, ChevronRight, Settings2, UserRound, Landmark, CalendarDays, Bell, PauseCircle, Trash2, LifeBuoy
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
@@ -52,6 +53,10 @@ export const ProfilePage = () => {
   const { user, logout, checkAuth } = useAuth();
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
+  const [section, setSection] = useState(null);
+  const [personal, setPersonal] = useState({ first_name: user?.first_name || "", last_name: "" });
+  const [accountReason, setAccountReason] = useState("");
+  const [accountReasonDetails, setAccountReasonDetails] = useState("");
   const [searchingCompany, setSearchingCompany] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [recoveryContact, setRecoveryContact] = useState(null);
@@ -86,6 +91,27 @@ export const ProfilePage = () => {
     logo_width: user?.business_info?.logo_width || 150,
     intestazione_extra: user?.business_info?.intestazione_extra || ""
   });
+
+  useEffect(() => {
+    axios.get(`${API}/auth/onboarding-profile`).then(({ data }) => {
+      const p = data.personal || {};
+      setPersonal({ first_name: p.first_name || user?.first_name || "", last_name: p.last_name || "" });
+    }).catch(() => {});
+  }, [user?.user_id]);
+
+  const handleLogoUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 300 * 1024) {
+      toast.error("Usa un'immagine PNG, JPG o WebP di massimo 300 KB.");
+      event.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setBusinessInfo(current => ({ ...current, logo_url: String(reader.result) }));
+    reader.onerror = () => toast.error("Impossibile caricare il logo.");
+    reader.readAsDataURL(file);
+  };
 
   useEffect(() => {
     if (user?.business_info) {
@@ -165,7 +191,8 @@ export const ProfilePage = () => {
     try {
       await axios.put(`${API}/auth/profile`, {
         ...formData,
-        business_info: businessInfo
+        business_info: businessInfo,
+        ...(section === "personal" ? personal : {})
       });
       await checkAuth();
       toast.success("Profilo aggiornato!");
@@ -233,47 +260,66 @@ export const ProfilePage = () => {
     }
   };
 
+  const menu = [
+    { key: "personal", title: "Profilo personale", subtitle: "Nome e dati di accesso", icon: UserRound },
+    { key: "activity", title: "La mia attività", subtitle: "Azienda, servizi e collaboratori", icon: Building2 },
+    { key: "fiscal", title: "Dati fiscali e pagamenti", subtitle: "Ragione sociale, fatturazione e banca", icon: Landmark },
+    { key: "quotes", title: "Preventivi e documenti", subtitle: "Logo, intestazione e anteprima", icon: FileText },
+    { key: "calendar", title: "Agenda e lavorazioni", subtitle: "Orari, aree e promemoria", icon: CalendarDays },
+    { key: "notifications", title: "Notifiche", subtitle: "Promemoria e comunicazioni", icon: Bell },
+    { key: "security", title: "Sicurezza e privacy", subtitle: "MFA, contatto fidato e consensi", icon: ShieldCheck },
+    { key: "subscription", title: "Abbonamento", subtitle: "Piano e rinnovi", icon: CreditCard },
+  ];
+  const current = menu.find(item => item.key === section);
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-heading-2 text-primary" data-testid="profile-title">Profilo</h1>
-        <p className="text-muted-foreground">Gestisci le impostazioni del tuo account e i dati aziendali</p>
+    <div className="mx-auto w-full max-w-3xl space-y-4 pb-24 md:pb-8" data-testid="settings-page">
+      <div className="flex items-center gap-3">
+        {section && <Button variant="ghost" size="icon" aria-label="Torna alle impostazioni" onClick={() => setSection(null)}><ArrowLeft className="h-5 w-5" /></Button>}
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-semibold text-primary" data-testid="profile-title">{current?.title || "Impostazioni"}</h1>
+          {!section && <p className="text-sm text-muted-foreground">Gestisci la tua attività e il tuo account</p>}
+        </div>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-6">
-        {/* Main Profile Section */}
-        <div className="md:col-span-2 space-y-6">
-          {/* Avatar Section */}
+      {!section && (
+        <>
           <Card>
-            <CardContent className="pt-6">
-              <div className="flex items-center gap-4">
-                <Avatar className="h-16 w-16">
-                  <AvatarImage src={user?.picture} alt={user?.name} />
-                  <AvatarFallback className="bg-primary/10 text-primary text-lg">
-                    {getInitials(user?.name || user?.business_name)}
-                  </AvatarFallback>
-                </Avatar>
-                <div>
-                  <p className="font-semibold text-lg">{user?.name || user?.business_name}</p>
-                  <p className="text-sm text-muted-foreground flex items-center gap-1">
-                    <Mail className="w-3 h-3" />
-                    {user?.email}
-                  </p>
-                </div>
+            <CardContent className="pt-5">
+              <div className="flex items-center gap-3">
+                <Avatar className="h-14 w-14"><AvatarImage src={user?.picture} alt="" /><AvatarFallback className="bg-primary/10 text-primary">{getInitials(user?.name || user?.business_name)}</AvatarFallback></Avatar>
+                <div className="min-w-0"><p className="font-semibold truncate">{user?.name || user?.business_name}</p><p className="text-sm text-muted-foreground truncate">{user?.email}</p></div>
               </div>
             </CardContent>
           </Card>
+          <Card><CardContent className="p-1">
+            {menu.map((item, index) => {
+              const Icon = item.icon;
+              return <button key={item.key} type="button" onClick={() => setSection(item.key)} className="flex w-full min-h-16 items-center gap-3 rounded-md px-3 py-3 text-left hover:bg-muted/60 active:bg-primary/5" data-testid={"settings-" + item.key}>
+                <Icon className="h-5 w-5 shrink-0 text-secondary" />
+                <span className="min-w-0 flex-1"><span className="block font-medium text-sm">{item.title}</span><span className="block text-xs text-muted-foreground">{item.subtitle}</span></span>
+                <ChevronRight className="h-4 w-4 text-muted-foreground" />
+              </button>;
+            })}
+          </CardContent></Card>
+          <div className="space-y-2">
+            <Button className="w-full justify-between" variant="outline" onClick={() => setSection("support")}><span className="flex gap-2 items-center"><LifeBuoy className="h-4 w-4" /> Assistenza e gestione account</span><ChevronRight className="h-4 w-4" /></Button>
+            <Button onClick={handleLogout} variant="ghost" className="w-full text-destructive"><LogOut className="mr-2 h-4 w-4"/>Esci dall'account</Button>
+          </div>
+        </>
+      )}
 
-          <Tabs defaultValue="attivita" className="space-y-4">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="attivita">Attività</TabsTrigger>
-              <TabsTrigger value="dati_fiscali">Dati Fiscali</TabsTrigger>
-            </TabsList>
+      {section === "personal" && <Card><CardContent className="space-y-4 pt-5">
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1"><Label>Nome</Label><Input value={personal.first_name} onChange={e => setPersonal(p => ({...p, first_name: e.target.value}))} /></div>
+          <div className="space-y-1"><Label>Cognome</Label><Input value={personal.last_name} onChange={e => setPersonal(p => ({...p, last_name: e.target.value}))} /></div>
+        </div>
+        <div className="space-y-1"><Label>Email di accesso</Label><Input value={user?.email || ""} disabled /><p className="text-xs text-muted-foreground">Per cambiare l'email di accesso contatta l'assistenza.</p></div>
+        <div className="space-y-1"><Label>Ruolo</Label><Input value={user?.role || ""} disabled /></div>
+        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva modifiche</Button>
+      </CardContent></Card>}
 
-            {/* Tab Attività */}
-            <TabsContent value="attivita">
-              <Card>
+      {section === "activity" && <>
+<Card>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
                     <UserCog className="w-5 h-5 text-secondary" />
@@ -367,8 +413,13 @@ export const ProfilePage = () => {
                       ))}
                     </div>
                   </div>
+                </CardContent>
+              </Card>
+        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva attività</Button>
+      </>}
 
-                  <div className="space-y-2">
+      {section === "fiscal" && <>
+        <Card><CardContent className="pt-5 space-y-3"><Label>Regime fiscale</Label><div className="space-y-2">
                     <Label>Regime Fiscale</Label>
                     <Select
                       value={formData.tax_regime}
@@ -385,14 +436,8 @@ export const ProfilePage = () => {
                         ))}
                       </SelectContent>
                     </Select>
-                  </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-
-            {/* Tab Dati Fiscali */}
-            <TabsContent value="dati_fiscali">
-              <Card>
+                  </div></CardContent></Card>
+<Card>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
                     <FileText className="w-5 h-5 text-secondary" />
@@ -400,24 +445,6 @@ export const ProfilePage = () => {
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  {/* Company Search */}
-                  <div className="p-4 bg-muted/50 rounded-lg space-y-3">
-                    <Label className="flex items-center gap-2">
-                      <Search className="w-4 h-4" />
-                      Cerca Azienda nel Registro Imprese
-                    </Label>
-                    <div className="flex gap-2">
-                      <Input
-                        placeholder="Nome azienda, P.IVA o città..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                      />
-                      <Button onClick={handleSearchCompany} disabled={searchingCompany}>
-                        {searchingCompany ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                      </Button>
-                    </div>
-                  </div>
-
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <Label htmlFor="partita_iva">Partita IVA</Label>
@@ -553,9 +580,16 @@ export const ProfilePage = () => {
                       />
                     </div>
                   </div>
+                </CardContent>
+              </Card>
+        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva dati fiscali</Button>
+      </>}
 
-                  <div className="border-t border-border pt-4 mt-4">
-                    <h4 className="font-medium mb-3">Personalizzazione Preventivi</h4>
+      {section === "quotes" && <>
+        <Card><CardHeader><CardTitle className="text-lg">Personalizzazione preventivi</CardTitle></CardHeader><CardContent className="space-y-4">
+          <div className="space-y-2"><Label>Carica il logo (PNG, JPG o WebP, massimo 300 KB)</Label><Input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLogoUpload}/></div>
+                  <div className="space-y-4">
+                    <h4 className="font-medium mb-3">Aspetto dei documenti</h4>
                     
                     <div className="grid grid-cols-2 gap-4">
                       <div className="space-y-2">
@@ -591,22 +625,35 @@ export const ProfilePage = () => {
                       />
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            </TabsContent>
-          </Tabs>
 
-          <Card><CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label><p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze senza compromettere l'accesso a Beside.</p><Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button></CardContent></Card>
+          <div className="rounded-md border p-4 bg-white text-slate-900 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              {businessInfo.logo_url ? <img alt="Anteprima logo" src={businessInfo.logo_url} style={{width: Math.min(300, Math.max(50, Number(businessInfo.logo_width) || 150))}} className="h-auto max-h-20 object-contain object-left" /> : <span className="text-xs text-slate-500">Logo aziendale</span>}
+              <div className="text-right"><p className="font-semibold text-primary">PREVENTIVO</p><p className="text-xs">N. 2026/001 · Esempio</p></div>
+            </div>
+            <p className="font-semibold">{formData.business_name || "La tua attività"}</p>
+            <p className="whitespace-pre-line text-xs text-slate-500">{businessInfo.intestazione_extra || "Intestazione personalizzabile"}</p>
+            <div className="border-t pt-2 flex justify-between text-sm"><span>Totale di esempio</span><strong>€ 1.500,00</strong></div>
+          </div>
+          <p className="text-xs text-muted-foreground">L'anteprima è indicativa. I preventivi reali utilizzano i dati salvati.</p>
+        </CardContent></Card>
+        <Button className="w-full" onClick={handleSave} disabled={saving} data-testid="profile-save-btn">Salva personalizzazione</Button>
+      </>}
 
-          <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">
-            <Save className="w-4 h-4 mr-2" />
-            {saving ? "Salvataggio..." : "Salva Tutte le Modifiche"}
-          </Button>
-        </div>
+      {section === "calendar" && <Card><CardContent className="pt-5 space-y-3">
+        <p className="text-sm text-muted-foreground">Le aree di lavoro e i promemoria degli appuntamenti si gestiscono nell'agenda, senza creare una configurazione duplicata.</p>
+        <Button variant="outline" onClick={() => navigate("/calendar")}><CalendarDays className="mr-2 h-4 w-4"/>Apri Pianificazione</Button>
+      </CardContent></Card>}
 
-        {/* Sidebar */}
-        <div className="space-y-6">
-          <Card id="sicurezza">
+      {section === "notifications" && <Card><CardContent className="pt-5 space-y-3">
+        <p className="text-sm">Promemoria appuntamenti</p>
+        <p className="text-sm text-muted-foreground">Il promemoria iniziale è di 30 minuti. Puoi modificarlo nella scheda di ogni appuntamento.</p>
+        <p className="text-xs text-muted-foreground">Le preferenze globali dei canali di notifica saranno disponibili quando i relativi invii saranno attivati.</p>
+        <Button variant="outline" onClick={() => navigate("/calendar")}>Apri l'agenda</Button>
+      </CardContent></Card>}
+
+      {section === "security" && <>
+<Card id="sicurezza">
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 <ShieldCheck className="w-5 h-5" />
@@ -654,8 +701,11 @@ export const ProfilePage = () => {
               )}
             </CardContent>
           </Card>
+<Card><CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label><p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze senza compromettere l'accesso a Beside.</p><Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button></CardContent></Card>
+      </>}
 
-          <Card>
+      {section === "subscription" && <>
+<Card>
             <CardHeader>
               <CardTitle className="text-lg flex items-center gap-2">
                 <CreditCard className="w-5 h-5 text-secondary" />
@@ -679,27 +729,29 @@ export const ProfilePage = () => {
                   {getStatusLabel(user?.subscription_status)}
                 </span>
               </div>
-              <p className="text-xs text-muted-foreground">
-                La gestione degli abbonamenti non è ancora attiva.
-              </p>
+              <Button type="button" variant="outline" onClick={() => navigate("/subscription")}>Gestisci abbonamento</Button>
             </CardContent>
           </Card>
+      </>}
 
-          <Card>
-            <CardContent className="pt-6">
-              <Button 
-                variant="outline" 
-                className="w-full text-destructive hover:text-destructive hover:bg-destructive/10"
-                onClick={handleLogout}
-                data-testid="logout-btn"
-              >
-                <LogOut className="w-4 h-4 mr-2" />
-                Esci dall'Account
-              </Button>
-            </CardContent>
-          </Card>
+      {section === "support" && <Card><CardHeader><CardTitle className="text-lg">Assistenza e gestione account</CardTitle></CardHeader><CardContent className="space-y-4">
+        <Button variant="outline" className="w-full" onClick={() => navigate("/support")}><LifeBuoy className="mr-2 h-4 w-4"/>Contatta l'assistenza</Button>
+        <div className="rounded-md border p-3 space-y-2">
+          <p className="font-medium flex items-center gap-2"><PauseCircle className="h-4 w-4"/>Sospendi temporaneamente l'account</p>
+          <p className="text-sm text-muted-foreground">La sospensione diventerà effettiva alla scadenza del periodo pagato, senza perdere il tempo residuo. Per gli abbonamenti annuali si disattiva il rinnovo alla scadenza.</p>
+          <Button variant="outline" onClick={() => navigate("/subscription")}>Gestisci il rinnovo</Button>
         </div>
-      </div>
+        <div className="rounded-md border p-3 space-y-3">
+          <p className="font-medium flex items-center gap-2"><Trash2 className="h-4 w-4 text-destructive"/>Richiedi eliminazione account</p>
+          <p className="text-sm text-muted-foreground">La richiesta viene gestita dall'assistenza, previa verifica e nel rispetto degli obblighi di conservazione.</p>
+          <Label>Motivo (facoltativo)</Label>
+          <select className="w-full rounded-md border bg-background p-2.5 text-sm" value={accountReason} onChange={e => setAccountReason(e.target.value)}>
+            <option value="">Preferisco non rispondere</option><option value="pausa">Pausa attività</option><option value="utilizzo">Utilizzo limitato</option><option value="costo">Costo</option><option value="funzioni">Funzionalità mancanti</option><option value="alternativa">Altra soluzione</option><option value="altro">Altro</option>
+          </select>
+          {accountReason === "altro" && <Textarea rows={2} placeholder="Dettagli facoltativi" value={accountReasonDetails} onChange={e => setAccountReasonDetails(e.target.value)}/>}
+          <Button variant="outline" className="w-full text-destructive" onClick={() => navigate("/support", {state: {category: "privacy", subject: "Richiesta eliminazione account", message: "Motivo: " + (accountReason || "non indicato") + (accountReasonDetails ? "\nDettagli: " + accountReasonDetails : "")}})}>Apri richiesta di eliminazione</Button>
+        </div>
+      </CardContent></Card>}
     </div>
   );
 };
