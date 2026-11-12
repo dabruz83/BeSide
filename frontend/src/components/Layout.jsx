@@ -13,7 +13,7 @@ import {
   Palette,
   MessageSquare
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
@@ -33,63 +33,8 @@ export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [navCompact, setNavCompact] = useState(false);
   const touchStartRef = useRef(null);
-  const scrollIntentRef = useRef({ direction: 0, distance: 0 });
   const isCalendarPage = location.pathname.startsWith("/calendar");
-
-  useEffect(() => {
-    setNavCompact(false);
-    scrollIntentRef.current = { direction: 0, distance: 0 };
-  }, [location.pathname]);
-
-  useEffect(() => {
-    const scrollPositions = new WeakMap();
-
-    const trackVerticalScroll = (target) => {
-      if (!target || typeof target.scrollTop !== "number") return;
-      const currentTop = target.scrollTop;
-      const previousTop = scrollPositions.get(target);
-      scrollPositions.set(target, currentTop);
-      if (previousTop === undefined) return;
-
-      const delta = currentTop - previousTop;
-      if (Math.abs(delta) < 1) return;
-      if (currentTop <= 1) {
-        setNavCompact(false);
-        scrollIntentRef.current = { direction: 0, distance: 0 };
-        return;
-      }
-
-      const direction = delta > 0 ? 1 : -1;
-      const intent = scrollIntentRef.current;
-      if (intent.direction !== direction) {
-        intent.direction = direction;
-        intent.distance = 0;
-      }
-      intent.distance += Math.abs(delta);
-
-      if (direction > 0 && intent.distance >= 18) {
-        setNavCompact(true);
-        intent.distance = 0;
-      } else if (direction < 0 && intent.distance >= 12) {
-        setNavCompact(false);
-        intent.distance = 0;
-      }
-    };
-
-    const handleElementScroll = (event) => {
-      if (event.target !== document) trackVerticalScroll(event.target);
-    };
-    const handleWindowScroll = () => trackVerticalScroll(document.scrollingElement);
-
-    document.addEventListener("scroll", handleElementScroll, { capture: true, passive: true });
-    window.addEventListener("scroll", handleWindowScroll, { passive: true });
-    return () => {
-      document.removeEventListener("scroll", handleElementScroll, true);
-      window.removeEventListener("scroll", handleWindowScroll);
-    };
-  }, []);
 
   const handleLogout = async () => {
     await logout();
@@ -125,7 +70,7 @@ export const Layout = ({ children }) => {
   return (
     <div
       className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background"}
-      style={{ "--mobile-nav-height": navCompact ? "54px" : "72px" }}
+      style={{ "--mobile-nav-height": "72px" }}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
@@ -211,7 +156,7 @@ export const Layout = ({ children }) => {
 
       {/* Mobile Sidebar */}
       <aside 
-        className={`mobile-sidebar md:hidden fixed top-14 left-0 w-64 bg-white border-r border-border z-50 transform transition-transform duration-200 ${
+        className={`mobile-sidebar md:hidden fixed top-14 left-0 w-72 bg-white border-r border-border rounded-r-2xl shadow-[8px_0_28px_rgba(15,23,42,0.18)] z-50 transform transition-transform duration-200 ${
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         }`}
       >
@@ -231,22 +176,27 @@ export const Layout = ({ children }) => {
           </div>
           <p className="text-xs font-bold tracking-[0.18em] text-primary">BESIDE</p>
         </div>
-        <nav className="p-4 space-y-1">
+        <nav className="p-4 space-y-1.5">
           {navItems.map((item) => (
             <NavLink
               key={item.path}
               to={item.path}
               onClick={() => setSidebarOpen(false)}
               className={({ isActive }) =>
-                `flex items-center gap-3 px-4 py-3 rounded-lg transition-colors ${
+                `flex min-h-12 items-center justify-between gap-3 px-4 py-3 rounded-xl transition-colors ${
                   isActive 
-                    ? "bg-primary/10 text-primary" 
+                    ? "bg-sky-100 text-primary ring-1 ring-sky-200"
                     : "text-muted-foreground hover:bg-muted"
                 }`
               }
             >
-              <item.icon className="w-5 h-5" />
-              <span>{item.label}</span>
+              <span className="flex min-w-0 items-center gap-3">
+                <item.icon className="w-5 h-5 shrink-0" />
+                <span className="truncate">{item.label}</span>
+              </span>
+              {(["/finance", "/onboarding", "/subscription", "/profile", "/support"].includes(item.path)) && (
+                <ChevronRight className="h-4 w-4 shrink-0 text-sky-500/80" aria-hidden="true" />
+              )}
             </NavLink>
           ))}
           
@@ -268,7 +218,7 @@ export const Layout = ({ children }) => {
       </aside>
 
       {/* Mobile Bottom Navigation */}
-      <nav className={`mobile-bottom-nav md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center z-40 ${navCompact ? "is-compact" : ""}`}>
+      <nav className="mobile-bottom-nav md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center z-40">
         {[navItems[0], navItems[1], navItems[2], navItems[4]].map((item) => (
           <NavLink
             key={item.path}
