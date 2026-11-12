@@ -26,7 +26,7 @@ const navItems = [
   { path: "/calendar", label: "Pianificazione", shortLabel: "Agenda", icon: CalendarDays },
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
   { path: "/subscription", label: "Abbonamento", icon: Euro },
-  { path: "/profile", label: "Profilo", icon: UserCog },
+  { path: "/profile", label: "Impostazioni", icon: UserCog },
   { path: "/support", label: "Assistenza", icon: MessageSquare },
 ];
 
