@@ -2998,9 +2998,14 @@ async def get_current_user_info(current_user: Dict = Depends(get_current_user)):
 @api_router.put("/auth/profile")
 async def update_profile(
     update_data: UserUpdate,
-    current_user: Dict = Depends(require_company_roles("owner", "admin")),
+    current_user: Dict = Depends(get_current_user),
 ):
-    """Update user profile"""
+    """Update personal or owner-managed business profile fields."""
+    protected = ("business_name", "team_size", "services", "tax_regime", "business_info")
+    if current_user.get("role") not in {"owner", "admin"} and any(
+        getattr(update_data, key) is not None for key in protected
+    ):
+        raise HTTPException(status_code=403, detail="Dati aziendali modificabili solo da titolare o amministratore")
     update_fields = {}
     if update_data.first_name is not None or update_data.last_name is not None:
         old_personal = current_user.get("onboarding_profile") or {}
@@ -3072,12 +3077,16 @@ async def update_privacy_preferences(
     now_iso = datetime.now(timezone.utc).isoformat()
     await db.users.update_one(
         {"user_id": current_user["user_id"], "company_id": current_user["company_id"]},
-        {"$set": {"marketing_preferences": {
-            "email_opt_in": preferences.email_opt_in,
-            "profiling_opt_in": preferences.profiling_opt_in,
-            "version": CONSENT_VERSION,
-            "updated_at": now_iso,
-        }}},
+        {"$set": {
+            "marketing_preferences": {
+                "email_opt_in": preferences.email_opt_in,
+                "profiling_opt_in": preferences.profiling_opt_in,
+                "version": CONSENT_VERSION,
+                "updated_at": now_iso,
+            },
+            "onboarding_profile.privacy_preferences.marketing_emails": preferences.email_opt_in,
+            "onboarding_profile.privacy_preferences.marketing_profiling": preferences.profiling_opt_in,
+        }},
     )
     await audit_event("privacy_preferences_updated", user=current_user, request=request,
                       metadata={"email_opt_in": preferences.email_opt_in, "profiling_opt_in": preferences.profiling_opt_in})
@@ -3727,9 +3736,9 @@ async def update_onboarding_profile(
         }.items() if value is not None
     }
     if privacy_values:
-        existing_privacy = (current_user.get("privacy_preferences") or {}).copy()
+        existing_privacy = ((current_user.get("onboarding_profile") or {}).get("privacy_preferences") or {}).copy()
         existing_privacy.update(privacy_values)
-        existing_privacy.update({"version": "v1", "updated_at": now_iso})
+        existing_privacy.update({"version": CONSENT_VERSION, "updated_at": now_iso})
         personal_fields["privacy_preferences"] = existing_privacy
     organization_fields = {
         key: value for key, value in {
@@ -3747,10 +3756,16 @@ async def update_onboarding_profile(
         }.items() if value is not None
     }
     if personal_fields:
+        personal_updates = {f"onboarding_profile.{key}": value for key, value in personal_fields.items()}
+        if privacy_values:
+            personal_updates["marketing_preferences"] = {
+                "email_opt_in": bool(existing_privacy.get("marketing_emails", False)),
+                "profiling_opt_in": bool(existing_privacy.get("marketing_profiling", False)),
+                "version": CONSENT_VERSION, "updated_at": now_iso,
+            }
         await db.users.update_one(
             {"user_id": current_user["user_id"], "company_id": current_user["company_id"]},
-            {"$set": {f"onboarding_profile.{key}": value for key, value in personal_fields.items()},
-             "$currentDate": {"updated_at": True}},
+            {"$set": personal_updates, "$currentDate": {"updated_at": True}},
         )
     if organization_fields:
         if current_user.get("role") not in {"owner", "admin"}:
