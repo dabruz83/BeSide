@@ -316,6 +316,16 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
             raise HTTPException(404, "Azienda non trovata")
         return {"configured": True, "days": days}
 
+    @router.delete("/calendar/work-hours")
+    async def delete_calendar_work_hours(current_user: dict = Depends(manage_roles)):
+        result = await db.companies.update_one(
+            {"company_id": current_user["company_id"]},
+            {"$unset": {"calendar_work_hours": ""}, "$set": {"updated_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        if getattr(result, "matched_count", 0) == 0:
+            raise HTTPException(404, "Azienda non trovata")
+        return {"configured": False, "days": []}
+
     @router.get("/calendar/events")
     async def calendar_events(
         start: datetime, end: datetime,
