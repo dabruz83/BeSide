@@ -143,6 +143,7 @@ export const CalendarPage = () => {
   const [events, setEvents] = useState([]);
   const [quotes, setQuotes] = useState([]);
   const [workAreas, setWorkAreas] = useState([DEFAULT_WORK_AREA]);
+  const [workHours, setWorkHours] = useState(null);
   const [areasDialogOpen, setAreasDialogOpen] = useState(false);
   const [areaDrafts, setAreaDrafts] = useState([DEFAULT_WORK_AREA]);
   const [savingAreas, setSavingAreas] = useState(false);
@@ -169,10 +170,11 @@ export const CalendarPage = () => {
   const reload = useCallback(async () => {
     setBusy(true);
     try {
-      const [list, accepted, configuredAreas] = await Promise.all([
+      const [list, accepted, configuredAreas, configuredHours] = await Promise.all([
         axios.get(API + "/calendar/events", { params: { start: start.toISOString(), end: end.toISOString() } }),
         axios.get(API + "/calendar/accepted-quotes"),
         axios.get(API + "/calendar/work-areas"),
+        axios.get(API + "/calendar/work-hours"),
       ]);
       setEvents(list.data);
       setQuotes(accepted.data);
@@ -180,6 +182,7 @@ export const CalendarPage = () => {
       setWorkAreas(areas);
       setResourceFilter((current) => areas.some((area) => area.area_id === current)
         ? current : areas[0].area_id);
+      setWorkHours(configuredHours.data?.configured ? configuredHours.data : null);
     } catch (error) {
       toast.error(error.response?.data?.detail || "Impossibile caricare la pianificazione.");
     } finally {
@@ -381,6 +384,22 @@ export const CalendarPage = () => {
     if (editing) await axios.put(API + "/calendar/events/" + editing.event_id, payload);
     else await axios.post(API + "/calendar/events", payload);
   };
+  const isOutsideConfiguredHours = (event) => {
+    if (!workHours?.configured) return false;
+    const startAt = new Date(event.starts_at);
+    const endAt = new Date(event.ends_at);
+    if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime()) || dayKey(startAt) !== dayKey(endAt)) return true;
+    const config = workHours.days?.find((item) => item.day === (startAt.getDay() + 6) % 7);
+    if (!config?.enabled || !config.start || !config.end) return true;
+    const startMinutes = minutesOf(startAt);
+    const endMinutes = minutesOf(endAt);
+    const opening = Number(config.start.slice(0, 2)) * 60 + Number(config.start.slice(3));
+    const closing = Number(config.end.slice(0, 2)) * 60 + Number(config.end.slice(3));
+    const inBreak = config.break_start && config.break_end &&
+      startMinutes < (Number(config.break_end.slice(0, 2)) * 60 + Number(config.break_end.slice(3))) &&
+      endMinutes > (Number(config.break_start.slice(0, 2)) * 60 + Number(config.break_start.slice(3)));
+    return startMinutes < opening || endMinutes > closing || inBreak;
+  };
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (form.reminder_minutes.length > 4) {
@@ -388,6 +407,7 @@ export const CalendarPage = () => {
     }
     setSaving(true);
     try {
+      if (isOutsideConfiguredHours(form)) toast.warning("Appuntamento fuori dall'orario lavorativo: registrazione consentita.");
       await saveEvent(form);
       toast.success(editing ? "Appuntamento aggiornato" : "Appuntamento pianificato");
       setResourceFilter(form.resource_id || DEFAULT_WORK_AREA.area_id);
@@ -583,6 +603,23 @@ export const CalendarPage = () => {
                       setForm((prev) => ({ ...prev,
                         resource_id: selectedArea.area_id, resource: selectedArea.name }));
                     }}>
+                    {workHours?.configured && (() => {
+                      const config = workHours.days?.find((item) => item.day === (d.getDay() + 6) % 7);
+                      if (config?.enabled && config.start && config.end) {
+                        const opening = Number(config.start.slice(0, 2)) * 60 + Number(config.start.slice(3));
+                        const closing = Number(config.end.slice(0, 2)) * 60 + Number(config.end.slice(3));
+                        const segments = [{ start: HOUR_FIRST * 60, end: opening }, { start: closing, end: HOUR_LAST * 60 }];
+                        if (config.break_start && config.break_end) segments.push({
+                          start: Number(config.break_start.slice(0, 2)) * 60 + Number(config.break_start.slice(3)),
+                          end: Number(config.break_end.slice(0, 2)) * 60 + Number(config.break_end.slice(3)),
+                        });
+                        return segments.filter((segment) => segment.end > segment.start).map((segment) => (
+                          <div key={`${segment.start}-${segment.end}`} className="pointer-events-none absolute inset-x-0 z-[1] bg-slate-200/45"
+                            style={{ top: (segment.start - HOUR_FIRST * 60) / 60 * HOUR_HEIGHT, height: (segment.end - segment.start) / 60 * HOUR_HEIGHT }} />
+                        ));
+                      }
+                      return <div className="pointer-events-none absolute inset-0 z-[1] bg-slate-200/45" />;
+                    })()}
                     {dayEvents.map((ev) => {
                       const startMoment = new Date(ev.starts_at);
                       return <div key={ev.event_id} data-calendar-event

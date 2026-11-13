@@ -33,6 +33,19 @@ class CalendarWorkAreasInput(BaseModel):
     areas: List[CalendarWorkAreaInput] = Field(min_length=1, max_length=12)
 
 
+class CalendarWorkDayInput(BaseModel):
+    day: int = Field(ge=0, le=6)
+    enabled: bool = False
+    start: Optional[str] = Field(default=None, max_length=5)
+    end: Optional[str] = Field(default=None, max_length=5)
+    break_start: Optional[str] = Field(default=None, max_length=5)
+    break_end: Optional[str] = Field(default=None, max_length=5)
+
+
+class CalendarWorkHoursInput(BaseModel):
+    days: List[CalendarWorkDayInput] = Field(min_length=7, max_length=7)
+
+
 class CalendarEventInput(BaseModel):
     title: str = Field(min_length=1, max_length=180)
     starts_at: datetime
@@ -104,6 +117,16 @@ async def _load_work_areas(db, company_id: str) -> List[dict]:
         if item.get("area_id") and str(item.get("name") or "").strip()
     ]
     return areas or _default_work_areas()
+
+
+def _validate_work_time(value: Optional[str], label: str) -> Optional[str]:
+    if value in (None, ""):
+        return None
+    try:
+        datetime.strptime(value, "%H:%M")
+    except ValueError as exc:
+        raise HTTPException(422, f"Orario {label} non valido") from exc
+    return value
 
 
 async def _resolve_work_area(db, company_id: str, event: dict) -> None:
@@ -252,6 +275,46 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
         if getattr(result, "matched_count", 0) == 0:
             raise HTTPException(404, "Azienda non trovata")
         return updated
+
+    @router.get("/calendar/work-hours")
+    async def calendar_work_hours(current_user: dict = Depends(roles)):
+        company = await db.companies.find_one(
+            {"company_id": current_user["company_id"]},
+            {"_id": 0, "calendar_work_hours": 1},
+        )
+        configured = (company or {}).get("calendar_work_hours")
+        return {"configured": bool(configured), "days": configured or []}
+
+    @router.put("/calendar/work-hours")
+    async def update_calendar_work_hours(
+        data: CalendarWorkHoursInput,
+        current_user: dict = Depends(manage_roles),
+    ):
+        if len({item.day for item in data.days}) != 7:
+            raise HTTPException(422, "Configura una sola voce per ogni giorno della settimana")
+        days = []
+        for item in sorted(data.days, key=lambda value: value.day):
+            start = _validate_work_time(item.start, "di inizio")
+            end = _validate_work_time(item.end, "di fine")
+            break_start = _validate_work_time(item.break_start, "di inizio pausa")
+            break_end = _validate_work_time(item.break_end, "di fine pausa")
+            if item.enabled:
+                if not start or not end or start >= end:
+                    raise HTTPException(422, "Ogni giorno lavorativo deve avere inizio e fine validi")
+                if (break_start and not break_end) or (break_end and not break_start):
+                    raise HTTPException(422, "La pausa richiede inizio e fine")
+                if break_start and not (start <= break_start < break_end <= end):
+                    raise HTTPException(422, "La pausa deve essere compresa nell'orario lavorativo")
+            days.append({"day": item.day, "enabled": item.enabled, "start": start, "end": end,
+                         "break_start": break_start, "break_end": break_end})
+        now = datetime.now(timezone.utc).isoformat()
+        result = await db.companies.update_one(
+            {"company_id": current_user["company_id"]},
+            {"$set": {"calendar_work_hours": days, "updated_at": now}},
+        )
+        if getattr(result, "matched_count", 0) == 0:
+            raise HTTPException(404, "Azienda non trovata")
+        return {"configured": True, "days": days}
 
     @router.get("/calendar/events")
     async def calendar_events(

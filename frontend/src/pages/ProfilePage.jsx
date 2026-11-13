@@ -58,6 +58,8 @@ const SUPPORT_CATEGORIES = [
 ];
 
 const SUPPORT_STATUS_LABELS = { open: "Aperto", pending: "In lavorazione", closed: "Chiuso" };
+const WEEK_DAYS = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
+const emptyWorkHours = () => WEEK_DAYS.map((_, day) => ({ day, enabled: false, start: "", end: "", break_start: "", break_end: "" }));
 
 export const ProfilePage = () => {
   const { user, logout, checkAuth } = useAuth();
@@ -92,6 +94,12 @@ export const ProfilePage = () => {
   const [emailChangeForm, setEmailChangeForm] = useState({ email: "", code: "" });
   const [emailChangeOpen, setEmailChangeOpen] = useState(false);
   const [emailChangeBusy, setEmailChangeBusy] = useState(false);
+  const [workHours, setWorkHours] = useState(emptyWorkHours);
+  const [workHoursConfigured, setWorkHoursConfigured] = useState(false);
+  const [workHoursBusy, setWorkHoursBusy] = useState(false);
+  const [workAreas, setWorkAreas] = useState([]);
+  const [workAreaDrafts, setWorkAreaDrafts] = useState([]);
+  const [workAreasBusy, setWorkAreasBusy] = useState(false);
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -183,6 +191,21 @@ export const ProfilePage = () => {
 
   useEffect(() => {
     if (section === "support" && user?.user_id) loadSupportTickets();
+  }, [section, user?.user_id]);
+
+  useEffect(() => {
+    if (section !== "calendar" || !user?.user_id) return;
+    Promise.all([
+      axios.get(`${API}/calendar/work-hours`),
+      axios.get(`${API}/calendar/work-areas`),
+    ]).then(([hoursResponse, areasResponse]) => {
+      const configuredDays = hoursResponse.data.days || [];
+      const byDay = new Map(configuredDays.map((item) => [item.day, item]));
+      setWorkHours(emptyWorkHours().map((item) => ({ ...item, ...(byDay.get(item.day) || {}) })));
+      setWorkHoursConfigured(Boolean(hoursResponse.data.configured));
+      setWorkAreas(areasResponse.data || []);
+      setWorkAreaDrafts((areasResponse.data || []).map((item) => ({ ...item })));
+    }).catch((error) => toast.error(error.response?.data?.detail || "Impossibile caricare le impostazioni dell'agenda."));
   }, [section, user?.user_id]);
 
   const loadCollaborators = async () => {
@@ -431,6 +454,32 @@ export const ProfilePage = () => {
       public_province: current.provincia || "",
     }));
     toast.success("Indirizzo copiato nei recapiti pubblici");
+  };
+
+  const saveWorkHours = async () => {
+    const invalid = workHours.some((item) => item.enabled && (!item.start || !item.end || item.start >= item.end));
+    if (invalid) { toast.error("Completa inizio e fine per ogni giorno lavorativo."); return; }
+    setWorkHoursBusy(true);
+    try {
+      const response = await axios.put(`${API}/calendar/work-hours`, { days: workHours });
+      setWorkHours(response.data.days || workHours);
+      setWorkHoursConfigured(true);
+      toast.success("Orari lavorativi salvati");
+    } catch (error) { toast.error(error.response?.data?.detail || "Impossibile salvare gli orari."); }
+    finally { setWorkHoursBusy(false); }
+  };
+
+  const saveProfileWorkAreas = async () => {
+    const areas = workAreaDrafts.map((area) => ({ area_id: area.area_id || null, name: area.name.trim() }));
+    if (areas.some((area) => !area.name)) { toast.error("Inserisci un nome per ogni area."); return; }
+    if (new Set(areas.map((area) => area.name.toLowerCase())).size !== areas.length) { toast.error("Ogni area deve avere un nome diverso."); return; }
+    setWorkAreasBusy(true);
+    try {
+      const response = await axios.put(`${API}/calendar/work-areas`, { areas });
+      setWorkAreas(response.data || []); setWorkAreaDrafts((response.data || []).map((item) => ({ ...item })));
+      toast.success("Aree di lavoro aggiornate");
+    } catch (error) { toast.error(error.response?.data?.detail || "Impossibile aggiornare le aree."); }
+    finally { setWorkAreasBusy(false); }
   };
 
   const handleConsentSave = async () => {
@@ -946,10 +995,27 @@ export const ProfilePage = () => {
         <Button className="w-full" onClick={handleSave} disabled={saving} data-testid="profile-save-btn">Salva personalizzazione</Button>
       </>}
 
-      {section === "calendar" && <Card><CardContent className="pt-5 space-y-3">
-        <p className="text-sm text-muted-foreground">Le aree di lavoro e i promemoria degli appuntamenti si gestiscono nell'agenda, senza creare una configurazione duplicata.</p>
+      {section === "calendar" && <div className="space-y-4">
+        <Card><CardHeader><CardTitle className="text-lg">Orari e giorni lavorativi</CardTitle></CardHeader><CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">Se non configuri gli orari, l'Agenda mantiene il comportamento attuale. Gli appuntamenti fuori orario restano consentiti.</p>
+          {workHours.map((item) => <div key={item.day} className="rounded-lg border p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <label className="flex items-center gap-2 font-medium"><Checkbox checked={item.enabled} onCheckedChange={(value) => setWorkHours((current) => current.map((day) => day.day === item.day ? { ...day, enabled: value === true } : day))} />{WEEK_DAYS[item.day]}</label>
+              {item.enabled && <div className="grid grid-cols-2 gap-2"><Input type="time" aria-label={`${WEEK_DAYS[item.day]} inizio`} value={item.start || ""} onChange={(event) => setWorkHours((current) => current.map((day) => day.day === item.day ? { ...day, start: event.target.value } : day))} /><Input type="time" aria-label={`${WEEK_DAYS[item.day]} fine`} value={item.end || ""} onChange={(event) => setWorkHours((current) => current.map((day) => day.day === item.day ? { ...day, end: event.target.value } : day))} /></div>}
+            </div>
+            {item.enabled && <div className="mt-2 grid grid-cols-2 gap-2"><Input type="time" aria-label={`${WEEK_DAYS[item.day]} inizio pausa`} placeholder="Pausa inizio" value={item.break_start || ""} onChange={(event) => setWorkHours((current) => current.map((day) => day.day === item.day ? { ...day, break_start: event.target.value } : day))} /><Input type="time" aria-label={`${WEEK_DAYS[item.day]} fine pausa`} placeholder="Pausa fine" value={item.break_end || ""} onChange={(event) => setWorkHours((current) => current.map((day) => day.day === item.day ? { ...day, break_end: event.target.value } : day))} /></div>}
+          </div>)}
+          {!workHoursConfigured && <p className="text-xs text-muted-foreground">Nessun orario configurato.</p>}
+          <Button type="button" onClick={saveWorkHours} disabled={workHoursBusy}>{workHoursBusy ? "Salvataggio..." : "Salva orari"}</Button>
+        </CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-lg">Aree di lavoro</CardTitle></CardHeader><CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">Le stesse aree vengono utilizzate dagli appuntamenti. La rimozione è bloccata se ci sono appuntamenti futuri.</p>
+          {workAreaDrafts.map((area, index) => <div key={area.area_id || index} className="flex items-center gap-2"><Input value={area.name} maxLength={80} onChange={(event) => setWorkAreaDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} /><Button type="button" variant="outline" size="icon" aria-label={`Rimuovi ${area.name || "area"}`} disabled={workAreaDrafts.length === 1} onClick={() => setWorkAreaDrafts((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 className="h-4 w-4" /></Button></div>)}
+          <Button type="button" variant="outline" onClick={() => setWorkAreaDrafts((current) => [...current, { area_id: null, name: "" }])} disabled={workAreaDrafts.length >= 12}><Plus className="mr-1 h-4 w-4" />Aggiungi area</Button>
+          <Button type="button" className="ml-2" onClick={saveProfileWorkAreas} disabled={workAreasBusy}>{workAreasBusy ? "Salvataggio..." : "Salva aree"}</Button>
+        </CardContent></Card>
         <Button variant="outline" onClick={() => navigate("/calendar")}><CalendarDays className="mr-2 h-4 w-4"/>Apri Pianificazione</Button>
-      </CardContent></Card>}
+      </div>}
 
       {section === "notifications" && <Card><CardContent className="pt-5 space-y-3">
         <p className="text-sm">Promemoria appuntamenti</p>
