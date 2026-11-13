@@ -25,7 +25,7 @@ import {
   Search,
   Loader2,
   ShieldCheck,
-  ArrowLeft, ChevronRight, Settings2, UserRound, Landmark, CalendarDays, Bell, PauseCircle, Trash2, LifeBuoy
+  ArrowLeft, ChevronRight, Settings2, UserRound, Landmark, CalendarDays, Bell, PauseCircle, Trash2, LifeBuoy, Plus
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
