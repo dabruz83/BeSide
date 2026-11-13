@@ -43,7 +43,7 @@ const BUSINESS_TYPES = [
 
 const SERVICES = [
   { id: "ppf", label: "PPF (Pellicola Protettiva)" },
-  { id: "wrap", label: "Wrap (Decorativo/Commerciale)" },
+  { id: "wrap", label: "Wrapping" },
   { id: "tint", label: "Oscuramento Vetri" },
   { id: "upholstery", label: "Tappezzeria" }
 ];
@@ -109,6 +109,14 @@ export const ProfilePage = () => {
     citta: user?.business_info?.citta || "",
     cap: user?.business_info?.cap || "",
     provincia: user?.business_info?.provincia || "",
+    commercial_name: user?.business_info?.commercial_name || user?.business_name || "",
+    public_address: user?.business_info?.public_address || user?.business_info?.indirizzo || "",
+    public_cap: user?.business_info?.public_cap || user?.business_info?.cap || "",
+    public_city: user?.business_info?.public_city || user?.business_info?.citta || "",
+    public_province: user?.business_info?.public_province || user?.business_info?.provincia || "",
+    show_public_address: user?.business_info?.show_public_address ?? Boolean(user?.business_info?.indirizzo),
+    show_public_email: user?.business_info?.show_public_email ?? Boolean(user?.business_info?.email),
+    show_public_phone: user?.business_info?.show_public_phone ?? Boolean(user?.business_info?.telefono),
     sdi: user?.business_info?.sdi || "",
     pec: user?.business_info?.pec || "",
     email: user?.business_info?.email || "",
@@ -414,6 +422,17 @@ export const ProfilePage = () => {
     }
   };
 
+  const copyBusinessAddress = () => {
+    setBusinessInfo((current) => ({
+      ...current,
+      public_address: current.indirizzo || "",
+      public_cap: current.cap || "",
+      public_city: current.citta || "",
+      public_province: current.provincia || "",
+    }));
+    toast.success("Indirizzo copiato nei recapiti pubblici");
+  };
+
   const handleConsentSave = async () => {
     try {
       await axios.put(`${API}/auth/privacy-preferences`, marketingPreferences);
@@ -645,8 +664,31 @@ export const ProfilePage = () => {
                   </div>
                 </CardContent>
               </Card>
-        <Card><CardHeader><CardTitle className="text-lg">Recapiti pubblici</CardTitle></CardHeader><CardContent className="space-y-3">
-                  <div className="grid grid-cols-2 gap-4">
+        <Card><CardHeader><CardTitle className="text-lg">Recapiti pubblici</CardTitle></CardHeader><CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="commercial_name">Nome commerciale</Label>
+                    <Input
+                      id="commercial_name"
+                      value={businessInfo.commercial_name}
+                      onChange={(e) => setBusinessInfo({ ...businessInfo, commercial_name: e.target.value })}
+                      placeholder={formData.business_name || "Nome mostrato ai clienti"}
+                    />
+                    <p className="text-xs text-muted-foreground">Può essere diverso dalla ragione sociale.</p>
+                  </div>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <Label>Indirizzo per i clienti</Label>
+                    <Button type="button" variant="outline" size="sm" onClick={copyBusinessAddress}>Copia indirizzo dell'attività</Button>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="public_address">Indirizzo pubblico</Label>
+                    <Input id="public_address" value={businessInfo.public_address} onChange={(e) => setBusinessInfo({ ...businessInfo, public_address: e.target.value })} placeholder="Via Roma 1" />
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                    <div className="space-y-2"><Label htmlFor="public_cap">CAP</Label><Input id="public_cap" value={businessInfo.public_cap} onChange={(e) => setBusinessInfo({ ...businessInfo, public_cap: e.target.value })} placeholder="20100" /></div>
+                    <div className="space-y-2"><Label htmlFor="public_city">Città</Label><Input id="public_city" value={businessInfo.public_city} onChange={(e) => setBusinessInfo({ ...businessInfo, public_city: e.target.value })} placeholder="Milano" /></div>
+                    <div className="space-y-2"><Label htmlFor="public_province">Provincia</Label><Input id="public_province" maxLength={2} value={businessInfo.public_province} onChange={(e) => setBusinessInfo({ ...businessInfo, public_province: e.target.value.toUpperCase() })} placeholder="MI" /></div>
+                  </div>
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                     <div className="space-y-2">
                       <Label htmlFor="email_business">Email</Label>
                       <Input
@@ -671,7 +713,12 @@ export const ProfilePage = () => {
                       </div>
                     </div>
                   </div>
-
+                  <div className="space-y-2 rounded-md border bg-muted/20 p-3 text-sm">
+                    <p className="font-medium">Mostra nei preventivi e documenti clienti</p>
+                    <label className="flex items-center gap-2"><Checkbox checked={businessInfo.show_public_address} onCheckedChange={(value) => setBusinessInfo({ ...businessInfo, show_public_address: value === true })} /> Indirizzo</label>
+                    <label className="flex items-center gap-2"><Checkbox checked={businessInfo.show_public_email} onCheckedChange={(value) => setBusinessInfo({ ...businessInfo, show_public_email: value === true })} /> Email</label>
+                    <label className="flex items-center gap-2"><Checkbox checked={businessInfo.show_public_phone} onCheckedChange={(value) => setBusinessInfo({ ...businessInfo, show_public_phone: value === true })} /> Telefono</label>
+                  </div>
 
         </CardContent></Card>
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva attività</Button>

@@ -431,6 +431,14 @@ class BusinessInfo(BaseModel):
     citta: Optional[str] = None
     cap: Optional[str] = None
     provincia: Optional[str] = None
+    commercial_name: Optional[str] = None
+    public_address: Optional[str] = None
+    public_cap: Optional[str] = None
+    public_city: Optional[str] = None
+    public_province: Optional[str] = None
+    show_public_address: Optional[bool] = None
+    show_public_email: Optional[bool] = None
+    show_public_phone: Optional[bool] = None
     sdi: Optional[str] = None
     pec: Optional[str] = None
     email: Optional[str] = None
@@ -4539,6 +4547,32 @@ async def delete_job(
     return {"message": "Lavoro eliminato"}
 
 # Public quote viewing and acceptance
+def _public_quote_business_info(info: Dict[str, Any]) -> Dict[str, Any]:
+    """Return only business fields explicitly needed on a customer quote."""
+    info = info or {}
+    address_enabled = info.get("show_public_address", bool(info.get("indirizzo")))
+    email_enabled = info.get("show_public_email", bool(info.get("email")))
+    phone_enabled = info.get("show_public_phone", bool(info.get("telefono")))
+    public_info = {
+        "logo_url": info.get("logo_url"),
+        "logo_width": info.get("logo_width", 150),
+        "partita_iva": info.get("partita_iva"),
+        "codice_fiscale": info.get("codice_fiscale"),
+        "intestazione_extra": info.get("intestazione_extra"),
+    }
+    if address_enabled:
+        public_info.update({
+            "indirizzo": info.get("public_address") or info.get("indirizzo"),
+            "cap": info.get("public_cap") or info.get("cap"),
+            "citta": info.get("public_city") or info.get("citta"),
+            "provincia": info.get("public_province") or info.get("provincia"),
+        })
+    if email_enabled:
+        public_info["email"] = info.get("email")
+    if phone_enabled:
+        public_info["telefono"] = info.get("telefono")
+    return public_info
+
 @api_router.get("/quote/{token}")
 async def get_public_quote(token: str, request: Request):
     """Public endpoint to view a quote"""
@@ -4575,8 +4609,10 @@ async def get_public_quote(token: str, request: Request):
         "notes": job.get("notes"),
         "quote_status": job.get("quote_status"),
         "created_at": job["created_at"],
-        "business_name": (company or {}).get("name") or (owner or {}).get("business_name"),
-        "business_info": (owner or {}).get("business_info", {})
+        "business_name": (owner or {}).get("business_info", {}).get("commercial_name")
+            or (company or {}).get("name")
+            or (owner or {}).get("business_name"),
+        "business_info": _public_quote_business_info((owner or {}).get("business_info", {}))
     }
 
 @api_router.post("/quote/{token}/accept")
