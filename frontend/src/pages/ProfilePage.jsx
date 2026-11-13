@@ -111,6 +111,10 @@ export const ProfilePage = () => {
   const [savedWorkHours, setSavedWorkHours] = useState(emptyWorkHours);
   const [commonHours, setCommonHours] = useState({ start: "", end: "", break_start: "", break_end: "" });
   const [breakEnabled, setBreakEnabled] = useState(false);
+  const [quickPreset, setQuickPreset] = useState("custom");
+  const [savedQuickPreset, setSavedQuickPreset] = useState("custom");
+  const [savedCommonHours, setSavedCommonHours] = useState({ start: "", end: "", break_start: "", break_end: "" });
+  const [savedBreakEnabled, setSavedBreakEnabled] = useState(false);
   const [expandedWorkDays, setExpandedWorkDays] = useState({});
   const [workHoursConfigured, setWorkHoursConfigured] = useState(false);
   const [workHoursBusy, setWorkHoursBusy] = useState(false);
@@ -229,6 +233,10 @@ export const ProfilePage = () => {
       setSavedWorkHours(loadedHours.map((item) => ({ ...item })));
       setCommonHours(loadedCommon);
       setBreakEnabled(Boolean(loadedCommon.break_start && loadedCommon.break_end));
+      setSavedCommonHours(loadedCommon); setSavedBreakEnabled(Boolean(loadedCommon.break_start && loadedCommon.break_end));
+      const enabledDays = loadedHours.filter((item) => item.enabled).map((item) => item.day).join(",");
+      const preset = enabledDays === "0,1,2,3,4" ? "weekdays" : enabledDays === "0,1,2,3,4,5" ? "weekdays_saturday" : "custom";
+      setQuickPreset(preset); setSavedQuickPreset(preset);
       setWorkHoursConfigured(Boolean(hoursResponse.data.configured));
       setWorkAreas(areasResponse.data || []);
       setWorkAreaDrafts((areasResponse.data || []).map((item) => ({ ...item })));
@@ -492,27 +500,29 @@ export const ProfilePage = () => {
       const response = await axios.put(`${API}/calendar/work-hours`, { days: workHours });
       setWorkHours(response.data.days || workHours);
       setSavedWorkHours((response.data.days || workHours).map((item) => ({ ...item })));
+      setSavedQuickPreset(quickPreset);
+      setSavedCommonHours({ ...commonHours }); setSavedBreakEnabled(breakEnabled);
       setWorkHoursConfigured(true);
       toast.success("Orari lavorativi salvati");
     } catch (error) { toast.error(error.response?.data?.detail || "Impossibile salvare gli orari."); }
     finally { setWorkHoursBusy(false); }
   };
 
-  const restoreWorkHours = () => setWorkHours(savedWorkHours.map((item) => ({ ...item })));
+  const restoreWorkHours = () => { setWorkHours(savedWorkHours.map((item) => ({ ...item }))); setQuickPreset(savedQuickPreset); setCommonHours({ ...savedCommonHours }); setBreakEnabled(savedBreakEnabled); };
   const removeWorkHours = async () => {
     if (!window.confirm("Rimuovere tutta la configurazione degli orari? L'Agenda tornerà al comportamento attuale.")) return;
     setWorkHoursBusy(true);
     try {
       await axios.delete(`${API}/calendar/work-hours`);
       const empty = emptyWorkHours();
-      setWorkHours(empty); setSavedWorkHours(empty); setWorkHoursConfigured(false);
+      setWorkHours(empty); setSavedWorkHours(empty); setWorkHoursConfigured(false); setQuickPreset("custom"); setSavedQuickPreset("custom"); setCommonHours({ start: "", end: "", break_start: "", break_end: "" }); setSavedCommonHours({ start: "", end: "", break_start: "", break_end: "" }); setBreakEnabled(false); setSavedBreakEnabled(false);
       setCommonHours({ start: "", end: "", break_start: "", break_end: "" }); setBreakEnabled(false);
       toast.success("Configurazione orari rimossa");
     } catch (error) { toast.error(error.response?.data?.detail || "Impossibile rimuovere la configurazione."); }
     finally { setWorkHoursBusy(false); }
   };
-  const updateWorkDay = (day, changes) => setWorkHours((current) => current.map((item) => item.day === day ? { ...item, ...changes } : item));
-  const applyDaysPreset = (days) => setWorkHours((current) => current.map((item) => ({ ...item, enabled: days.includes(item.day) })));
+  const updateWorkDay = (day, changes) => { setQuickPreset("custom"); setWorkHours((current) => current.map((item) => item.day === day ? { ...item, ...changes } : item)); };
+  const applyDaysPreset = (preset, days) => { setQuickPreset(preset); setWorkHours((current) => current.map((item) => ({ ...item, enabled: days.includes(item.day) }))); };
   const applyCommonHours = () => {
     if (!commonHours.start || !commonHours.end) { toast.error("Imposta apertura e chiusura prima di applicare l'orario comune."); return; }
     if (commonHours.start >= commonHours.end) { toast.error("L'apertura deve precedere la chiusura."); return; }
@@ -1073,9 +1083,9 @@ export const ProfilePage = () => {
       {section === "calendar" && <div className="space-y-4">
         <Card><CardHeader><CardTitle className="text-lg">Orari e giorni lavorativi</CardTitle></CardHeader><CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">Se non configuri gli orari, l'Agenda mantiene il comportamento attuale. Gli appuntamenti fuori orario restano consentiti.</p>
-          <div className="grid grid-cols-3 gap-2"><Button type="button" variant="outline" className="h-auto min-h-11 whitespace-normal px-2 text-xs" onClick={() => applyDaysPreset([0, 1, 2, 3, 4])}>Lun–Ven</Button><Button type="button" variant="outline" className="h-auto min-h-11 whitespace-normal px-2 text-xs" onClick={() => applyDaysPreset([0, 1, 2, 3, 4, 5])}>Lun–Sab</Button><Button type="button" variant="outline" className="h-auto min-h-11 whitespace-normal px-2 text-xs" onClick={() => setExpandedWorkDays((current) => ({ ...current, 0: true }))}>Personalizza</Button></div>
+          <div className="grid grid-cols-3 gap-2"><Button type="button" variant={quickPreset === "weekdays" ? "default" : "outline"} className="h-auto min-h-11 whitespace-normal px-2 text-xs" onClick={() => applyDaysPreset("weekdays", [0, 1, 2, 3, 4])}>Lun–Ven</Button><Button type="button" variant={quickPreset === "weekdays_saturday" ? "default" : "outline"} className="h-auto min-h-11 whitespace-normal px-2 text-xs" onClick={() => applyDaysPreset("weekdays_saturday", [0, 1, 2, 3, 4, 5])}>Lun–Sab</Button><Button type="button" variant={quickPreset === "custom" ? "default" : "outline"} className="h-auto min-h-11 whitespace-normal px-2 text-xs" onClick={() => { setQuickPreset("custom"); setExpandedWorkDays((current) => ({ ...current, 0: true })); }}>Personalizza</Button></div>
           <div className="grid grid-cols-7 gap-1.5">{workHours.map((item) => <button key={item.day} type="button" onClick={() => updateWorkDay(item.day, { enabled: !item.enabled })} className={`min-w-0 rounded-xl border px-1 py-2 text-center text-xs font-medium ${item.enabled ? "border-primary bg-primary/10 text-primary" : "bg-muted/30 text-muted-foreground"}`} aria-pressed={item.enabled}>{WEEK_DAYS[item.day].slice(0, 2)}</button>)}</div>
-          <div className="rounded-xl border bg-muted/20 p-3 space-y-3"><div><p className="font-medium">Orario comune</p><p className="text-xs text-muted-foreground">Applicalo ai giorni selezionati.</p></div><div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={commonHours.start} onChange={(value) => setCommonHours((current) => ({ ...current, start: value }))} /><TimeSelect label="Chiusura" value={commonHours.end} onChange={(value) => setCommonHours((current) => ({ ...current, end: value }))} /></div><label className="flex min-h-11 items-center gap-2 text-sm"><Checkbox checked={breakEnabled} onCheckedChange={(value) => setBreakEnabled(value === true)} />Pausa giornaliera</label>{breakEnabled && <div className="grid grid-cols-2 gap-3"><TimeSelect label="Inizio pausa" value={commonHours.break_start} onChange={(value) => setCommonHours((current) => ({ ...current, break_start: value }))} /><TimeSelect label="Fine pausa" value={commonHours.break_end} onChange={(value) => setCommonHours((current) => ({ ...current, break_end: value }))} /></div>}<Button type="button" variant="outline" className="w-full" onClick={applyCommonHours}>Applica ai selezionati</Button></div>
+          <div className="rounded-xl border bg-muted/20 p-3 space-y-3"><div><p className="font-medium">Fascia 1 — obbligatoria</p><p className="text-xs text-muted-foreground">Orario continuato per i giorni selezionati.</p></div><div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={commonHours.start} onChange={(value) => setCommonHours((current) => ({ ...current, start: value }))} /><TimeSelect label="Chiusura" value={commonHours.end} onChange={(value) => setCommonHours((current) => ({ ...current, end: value }))} /></div><Button type="button" variant="outline" className="w-full" onClick={applyCommonHours}>Applica Fascia 1 ai selezionati</Button>{!breakEnabled ? <Button type="button" variant="ghost" className="w-full" onClick={() => setBreakEnabled(true)}>+ Aggiungi fascia oraria</Button> : <div className="space-y-2 rounded-lg border border-dashed p-3"><div className="flex items-center justify-between"><p className="text-sm font-medium">Fascia 2 — facoltativa</p><Button type="button" variant="ghost" size="icon" aria-label="Elimina fascia 2" onClick={() => { setBreakEnabled(false); setCommonHours((current) => ({ ...current, break_start: "", break_end: "" })); }}><Trash2 className="h-4 w-4" /></Button></div><div className="grid grid-cols-2 gap-3"><TimeSelect label="Riapertura" value={commonHours.break_start} onChange={(value) => setCommonHours((current) => ({ ...current, break_start: value }))} /><TimeSelect label="Chiusura" value={commonHours.break_end} onChange={(value) => setCommonHours((current) => ({ ...current, break_end: value }))} /></div><Button type="button" variant="outline" className="w-full" onClick={applyCommonHours}>Applica Fascia 2 ai selezionati</Button></div>}</div>
           <div className="space-y-2"><p className="text-sm font-medium">Personalizza singoli giorni</p>{workHours.map((item) => <div key={item.day} className="rounded-xl border p-3"><div className="flex items-center justify-between gap-2"><button type="button" className="min-h-11 flex-1 text-left font-medium" onClick={() => setExpandedWorkDays((current) => ({ ...current, [item.day]: !current[item.day] }))}>{WEEK_DAYS[item.day]}</button><span className="text-xs text-muted-foreground">{item.enabled ? "Aperto" : "Chiuso"}</span><Checkbox checked={item.enabled} onCheckedChange={(value) => updateWorkDay(item.day, { enabled: value === true })} aria-label={`${WEEK_DAYS[item.day]} aperto`} /></div>{expandedWorkDays[item.day] && item.enabled && <div className="mt-2 space-y-3"><div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={item.start} onChange={(value) => updateWorkDay(item.day, { start: value })} /><TimeSelect label="Chiusura" value={item.end} onChange={(value) => updateWorkDay(item.day, { end: value })} /></div><div className="grid grid-cols-2 gap-3"><TimeSelect label="Inizio pausa" value={item.break_start} onChange={(value) => updateWorkDay(item.day, { break_start: value })} /><TimeSelect label="Fine pausa" value={item.break_end} onChange={(value) => updateWorkDay(item.day, { break_end: value })} /></div><Button type="button" variant="ghost" size="sm" onClick={() => resetDayToCommon(item.day)}>Rimuovi eccezione</Button></div>}</div>)}</div>
           {!workHoursConfigured && <p className="text-xs text-muted-foreground">Nessuna configurazione salvata.</p>}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3"><Button type="button" onClick={saveWorkHours} disabled={workHoursBusy}>{workHoursBusy ? "Salvataggio..." : "Salva orari"}</Button><Button type="button" variant="outline" onClick={restoreWorkHours} disabled={workHoursBusy}>Ripristina valori salvati</Button><Button type="button" variant="outline" className="text-destructive" onClick={removeWorkHours} disabled={workHoursBusy || !workHoursConfigured}>Cancella orari</Button></div>
