@@ -117,6 +117,9 @@ export const ProfilePage = () => {
   const [workAreas, setWorkAreas] = useState([]);
   const [workAreaDrafts, setWorkAreaDrafts] = useState([]);
   const [workAreasBusy, setWorkAreasBusy] = useState(false);
+  const [calendarExceptions, setCalendarExceptions] = useState([]);
+  const [exceptionBusy, setExceptionBusy] = useState(false);
+  const [exceptionForm, setExceptionForm] = useState({ kind: "closure", start_date: "", end_date: "", reason: "Ferie", notes: "", recurring: false, start: "", end: "", break_start: "", break_end: "" });
   
   const [formData, setFormData] = useState({
     business_name: user?.business_name || "",
@@ -215,7 +218,8 @@ export const ProfilePage = () => {
     Promise.all([
       axios.get(`${API}/calendar/work-hours`),
       axios.get(`${API}/calendar/work-areas`),
-    ]).then(([hoursResponse, areasResponse]) => {
+      axios.get(`${API}/calendar/exceptions`),
+    ]).then(([hoursResponse, areasResponse, exceptionsResponse]) => {
       const configuredDays = hoursResponse.data.days || [];
       const byDay = new Map(configuredDays.map((item) => [item.day, item]));
       const loadedHours = emptyWorkHours().map((item) => ({ ...item, ...(byDay.get(item.day) || {}) }));
@@ -228,6 +232,7 @@ export const ProfilePage = () => {
       setWorkHoursConfigured(Boolean(hoursResponse.data.configured));
       setWorkAreas(areasResponse.data || []);
       setWorkAreaDrafts((areasResponse.data || []).map((item) => ({ ...item })));
+      setCalendarExceptions(exceptionsResponse.data || []);
     }).catch((error) => toast.error(error.response?.data?.detail || "Impossibile caricare le impostazioni dell'agenda."));
   }, [section, user?.user_id]);
 
@@ -518,6 +523,26 @@ export const ProfilePage = () => {
     toast.success("Orario comune applicato ai giorni selezionati");
   };
   const resetDayToCommon = (day) => updateWorkDay(day, { enabled: true, ...commonHours, break_start: breakEnabled ? commonHours.break_start : "", break_end: breakEnabled ? commonHours.break_end : "" });
+  const saveException = async () => {
+    if (!exceptionForm.start_date || !exceptionForm.end_date) { toast.error("Inserisci le date dell'eccezione."); return; }
+    setExceptionBusy(true);
+    try {
+      const response = await axios.put(`${API}/calendar/exceptions`, { exceptions: [...calendarExceptions, exceptionForm] });
+      setCalendarExceptions(response.data || []); toast.success("Eccezione salvata");
+    } catch (error) {
+      if (error.response?.status === 409 && window.confirm(`${error.response.data.detail?.conflicts || 0} appuntamenti ricadono nella chiusura. Salvare comunque?`)) {
+        const response = await axios.put(`${API}/calendar/exceptions`, { exceptions: [...calendarExceptions, exceptionForm], confirm_conflicts: true });
+        setCalendarExceptions(response.data || []); toast.success("Chiusura salvata con eccezioni esistenti");
+      } else toast.error(error.response?.data?.detail?.message || error.response?.data?.detail || "Impossibile salvare l'eccezione.");
+    } finally { setExceptionBusy(false); }
+  };
+  const deleteException = async (id) => {
+    if (!window.confirm("Eliminare questa eccezione?")) return;
+    setExceptionBusy(true);
+    try { const response = await axios.delete(`${API}/calendar/exceptions/${id}`); setCalendarExceptions(response.data || []); toast.success("Eccezione eliminata"); }
+    catch (error) { toast.error(error.response?.data?.detail || "Impossibile eliminare l'eccezione."); }
+    finally { setExceptionBusy(false); }
+  };
 
   const saveProfileWorkAreas = async () => {
     const areas = workAreaDrafts.map((area) => ({ area_id: area.area_id || null, name: area.name.trim() }));
@@ -1054,6 +1079,16 @@ export const ProfilePage = () => {
           <div className="space-y-2"><p className="text-sm font-medium">Personalizza singoli giorni</p>{workHours.map((item) => <div key={item.day} className="rounded-xl border p-3"><div className="flex items-center justify-between gap-2"><button type="button" className="min-h-11 flex-1 text-left font-medium" onClick={() => setExpandedWorkDays((current) => ({ ...current, [item.day]: !current[item.day] }))}>{WEEK_DAYS[item.day]}</button><span className="text-xs text-muted-foreground">{item.enabled ? "Aperto" : "Chiuso"}</span><Checkbox checked={item.enabled} onCheckedChange={(value) => updateWorkDay(item.day, { enabled: value === true })} aria-label={`${WEEK_DAYS[item.day]} aperto`} /></div>{expandedWorkDays[item.day] && item.enabled && <div className="mt-2 space-y-3"><div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={item.start} onChange={(value) => updateWorkDay(item.day, { start: value })} /><TimeSelect label="Chiusura" value={item.end} onChange={(value) => updateWorkDay(item.day, { end: value })} /></div><div className="grid grid-cols-2 gap-3"><TimeSelect label="Inizio pausa" value={item.break_start} onChange={(value) => updateWorkDay(item.day, { break_start: value })} /><TimeSelect label="Fine pausa" value={item.break_end} onChange={(value) => updateWorkDay(item.day, { break_end: value })} /></div><Button type="button" variant="ghost" size="sm" onClick={() => resetDayToCommon(item.day)}>Rimuovi eccezione</Button></div>}</div>)}</div>
           {!workHoursConfigured && <p className="text-xs text-muted-foreground">Nessuna configurazione salvata.</p>}
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-3"><Button type="button" onClick={saveWorkHours} disabled={workHoursBusy}>{workHoursBusy ? "Salvataggio..." : "Salva orari"}</Button><Button type="button" variant="outline" onClick={restoreWorkHours} disabled={workHoursBusy}>Ripristina valori salvati</Button><Button type="button" variant="outline" className="text-destructive" onClick={removeWorkHours} disabled={workHoursBusy || !workHoursConfigured}>Cancella orari</Button></div>
+        </CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-lg">Aperture e chiusure straordinarie</CardTitle></CardHeader><CardContent className="space-y-3">
+          <div className="grid grid-cols-2 gap-2"><Button type="button" variant={exceptionForm.kind === "closure" ? "default" : "outline"} onClick={() => setExceptionForm((current) => ({ ...current, kind: "closure" }))}>Nuova chiusura</Button><Button type="button" variant={exceptionForm.kind === "special_opening" ? "default" : "outline"} onClick={() => setExceptionForm((current) => ({ ...current, kind: "special_opening", end_date: current.start_date }))}>Apertura speciale</Button></div>
+          <div className="grid grid-cols-2 gap-3"><label className="space-y-1 text-xs font-medium">Data iniziale<input type="date" className="mt-1 h-11 w-full rounded-xl border px-2 text-base" value={exceptionForm.start_date} onChange={(event) => setExceptionForm((current) => ({ ...current, start_date: event.target.value, ...(current.kind === "special_opening" ? { end_date: event.target.value } : {}) }))} /></label><label className="space-y-1 text-xs font-medium">{exceptionForm.kind === "closure" ? "Data finale" : "Data"}<input type="date" className="mt-1 h-11 w-full rounded-xl border px-2 text-base" value={exceptionForm.end_date} min={exceptionForm.start_date || undefined} disabled={exceptionForm.kind === "special_opening"} onChange={(event) => setExceptionForm((current) => ({ ...current, end_date: event.target.value }))} /></label></div>
+          <select className="h-11 w-full rounded-xl border px-2" value={exceptionForm.reason} onChange={(event) => setExceptionForm((current) => ({ ...current, reason: event.target.value }))}>{["Ferie", "Festività", "Manutenzione", "Altro"].map((item) => <option key={item}>{item}</option>)}</select>
+          {exceptionForm.kind === "special_opening" && <div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={exceptionForm.start} onChange={(value) => setExceptionForm((current) => ({ ...current, start: value }))} /><TimeSelect label="Chiusura" value={exceptionForm.end} onChange={(value) => setExceptionForm((current) => ({ ...current, end: value }))} /></div>}
+          <Textarea placeholder="Note facoltative" value={exceptionForm.notes} onChange={(event) => setExceptionForm((current) => ({ ...current, notes: event.target.value }))} rows={2} />
+          {exceptionForm.kind === "closure" && <label className="flex min-h-11 items-center gap-2 text-sm"><Checkbox checked={exceptionForm.recurring} onCheckedChange={(value) => setExceptionForm((current) => ({ ...current, recurring: value === true }))} />Ripeti ogni anno</label>}
+          <Button type="button" className="w-full" onClick={saveException} disabled={exceptionBusy}>{exceptionBusy ? "Salvataggio..." : "Salva eccezione"}</Button>
+          <div className="space-y-2">{calendarExceptions.length === 0 ? <p className="text-xs text-muted-foreground">Nessuna eccezione configurata.</p> : calendarExceptions.slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).map((item) => <div key={item.exception_id} className="flex items-center justify-between gap-2 rounded-xl border p-3 text-sm"><div><p className="font-medium">{item.kind === "closure" ? "Chiusura" : "Apertura speciale"} · {item.start_date}{item.end_date !== item.start_date ? ` → ${item.end_date}` : ""}</p><p className="text-xs text-muted-foreground">{item.reason}{item.recurring ? " · annuale" : ""}{item.start ? ` · ${item.start}–${item.end}` : ""}</p></div><Button type="button" variant="ghost" size="sm" onClick={() => deleteException(item.exception_id)} disabled={exceptionBusy}>Elimina</Button></div>)}</div>
         </CardContent></Card>
         <Card><CardHeader><CardTitle className="text-lg">Aree di lavoro</CardTitle></CardHeader><CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">Le stesse aree vengono utilizzate dagli appuntamenti. La rimozione è bloccata se ci sono appuntamenti futuri.</p>

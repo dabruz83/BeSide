@@ -7,7 +7,7 @@ import asyncio
 import html
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import List, Optional
 
@@ -44,6 +44,25 @@ class CalendarWorkDayInput(BaseModel):
 
 class CalendarWorkHoursInput(BaseModel):
     days: List[CalendarWorkDayInput] = Field(min_length=7, max_length=7)
+
+
+class CalendarExceptionInput(BaseModel):
+    exception_id: Optional[str] = Field(default=None, max_length=80)
+    kind: str = Field(default="closure", max_length=20)
+    start_date: date
+    end_date: date
+    reason: str = Field(default="Altro", max_length=80)
+    notes: str = Field(default="", max_length=500)
+    recurring: bool = False
+    start: Optional[str] = Field(default=None, max_length=5)
+    end: Optional[str] = Field(default=None, max_length=5)
+    break_start: Optional[str] = Field(default=None, max_length=5)
+    break_end: Optional[str] = Field(default=None, max_length=5)
+
+
+class CalendarExceptionsInput(BaseModel):
+    exceptions: List[CalendarExceptionInput] = Field(default_factory=list, max_length=100)
+    confirm_conflicts: bool = False
 
 
 class CalendarEventInput(BaseModel):
@@ -325,6 +344,49 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
         if getattr(result, "matched_count", 0) == 0:
             raise HTTPException(404, "Azienda non trovata")
         return {"configured": False, "days": []}
+
+    @router.get("/calendar/exceptions")
+    async def calendar_exceptions(current_user: dict = Depends(roles)):
+        company = await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0, "calendar_exceptions": 1})
+        return (company or {}).get("calendar_exceptions") or []
+
+    @router.put("/calendar/exceptions")
+    async def update_calendar_exceptions(data: CalendarExceptionsInput, current_user: dict = Depends(manage_roles)):
+        normalized = []
+        for item in data.exceptions:
+            if item.kind not in {"closure", "special_opening"} or item.end_date < item.start_date:
+                raise HTTPException(422, "Intervallo eccezione non valido")
+            start = _validate_work_time(item.start, "di apertura")
+            end = _validate_work_time(item.end, "di chiusura")
+            break_start = _validate_work_time(item.break_start, "di riapertura")
+            break_end = _validate_work_time(item.break_end, "di chiusura seconda fascia")
+            if item.kind == "special_opening":
+                if item.start_date != item.end_date or not start or not end or start >= end:
+                    raise HTTPException(422, "L'apertura speciale richiede una sola data e una fascia valida")
+                if (break_start and not break_end) or (break_end and not break_start) or (break_start and break_start >= break_end):
+                    raise HTTPException(422, "La seconda fascia speciale non è valida")
+            normalized.append({"exception_id": item.exception_id or str(uuid.uuid4()), "kind": item.kind,
+                               "start_date": item.start_date.isoformat(), "end_date": item.end_date.isoformat(),
+                               "reason": item.reason.strip(), "notes": item.notes.strip(), "recurring": item.recurring,
+                               "start": start, "end": end, "break_start": break_start, "break_end": break_end})
+        closures = [item for item in normalized if item["kind"] == "closure"]
+        conflicts = 0
+        for closure in closures:
+            start_dt = datetime.fromisoformat(closure["start_date"] + "T00:00:00+00:00")
+            end_dt = datetime.fromisoformat(closure["end_date"] + "T23:59:59+00:00")
+            conflicts += await db.calendar_events.count_documents({"company_id": current_user["company_id"], "starts_at": {"$lte": end_dt.isoformat()}, "ends_at": {"$gte": start_dt.isoformat()}})
+        if conflicts and not data.confirm_conflicts:
+            raise HTTPException(409, detail={"message": "La chiusura comprende appuntamenti esistenti", "conflicts": conflicts})
+        await db.companies.update_one({"company_id": current_user["company_id"]}, {"$set": {"calendar_exceptions": normalized, "updated_at": datetime.now(timezone.utc).isoformat()}})
+        return normalized
+
+    @router.delete("/calendar/exceptions/{exception_id}")
+    async def delete_calendar_exception(exception_id: str, current_user: dict = Depends(manage_roles)):
+        company = await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0, "calendar_exceptions": 1})
+        exceptions = (company or {}).get("calendar_exceptions") or []
+        updated = [item for item in exceptions if item.get("exception_id") != exception_id]
+        await db.companies.update_one({"company_id": current_user["company_id"]}, {"$set": {"calendar_exceptions": updated, "updated_at": datetime.now(timezone.utc).isoformat()}})
+        return updated
 
     @router.get("/calendar/events")
     async def calendar_events(
