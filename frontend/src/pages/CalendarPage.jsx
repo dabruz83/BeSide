@@ -144,6 +144,7 @@ export const CalendarPage = () => {
   const [quotes, setQuotes] = useState([]);
   const [workAreas, setWorkAreas] = useState([DEFAULT_WORK_AREA]);
   const [workHours, setWorkHours] = useState(null);
+  const [calendarExceptions, setCalendarExceptions] = useState([]);
   const [areasDialogOpen, setAreasDialogOpen] = useState(false);
   const [areaDrafts, setAreaDrafts] = useState([DEFAULT_WORK_AREA]);
   const [savingAreas, setSavingAreas] = useState(false);
@@ -170,11 +171,12 @@ export const CalendarPage = () => {
   const reload = useCallback(async () => {
     setBusy(true);
     try {
-      const [list, accepted, configuredAreas, configuredHours] = await Promise.all([
+      const [list, accepted, configuredAreas, configuredHours, configuredExceptions] = await Promise.all([
         axios.get(API + "/calendar/events", { params: { start: start.toISOString(), end: end.toISOString() } }),
         axios.get(API + "/calendar/accepted-quotes"),
         axios.get(API + "/calendar/work-areas"),
         axios.get(API + "/calendar/work-hours"),
+        axios.get(API + "/calendar/exceptions"),
       ]);
       setEvents(list.data);
       setQuotes(accepted.data);
@@ -183,6 +185,7 @@ export const CalendarPage = () => {
       setResourceFilter((current) => areas.some((area) => area.area_id === current)
         ? current : areas[0].area_id);
       setWorkHours(configuredHours.data?.configured ? configuredHours.data : null);
+      setCalendarExceptions(configuredExceptions.data || []);
     } catch (error) {
       toast.error(error.response?.data?.detail || "Impossibile caricare la pianificazione.");
     } finally {
@@ -389,7 +392,13 @@ export const CalendarPage = () => {
     const startAt = new Date(event.starts_at);
     const endAt = new Date(event.ends_at);
     if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime()) || dayKey(startAt) !== dayKey(endAt)) return true;
-    const config = workHours.days?.find((item) => item.day === (startAt.getDay() + 6) % 7);
+    const date = dayKey(startAt);
+    const exception = calendarExceptions.find((item) => {
+      if (item.recurring) return item.start_date.slice(5) <= date.slice(5) && item.end_date.slice(5) >= date.slice(5);
+      return item.start_date <= date && item.end_date >= date;
+    });
+    if (exception?.kind === "closure") return true;
+    const config = exception?.kind === "special_opening" ? exception : workHours.days?.find((item) => item.day === (startAt.getDay() + 6) % 7);
     if (!config?.enabled || !config.start || !config.end) return true;
     const startMinutes = minutesOf(startAt);
     const endMinutes = minutesOf(endAt);
