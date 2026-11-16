@@ -202,7 +202,7 @@ async def lifespan(_app: FastAPI):
             logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
         await db.email_notification_jobs.create_index("job_id", unique=True)
-        await db.post_work_support_links.create_index("token_hash", unique=True)
+        await db.post_work_support_links.create_index("token_hash", unique=True, sparse=True)
         await db.post_work_support_links.create_index([("company_id", 1), ("job_id", 1)])
         await db.post_work_support_requests.create_index([("company_id", 1), ("job_id", 1), ("created_at", -1)])
         reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email, send_configured_notification))
