@@ -2502,7 +2502,6 @@ send_email_sendgrid = send_email
 NOTIFICATION_ALLOWED_VARIABLES = {
     "nome_cliente", "azienda", "tipo_lavoro", "data", "ora",
     "indirizzo", "telefono", "link_preventivo",
-    "link_assistenza",
 }
 NOTIFICATION_DEFAULT_PREFERENCES = {
     "installer_quote_accepted": True,
@@ -2529,7 +2528,7 @@ NOTIFICATION_DEFAULT_TEMPLATES = {
     "client_appointment_cancelled": {"subject": "Appuntamento annullato • Beside", "body": "<p>Il tuo appuntamento è stato annullato.</p>"},
     "client_appointment_reminder": {"subject": "Promemoria appuntamento • Beside", "body": "<p>Ti ricordiamo l'appuntamento del {data} alle {ora}.</p>"},
     "postwork_thanks": {"subject": "Grazie per aver scelto Beside", "body": "<p>Grazie {nome_cliente} per aver scelto {azienda}.</p>"},
-    "postwork_check_invite": {"subject": "Controllo post-lavorazione", "body": "<p>È disponibile il controllo post-lavorazione per il lavoro eseguito.</p><p>Per assistenza: {link_assistenza}</p>"},
+    "postwork_check_invite": {"subject": "Controllo post-lavorazione", "body": "<p>È disponibile il controllo post-lavorazione per il lavoro eseguito.</p>"},
 }
 
 def _notification_settings(company: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2585,6 +2584,18 @@ async def send_configured_notification(company_id: str, event: str, recipient: s
     await db.email_notification_jobs.update_one({"job_id": job_id}, {"$set": {"status": "sent" if delivered else "failed", "completed_at": datetime.now(timezone.utc).isoformat()}})
     return {"status": "sent" if delivered else "failed"}
 
+async def _notification_company_context(company_id: str, job: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    company = await db.companies.find_one({"company_id": company_id}, {"_id": 0}) or {}
+    owner = await db.users.find_one({"user_id": company.get("owner_user_id"), "company_id": company_id}, {"_id": 0, "business_name": 1, "business_info": 1}) or {}
+    info = owner.get("business_info") or {}
+    return {
+        "azienda": info.get("commercial_name") or company.get("name") or owner.get("business_name") or "",
+        "indirizzo": info.get("public_address") or info.get("indirizzo") or "",
+        "telefono": info.get("telefono") or "",
+        "nome_cliente": (job or {}).get("client_name") or "",
+        "tipo_lavoro": (job or {}).get("job_type") or "",
+    }
+
 async def run_post_work_notification_worker() -> None:
     await db.post_work_notification_jobs.create_index("job_id", unique=True)
     while True:
@@ -2600,10 +2611,10 @@ async def run_post_work_notification_worker() -> None:
                 if not claimed:
                     continue
                 job = await db.jobs.find_one({"job_id": item["source_job_id"], "company_id": item["company_id"]}, {"_id": 0})
-                if not job or not job.get("delivered") or not job.get("post_work_enabled") or not job.get("client_email"):
+                if not job or not job.get("delivered") or (item["event"] == "postwork_check_invite" and not job.get("post_work_enabled")) or not job.get("client_email"):
                     await db.post_work_notification_jobs.update_one({"job_id": item["job_id"]}, {"$set": {"status": "cancelled"}})
                     continue
-                result = await send_configured_notification(item["company_id"], item["event"], job["client_email"], {"nome_cliente": job.get("client_name"), "tipo_lavoro": job.get("job_type"), "azienda": "Beside", "link_assistenza": f"{PUBLIC_APP_URL}/support"}, item["job_id"])
+                result = await send_configured_notification(item["company_id"], item["event"], job["client_email"], await _notification_company_context(item["company_id"], job), item["job_id"])
                 if result["status"] == "sent":
                     await db.post_work_notification_jobs.update_one({"job_id": item["job_id"]}, {"$set": {"status": "sent", "sent_at": now.isoformat()}})
                 elif result["status"] in {"disabled", "duplicate"}:
@@ -4743,14 +4754,25 @@ async def update_job_delivery(job_id: str, data: JobDeliveryRequest, current_use
     if data.delivered:
         delivered_at = now.isoformat()
         await db.jobs.update_one(company_scope(current_user, job_id=job_id, delivered={"$ne": True}), {"$set": {"delivered": True, "delivered_at": delivered_at, "delivery_notes": data.notes}})
-        if job.get("post_work_enabled") and job.get("client_email"):
+        if job.get("client_email"):
             company = await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0})
-            lead_days = int((_notification_settings(company)["preferences"].get("post_work_invite_lead_days") or 3))
+            settings = _notification_settings(company)
+            lead_days = int(settings["preferences"].get("postwork_invite_lead_days") or 3)
             due = now + timedelta(days=max(0, int(job.get("post_work_days") or 30) - lead_days))
-            await db.post_work_notification_jobs.insert_many([
-                {"job_id": f"{job_id}:postwork_thanks", "source_job_id": job_id, "company_id": current_user["company_id"], "event": "postwork_thanks", "due_at": now.isoformat(), "status": "pending", "attempts": 0},
-                {"job_id": f"{job_id}:postwork_check_invite", "source_job_id": job_id, "company_id": current_user["company_id"], "event": "postwork_check_invite", "due_at": due.isoformat(), "status": "pending", "attempts": 0},
-            ], ordered=False)
+            jobs_to_schedule = []
+            if settings["preferences"].get("postwork_thanks"):
+                jobs_to_schedule.append(("postwork_thanks", now))
+            if job.get("post_work_enabled") and settings["preferences"].get("postwork_check_invite"):
+                jobs_to_schedule.append(("postwork_check_invite", due))
+            for event, due_at in jobs_to_schedule:
+                existing = await db.post_work_notification_jobs.find_one({"job_id": f"{job_id}:{event}"}, {"_id": 0, "status": 1})
+                if existing and existing.get("status") == "sent":
+                    continue
+                await db.post_work_notification_jobs.update_one(
+                    {"job_id": f"{job_id}:{event}"},
+                    {"$set": {"source_job_id": job_id, "company_id": current_user["company_id"], "event": event, "due_at": due_at.isoformat(), "status": "pending", "attempts": 0}, "$setOnInsert": {"job_id": f"{job_id}:{event}"}},
+                    upsert=True,
+                )
         return {"status": "delivered", "delivered_at": delivered_at}
     await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$set": {"delivered": False, "delivered_at": None, "delivery_notes": data.notes}})
     await db.post_work_notification_jobs.update_many({"source_job_id": job_id, "company_id": current_user["company_id"], "status": {"$in": ["pending", "sending"]}}, {"$set": {"status": "cancelled", "cancelled_at": now.isoformat()}})
@@ -4758,10 +4780,13 @@ async def update_job_delivery(job_id: str, data: JobDeliveryRequest, current_use
 
 @api_router.put("/jobs/{job_id}/post-work")
 async def update_job_post_work(job_id: str, data: PostWorkUpdate, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
-    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0, "is_quote": 1})
+    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0, "is_quote": 1, "quote_status": 1, "post_work_conditions_accepted": 1, "post_work_conditions": 1})
     if not job or not job.get("is_quote"):
         raise HTTPException(status_code=404, detail="Preventivo non trovato")
-    await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$set": {"post_work_enabled": data.enabled, "post_work_days": data.days, "post_work_conditions": (data.conditions or "").strip() or None}})
+    incoming_conditions = (data.conditions or "").strip() or None
+    if job.get("post_work_conditions_accepted") is not None and incoming_conditions != job.get("post_work_conditions_accepted"):
+        raise HTTPException(status_code=409, detail="Le condizioni già accettate dal cliente non sono modificabili")
+    await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$set": {"post_work_enabled": data.enabled, "post_work_days": data.days, "post_work_conditions": job.get("post_work_conditions") if job.get("post_work_conditions_accepted") is not None else incoming_conditions}})
     if not data.enabled:
         await db.post_work_notification_jobs.update_many({"source_job_id": job_id, "company_id": current_user["company_id"], "status": {"$in": ["pending", "sending"]}}, {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}})
     return {"status": "updated", "enabled": data.enabled, "days": data.days}
@@ -4903,7 +4928,7 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks
 
     if acceptance.accepted:
         company = await db.companies.find_one(
-            {"company_id": job["company_id"]}, {"_id": 0, "owner_user_id": 1})
+            {"company_id": job["company_id"]}, {"_id": 0})
         owner = await db.users.find_one(
             {"user_id": (company or {}).get("owner_user_id"),
              "company_id": job["company_id"], "is_active": {"$ne": False}},
@@ -4921,7 +4946,7 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks
             background_tasks.add_task(
                 send_configured_notification,
                 job["company_id"], "quote_accepted", owner["email"],
-                {"nome_cliente": job.get("client_name"), "azienda": (company or {}).get("name"), "tipo_lavoro": job_labels.get(job.get("job_type"), "Lavoro"), "link_preventivo": calendar_url},
+                {**await _notification_company_context(job["company_id"], job), "tipo_lavoro": job_labels.get(job.get("job_type"), "Lavoro"), "link_preventivo": calendar_url},
                 job["job_id"],
             )
 

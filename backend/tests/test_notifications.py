@@ -19,6 +19,13 @@ def test_post_work_models_keep_safe_defaults_and_delivery_validation():
     assert server.JobDeliveryRequest().delivered is True
 
 
+def test_post_work_automations_are_independent_and_support_link_is_not_default():
+    assert server.NOTIFICATION_DEFAULT_PREFERENCES["postwork_thanks"] is False
+    assert server.NOTIFICATION_DEFAULT_PREFERENCES["postwork_check_invite"] is False
+    assert "link_assistenza" not in server.NOTIFICATION_ALLOWED_VARIABLES
+    assert "support" not in server.NOTIFICATION_DEFAULT_TEMPLATES["postwork_check_invite"]["body"]
+
+
 def test_notification_template_rejects_unknown_variables():
     with pytest.raises(ValueError):
         server.validate_notification_template({"subject": "Ciao {segreto}", "body": "<p>Test</p>"})
