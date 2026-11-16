@@ -25,9 +25,10 @@ import {
   Search,
   Loader2,
   ShieldCheck,
-  ArrowLeft, ChevronRight, Settings2, UserRound, Landmark, CalendarDays, Bell, PauseCircle, Trash2, LifeBuoy, Plus
+  ArrowLeft, ChevronRight, Settings2, UserRound, Landmark, CalendarDays, Bell, PauseCircle, Trash2, LifeBuoy, Plus, Monitor
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useUiPreferences } from "@/lib/uiPreferences";
 
 const TAX_REGIMES = [
   { value: "forfettario_5", label: "Forfettario 5%" },
@@ -76,6 +77,7 @@ const TimeSelect = ({ label, value, onChange }) => (
 
 export const ProfilePage = () => {
   const { user, logout, checkAuth } = useAuth();
+  const { preferences, update } = useUiPreferences();
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [section, setSection] = useState(null);
@@ -637,6 +639,7 @@ export const ProfilePage = () => {
     { key: "activity", title: "La mia attività", subtitle: "Dati aziendali, fiscali e documenti", icon: Building2 },
     { key: "calendar", title: "Agenda e lavorazioni", subtitle: "Orari, aree e promemoria", icon: CalendarDays },
     { key: "notifications", title: "Notifiche", subtitle: "Promemoria e comunicazioni", icon: Bell },
+    { key: "appearance", title: "Aspetto e accessibilità", subtitle: "Tema, icone e dimensione testi", icon: Monitor },
     { key: "security", title: "Sicurezza e privacy", subtitle: "MFA, contatto fidato e consensi", icon: ShieldCheck },
     { key: "subscription", title: "Abbonamento", subtitle: "Piano e rinnovi", icon: CreditCard },
     { key: "support", title: "Assistenza", subtitle: "Nuove richieste e risposte", icon: LifeBuoy },
@@ -1122,6 +1125,33 @@ export const ProfilePage = () => {
         <p className="text-sm text-muted-foreground">Il promemoria iniziale è di 30 minuti. Puoi modificarlo nella scheda di ogni appuntamento.</p>
         <p className="text-xs text-muted-foreground">Le preferenze globali dei canali di notifica saranno disponibili quando i relativi invii saranno attivati.</p>
         <Button variant="outline" onClick={() => navigate("/calendar")}>Apri l'agenda</Button>
+      </CardContent></Card>}
+
+      {section === "appearance" && <Card><CardContent className="space-y-6 pt-5">
+        <div>
+          <h2 className="font-semibold">Tema</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Scegli come visualizzare Beside su questo dispositivo.</p>
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {[['light', 'Chiaro'], ['dark', 'Scuro'], ['system', 'Segui il sistema']].map(([value, label]) => (
+              <button key={value} type="button" onClick={() => update("theme", value)} className={`min-h-16 rounded-xl border px-2 py-2 text-sm ${preferences.theme === value ? "border-secondary bg-secondary text-secondary-foreground" : "border-border bg-card text-primary"}`} aria-pressed={preferences.theme === value}>
+                <span className={`mx-auto mb-1 block h-5 w-8 rounded-md border ${value === "dark" ? "bg-slate-800" : value === "system" ? "bg-gradient-to-r from-white to-slate-700" : "bg-white"}`} />{label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div>
+          <h2 className="font-semibold">Navigazione</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Scegli se mostrare i nomi nella barra inferiore.</p>
+          <label className="mt-3 flex min-h-12 items-center justify-between rounded-xl border px-3 py-2 text-sm"><span>Mostra nomi delle icone</span><input type="checkbox" checked={preferences.mobileNavLabels} onChange={(event) => update("mobileNavLabels", event.target.checked)} className="h-5 w-5 accent-sky-500" /></label>
+        </div>
+        <div>
+          <h2 className="font-semibold">Dimensione dei testi</h2>
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            {[['normal', 'Normale'], ['large', 'Grande'], ['xlarge', 'Molto grande']].map(([value, label]) => (
+              <button key={value} type="button" onClick={() => update("textScale", value)} className={`min-h-12 rounded-xl border px-2 text-sm ${preferences.textScale === value ? "border-secondary bg-secondary text-secondary-foreground" : "border-border bg-card text-primary"}`} aria-pressed={preferences.textScale === value}>{label}</button>
+            ))}
+          </div>
+        </div>
       </CardContent></Card>}
 
       {section === "security" && <>

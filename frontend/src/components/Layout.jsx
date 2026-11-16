@@ -16,6 +16,7 @@ import {
 import { useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { useUiPreferences } from "@/lib/uiPreferences";
 
 const navItems = [
   { path: "/dashboard", label: "Bacheca", icon: LayoutDashboard },
@@ -37,12 +38,10 @@ const renderNavIcon = (item, className = "w-5 h-5") => (
 
 export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
+  const { preferences, update } = useUiPreferences();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [showMobileNavLabels, setShowMobileNavLabels] = useState(() => {
-    try { return localStorage.getItem("beside.mobileNavLabels") !== "false"; }
-    catch { return true; }
-  });
+  const showMobileNavLabels = preferences.mobileNavLabels;
   const touchStartRef = useRef(null);
   const isCalendarPage = location.pathname.startsWith("/calendar");
 
@@ -50,13 +49,7 @@ export const Layout = ({ children }) => {
     await logout();
   };
 
-  const toggleMobileNavLabels = () => {
-    setShowMobileNavLabels((current) => {
-      const next = !current;
-      try { localStorage.setItem("beside.mobileNavLabels", String(next)); } catch { /* storage non disponibile */ }
-      return next;
-    });
-  };
+  const toggleMobileNavLabels = () => update("mobileNavLabels", !showMobileNavLabels);
 
   const handleTouchStart = (event) => {
     if (event.touches.length !== 1) return;
@@ -150,7 +143,7 @@ export const Layout = ({ children }) => {
       </aside>
 
       {/* Mobile Header */}
-      <header className={`md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-border z-40 flex items-center justify-start px-4 transition-opacity duration-150 ${sidebarOpen ? "pointer-events-none opacity-0" : "opacity-100"}`}>
+      <header className={`mobile-app-header md:hidden fixed top-0 left-0 right-0 h-14 bg-white border-b border-border z-40 flex items-center justify-start px-4 transition-opacity duration-150 ${sidebarOpen ? "pointer-events-none opacity-0" : "opacity-100"}`}>
         <NavLink to="/dashboard" aria-label="Beside — Bacheca" className="inline-flex h-10 items-center">
           <img src="/beside-logo.svg" alt="Beside" className="h-8 w-auto max-w-[9.5rem] object-contain object-left sm:h-9 sm:max-w-[11rem]" />
         </NavLink>

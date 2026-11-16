@@ -39,6 +39,7 @@ import { SubscriptionPage } from "@/pages/SubscriptionPage";
 
 // Components
 import { Layout } from "@/components/Layout";
+import { UiPreferencesProvider } from "@/lib/uiPreferences";
 
 // Keep browser requests same-origin in production so Safari does not need to
 // accept a third-party session cookie. The frontend server proxies /api to the
@@ -377,8 +378,10 @@ function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <AppRouter />
-        <Toaster position="top-right" richColors />
+        <UiPreferencesProvider>
+          <AppRouter />
+          <Toaster position="top-right" richColors />
+        </UiPreferencesProvider>
       </AuthProvider>
     </BrowserRouter>
   );
