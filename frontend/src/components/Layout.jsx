@@ -39,11 +39,23 @@ export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showMobileNavLabels, setShowMobileNavLabels] = useState(() => {
+    try { return localStorage.getItem("beside.mobileNavLabels") !== "false"; }
+    catch { return true; }
+  });
   const touchStartRef = useRef(null);
   const isCalendarPage = location.pathname.startsWith("/calendar");
 
   const handleLogout = async () => {
     await logout();
+  };
+
+  const toggleMobileNavLabels = () => {
+    setShowMobileNavLabels((current) => {
+      const next = !current;
+      try { localStorage.setItem("beside.mobileNavLabels", String(next)); } catch { /* storage non disponibile */ }
+      return next;
+    });
   };
 
   const handleTouchStart = (event) => {
@@ -83,7 +95,7 @@ export const Layout = ({ children }) => {
   return (
     <div
       className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background"}
-      style={{ "--mobile-nav-height": "72px" }}
+      style={{ "--mobile-nav-height": showMobileNavLabels ? "76px" : "58px" }}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
     >
@@ -214,6 +226,18 @@ export const Layout = ({ children }) => {
             </NavLink>
           ))}
           
+          <div className="mt-4 border-t border-border pt-4">
+            <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm text-slate-700">
+              <span>Mostra nomi delle icone</span>
+              <input
+                type="checkbox"
+                checked={showMobileNavLabels}
+                onChange={toggleMobileNavLabels}
+                className="h-5 w-5 accent-sky-500"
+              />
+            </label>
+          </div>
+
           {/* Logout button in mobile menu */}
           <div className="pt-4 mt-4 border-t border-border">
             <button
@@ -232,7 +256,7 @@ export const Layout = ({ children }) => {
       </aside>
 
       {/* Mobile Bottom Navigation */}
-      <nav className="mobile-bottom-nav md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-border flex justify-around items-center z-40">
+      <nav className={`mobile-bottom-nav md:hidden fixed z-40 ${showMobileNavLabels ? "with-labels" : "icon-only"}`} aria-label="Navigazione principale">
         {[navItems[0], navItems[1], navItems[2], navItems[4]].map((item) => (
           <NavLink
             key={item.path}
@@ -244,13 +268,13 @@ export const Layout = ({ children }) => {
             <span className="mobile-bottom-nav-icon-shell">
               {renderNavIcon(item, "mobile-bottom-nav-icon w-6 h-6")}
             </span>
-            <span className="mobile-bottom-nav-label">{item.shortLabel || item.label}</span>
+            {showMobileNavLabels && <span className="mobile-bottom-nav-label">{item.shortLabel || item.label}</span>}
           </NavLink>
         ))}
       </nav>
 
       {/* Main Content */}
-      <main className={`md:ml-64 pt-14 md:pt-0 ${isCalendarPage ? "calendar-main h-[100dvh] overflow-hidden md:pb-0" : "pb-24 md:pb-8 min-h-screen"}`}>
+      <main className={`md:ml-64 pt-14 md:pt-0 ${isCalendarPage ? "calendar-main h-[100dvh] overflow-hidden md:pb-0" : "mobile-main md:pb-8 min-h-screen"}`}>
         <div className={`${isCalendarPage ? "h-full overflow-hidden " : ""}p-4 md:p-8 max-w-7xl mx-auto animate-fade-in`}>
           {children}
         </div>
