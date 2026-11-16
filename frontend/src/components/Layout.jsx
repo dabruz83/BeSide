@@ -38,7 +38,7 @@ const renderNavIcon = (item, className = "w-5 h-5") => (
 
 export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
-  const { preferences, update } = useUiPreferences();
+  const { preferences } = useUiPreferences();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const showMobileNavLabels = preferences.mobileNavLabels;
@@ -48,8 +48,6 @@ export const Layout = ({ children }) => {
   const handleLogout = async () => {
     await logout();
   };
-
-  const toggleMobileNavLabels = () => update("mobileNavLabels", !showMobileNavLabels);
 
   const handleTouchStart = (event) => {
     if (event.touches.length !== 1) return;
@@ -219,20 +217,8 @@ export const Layout = ({ children }) => {
             </NavLink>
           ))}
           
-          <div className="mt-4 border-t border-border pt-4">
-            <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl px-4 py-3 text-sm text-slate-700">
-              <span>Mostra nomi delle icone</span>
-              <input
-                type="checkbox"
-                checked={showMobileNavLabels}
-                onChange={toggleMobileNavLabels}
-                className="h-5 w-5 accent-sky-500"
-              />
-            </label>
-          </div>
-
           {/* Logout button in mobile menu */}
-          <div className="pt-4 mt-4 border-t border-border">
+          <div className="mt-6 border-t border-border pt-4">
             <button
               onClick={() => {
                 setSidebarOpen(false);
