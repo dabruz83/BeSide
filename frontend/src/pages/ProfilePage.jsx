@@ -122,6 +122,7 @@ export const ProfilePage = () => {
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
   const [section, setSection] = useState(null);
+  const [activitySubsection, setActivitySubsection] = useState("info");
   const [personal, setPersonal] = useState({ first_name: user?.first_name || "", last_name: "" });
   const [accountReason, setAccountReason] = useState("");
   const [accountReasonDetails, setAccountReasonDetails] = useState("");
@@ -142,6 +143,7 @@ export const ProfilePage = () => {
   const [notificationSettings, setNotificationSettings] = useState(NOTIFICATION_DEFAULTS);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [notificationOpenTemplate, setNotificationOpenTemplate] = useState(null);
+  const [notificationExpanded, setNotificationExpanded] = useState(null);
   const [notificationPreview, setNotificationPreview] = useState(null);
   const [collaborators, setCollaborators] = useState({ members: [], invitations: [], collaborator_limit: 0, plan: "essential" });
   const [collaboratorEmail, setCollaboratorEmail] = useState("");
@@ -798,6 +800,8 @@ export const ProfilePage = () => {
       </Card>}
 
       {section === "activity" && <>
+        <Card><CardContent className="grid grid-cols-1 gap-2 p-2 sm:grid-cols-4"><button type="button" onClick={() => setActivitySubsection("info")} className={`rounded-xl px-3 py-3 text-left text-sm ${activitySubsection === "info" ? "bg-secondary text-secondary-foreground" : "bg-muted/40 text-primary"}`}>Informazioni attività</button><button type="button" onClick={() => setActivitySubsection("contacts")} className={`rounded-xl px-3 py-3 text-left text-sm ${activitySubsection === "contacts" ? "bg-secondary text-secondary-foreground" : "bg-muted/40 text-primary"}`}>Recapiti pubblici</button><button type="button" onClick={() => setActivitySubsection("fiscal")} className={`rounded-xl px-3 py-3 text-left text-sm ${activitySubsection === "fiscal" ? "bg-secondary text-secondary-foreground" : "bg-muted/40 text-primary"}`}>Dati fiscali</button><button type="button" onClick={() => setActivitySubsection("quotes")} className={`rounded-xl px-3 py-3 text-left text-sm ${activitySubsection === "quotes" ? "bg-secondary text-secondary-foreground" : "bg-muted/40 text-primary"}`}>Personalizzazione preventivi</button></CardContent></Card>
+        <div className={activitySubsection === "info" ? "space-y-4" : "hidden"}>
 <Card>
                 <CardHeader>
                   <CardTitle className="text-lg flex items-center gap-2">
@@ -876,8 +880,8 @@ export const ProfilePage = () => {
                     </div>
                   </div>
                 </CardContent>
-              </Card>
-        <Card><CardHeader><CardTitle className="text-lg">Recapiti pubblici</CardTitle></CardHeader><CardContent className="space-y-4">
+              </Card><Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva informazioni attività</Button></div>
+        <div className={activitySubsection === "contacts" ? "space-y-4" : "hidden"}><Card><CardHeader><CardTitle className="text-lg">Recapiti pubblici</CardTitle></CardHeader><CardContent className="space-y-4">
                   <div className="space-y-2">
                     <Label htmlFor="commercial_name">Nome commerciale</Label>
                     <Input
@@ -934,10 +938,9 @@ export const ProfilePage = () => {
                   </div>
 
         </CardContent></Card>
-        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva attività</Button>
-      </>}
+        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva recapiti pubblici</Button></div>
 
-      {section === "activity" && <>
+      <div className={activitySubsection === "fiscal" ? "space-y-4" : "hidden"}>
         <Card><CardContent className="pt-5 space-y-3">
                     <div className="space-y-2">
                       <Label>Forma giuridica</Label>
@@ -1094,10 +1097,9 @@ export const ProfilePage = () => {
                   </div>
                 </CardContent>
               </Card>
-        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva dati fiscali</Button>
-      </>}
+        <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva dati fiscali</Button></div>
 
-      {section === "activity" && <>
+      <div className={activitySubsection === "quotes" ? "space-y-4" : "hidden"}>
         <Card><CardHeader><CardTitle className="text-lg">Personalizzazione preventivi</CardTitle></CardHeader><CardContent className="space-y-4">
           <div className="space-y-2"><Label>Carica il logo (PNG, JPG o WebP, massimo 300 KB)</Label><Input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleLogoUpload}/></div>
                   <div className="space-y-4">
@@ -1157,7 +1159,7 @@ export const ProfilePage = () => {
           <p className="text-xs text-muted-foreground">L'anteprima è indicativa. I preventivi reali utilizzano i dati salvati.</p>
         </CardContent></Card>
         <Button className="w-full" onClick={handleSave} disabled={saving} data-testid="profile-save-btn">Salva personalizzazione</Button>
-      </>}
+      </div></>}
 
       {section === "calendar" && <div className="space-y-4">
         <Card><CardHeader><CardTitle className="text-lg">Orari e giorni lavorativi</CardTitle></CardHeader><CardContent className="space-y-4">
@@ -1197,7 +1199,7 @@ export const ProfilePage = () => {
           {[["client_quote", "Invio del preventivo"], ["client_appointment_confirmed", "Conferma appuntamento"], ["client_appointment_modified", "Modifica appuntamento"], ["client_appointment_cancelled", "Annullamento appuntamento"], ["client_appointment_reminder", "Promemoria appuntamento"]].map(([key, label]) => <label key={key} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm"><span>{label}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: value === true } }))} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>)}
           <label className="block pt-2 text-sm font-medium">Anticipo promemoria cliente<select className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.client_reminder_lead} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, client_reminder_lead: event.target.value } }))}><option value="24h">24 ore</option><option value="48h">48 ore</option><option value="custom">Personalizzato</option></select></label>
           {notificationSettings.preferences.client_reminder_lead === "custom" && <label className="block text-sm font-medium">Minuti di anticipo<input type="number" min="15" max="10080" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.client_reminder_custom_minutes || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, client_reminder_custom_minutes: event.target.value ? Number(event.target.value) : null } }))} /></label>}
-          {["postwork_thanks", "postwork_check_invite"].map((key) => <div key={key} className="rounded-xl border border-secondary/30 p-3"><label className="flex min-h-11 items-center justify-between gap-3 text-sm"><span>{NOTIFICATION_TEMPLATE_LABELS[key]}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: value === true } }))} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>{notificationSettings.preferences[key] && <div className="mt-3 space-y-2 border-t pt-3"><Input aria-label={`Oggetto ${key}`} value={notificationSettings.templates[key]?.subject || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], subject: event.target.value } } }))} /><Textarea aria-label={`Testo ${key}`} rows={4} value={notificationSettings.templates[key]?.body || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], body: event.target.value } } }))} /><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setNotificationPreview(notificationSettings.templates[key])}>Anteprima</Button><Button type="button" variant="ghost" size="sm" onClick={() => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...NOTIFICATION_DEFAULTS.templates[key] } } }))}>Ripristina modello originale</Button></div>{key === "postwork_check_invite" && <label className="block pt-1 text-sm font-medium">Anticipo invito<select className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.postwork_invite_lead_days ?? 3} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, postwork_invite_lead_days: Number(event.target.value) } }))}><option value="0">Alla scadenza</option><option value="1">1 giorno prima</option><option value="3">3 giorni prima</option><option value="7">7 giorni prima</option></select></label>}</div>}</div>)}
+          {["postwork_thanks", "postwork_check_invite"].map((key) => <div key={key} className="rounded-xl border border-secondary/30 p-3"><label className="flex min-h-11 items-center justify-between gap-3 text-sm"><span>{NOTIFICATION_TEMPLATE_LABELS[key]}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => { const enabled = value === true; setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: enabled } })); setNotificationExpanded(enabled ? key : null); }} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>{notificationSettings.preferences[key] && notificationExpanded !== key && <Button type="button" variant="link" size="sm" className="mt-1 h-auto px-0" onClick={() => setNotificationExpanded(key)}>Modifica messaggio</Button>}{notificationSettings.preferences[key] && notificationExpanded === key && <div className="mt-3 space-y-2 border-t pt-3"><Input aria-label={`Oggetto ${key}`} value={notificationSettings.templates[key]?.subject || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], subject: event.target.value } } }))} /><Textarea aria-label={`Testo ${key}`} rows={4} value={notificationSettings.templates[key]?.body || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], body: event.target.value } } }))} /><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setNotificationPreview(notificationSettings.templates[key])}>Anteprima</Button><Button type="button" variant="ghost" size="sm" onClick={() => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...NOTIFICATION_DEFAULTS.templates[key] } } }))}>Ripristina modello originale</Button></div>{key === "postwork_check_invite" && <label className="block pt-1 text-sm font-medium">Anticipo invito<select className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.postwork_invite_lead_days ?? 3} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, postwork_invite_lead_days: Number(event.target.value) } }))}><option value="0">Alla scadenza</option><option value="1">1 giorno prima</option><option value="3">3 giorni prima</option><option value="7">7 giorni prima</option></select></label>}</div>}</div>)}
           <p className="pt-2 text-xs text-muted-foreground">I nuovi invii automatici ai clienti sono disattivati finché non li abiliti. Gli invii manuali restano disponibili.</p>
         </CardContent></Card>
         <Card><CardHeader><CardTitle className="text-lg">Modelli email</CardTitle></CardHeader><CardContent className="space-y-2">
