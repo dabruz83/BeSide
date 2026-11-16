@@ -57,6 +57,14 @@ const formatCurrency = (amount) => new Intl.NumberFormat("it-IT", {
   style: "currency", currency: "EUR", minimumFractionDigits: 0, maximumFractionDigits: 2,
 }).format(Number(amount) || 0);
 const minutesOf = (date) => date.getHours() * 60 + date.getMinutes();
+const exceptionMatchesDate = (item, date) => {
+  if (!item?.start_date || !item?.end_date) return false;
+  if (!item.recurring) return item.start_date <= date && item.end_date >= date;
+  const monthDay = date.slice(5);
+  const first = item.start_date.slice(5);
+  const last = item.end_date.slice(5);
+  return first <= last ? monthDay >= first && monthDay <= last : monthDay >= first || monthDay <= last;
+};
 const eventAreaId = (event) => event.resource_id ||
   (["postazione 1", "area principale"].includes((event.resource || "").trim().toLowerCase())
     ? DEFAULT_WORK_AREA.area_id
@@ -388,16 +396,20 @@ export const CalendarPage = () => {
     else await axios.post(API + "/calendar/events", payload);
   };
   const isOutsideConfiguredHours = (event) => {
-    if (!workHours?.configured) return false;
     const startAt = new Date(event.starts_at);
     const endAt = new Date(event.ends_at);
     if (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime()) || dayKey(startAt) !== dayKey(endAt)) return true;
     const date = dayKey(startAt);
-    const exception = calendarExceptions.find((item) => {
-      if (item.recurring) return item.start_date.slice(5) <= date.slice(5) && item.end_date.slice(5) >= date.slice(5);
-      return item.start_date <= date && item.end_date >= date;
-    });
+    const exception = calendarExceptions.find((item) => exceptionMatchesDate(item, date));
     if (exception?.kind === "closure") return true;
+    if (exception?.kind === "special_opening") {
+      if (!exception.start || !exception.end) return true;
+      const startMinutes = minutesOf(startAt), endMinutes = minutesOf(endAt);
+      const opening = Number(exception.start.slice(0, 2)) * 60 + Number(exception.start.slice(3));
+      const closing = Number(exception.end.slice(0, 2)) * 60 + Number(exception.end.slice(3));
+      return startMinutes < opening || endMinutes > closing;
+    }
+    if (!workHours?.configured) return false;
     const config = exception?.kind === "special_opening" ? exception : workHours.days?.find((item) => item.day === (startAt.getDay() + 6) % 7);
     if (!config?.enabled || !config.start || !config.end) return true;
     const startMinutes = minutesOf(startAt);
@@ -587,6 +599,7 @@ export const CalendarPage = () => {
               </div>
               {dates.map((d) => {
                 const key = dayKey(d);
+                const dayException = calendarExceptions.find((item) => exceptionMatchesDate(item, key));
                 const dayEvents = events.filter((event) => {
                   const first = new Date(event.starts_at), last = new Date(event.ends_at);
                   const visibleStart = new Date(d); visibleStart.setHours(HOUR_FIRST, 0, 0, 0);
@@ -596,9 +609,10 @@ export const CalendarPage = () => {
                 const isToday = key === dayKey(new Date());
                 const isSelected = key === dayKey(focusDate);
                 return <div key={key} data-calendar-column={key} className={"relative isolate snap-start shrink-0 border-l " + (view === "day" ? "w-[min(78vw,600px)]" : "w-[158px] sm:w-[175px]")}>
-                  <div className={"sticky top-0 z-50 h-12 border-b px-2 flex flex-col items-center justify-center text-xs font-semibold leading-tight text-primary " + (isToday ? "bg-sky-200" : "bg-sky-100")}>
+                  <div className={"sticky top-0 z-50 h-12 border-b px-2 flex flex-col items-center justify-center text-xs font-semibold leading-tight text-primary " + (dayException?.kind === "closure" ? "bg-slate-200" : dayException?.kind === "special_opening" ? "bg-secondary/20" : isToday ? "bg-sky-200" : "bg-sky-100")}>
                     <span className="uppercase">{new Intl.DateTimeFormat("it-IT", { weekday: "short" }).format(d)}</span>
                     <span className={"flex h-6 min-w-6 items-center justify-center rounded-full text-sm " + (isSelected ? "bg-primary text-primary-foreground" : "")}>{d.getDate()}</span>
+                    {dayException && <span className="text-[9px] font-medium leading-none">{dayException.kind === "closure" ? "Chiuso" : "Apertura"}</span>}
                   </div>
                   <div data-calendar-day={key} className="relative cursor-crosshair"
                     style={{ height: TRACK_HEIGHT, backgroundImage: "repeating-linear-gradient(to bottom, transparent 0, transparent 31px, hsl(var(--border)) 31px, hsl(var(--border)) 32px)", backgroundSize: "100% 32px" }}
@@ -612,7 +626,8 @@ export const CalendarPage = () => {
                       setForm((prev) => ({ ...prev,
                         resource_id: selectedArea.area_id, resource: selectedArea.name }));
                     }}>
-                    {workHours?.configured && (() => {
+                    {dayException?.kind === "closure" && <div className="pointer-events-none absolute inset-0 z-[1] bg-slate-200/45" />}
+                    {dayException?.kind !== "closure" && dayException?.kind !== "special_opening" && workHours?.configured && (() => {
                       const config = workHours.days?.find((item) => item.day === (d.getDay() + 6) % 7);
                       if (config?.enabled && config.start && config.end) {
                         const opening = Number(config.start.slice(0, 2)) * 60 + Number(config.start.slice(3));

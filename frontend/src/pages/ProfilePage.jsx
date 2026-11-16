@@ -123,6 +123,7 @@ export const ProfilePage = () => {
   const [workAreasBusy, setWorkAreasBusy] = useState(false);
   const [calendarExceptions, setCalendarExceptions] = useState([]);
   const [exceptionBusy, setExceptionBusy] = useState(false);
+  const [editingExceptionId, setEditingExceptionId] = useState(null);
   const [exceptionForm, setExceptionForm] = useState({ kind: "closure", start_date: "", end_date: "", reason: "Ferie", notes: "", recurring: false, start: "", end: "", break_start: "", break_end: "" });
   
   const [formData, setFormData] = useState({
@@ -537,15 +538,22 @@ export const ProfilePage = () => {
     if (!exceptionForm.start_date || !exceptionForm.end_date) { toast.error("Inserisci le date dell'eccezione."); return; }
     setExceptionBusy(true);
     try {
-      const response = await axios.put(`${API}/calendar/exceptions`, { exceptions: [...calendarExceptions, exceptionForm] });
-      setCalendarExceptions(response.data || []); toast.success("Eccezione salvata");
+      const nextExceptions = editingExceptionId
+        ? calendarExceptions.map((item) => item.exception_id === editingExceptionId ? { ...exceptionForm, exception_id: editingExceptionId } : item)
+        : [...calendarExceptions, exceptionForm];
+      const response = await axios.put(`${API}/calendar/exceptions`, { exceptions: nextExceptions });
+      setCalendarExceptions(response.data || []); setEditingExceptionId(null); toast.success("Eccezione salvata");
     } catch (error) {
       if (error.response?.status === 409 && window.confirm(`${error.response.data.detail?.conflicts || 0} appuntamenti ricadono nella chiusura. Salvare comunque?`)) {
-        const response = await axios.put(`${API}/calendar/exceptions`, { exceptions: [...calendarExceptions, exceptionForm], confirm_conflicts: true });
-        setCalendarExceptions(response.data || []); toast.success("Chiusura salvata con eccezioni esistenti");
+        const nextExceptions = editingExceptionId
+          ? calendarExceptions.map((item) => item.exception_id === editingExceptionId ? { ...exceptionForm, exception_id: editingExceptionId } : item)
+          : [...calendarExceptions, exceptionForm];
+        const response = await axios.put(`${API}/calendar/exceptions`, { exceptions: nextExceptions, confirm_conflicts: true });
+        setCalendarExceptions(response.data || []); setEditingExceptionId(null); toast.success("Chiusura salvata con eccezioni esistenti");
       } else toast.error(error.response?.data?.detail?.message || error.response?.data?.detail || "Impossibile salvare l'eccezione.");
     } finally { setExceptionBusy(false); }
   };
+  const editException = (item) => { setExceptionForm({ kind: item.kind, start_date: item.start_date, end_date: item.end_date, reason: item.reason || "Altro", notes: item.notes || "", recurring: Boolean(item.recurring), start: item.start || "", end: item.end || "", break_start: item.break_start || "", break_end: item.break_end || "" }); setEditingExceptionId(item.exception_id); };
   const deleteException = async (id) => {
     if (!window.confirm("Eliminare questa eccezione?")) return;
     setExceptionBusy(true);
@@ -1097,8 +1105,8 @@ export const ProfilePage = () => {
           {exceptionForm.kind === "special_opening" && <div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={exceptionForm.start} onChange={(value) => setExceptionForm((current) => ({ ...current, start: value }))} /><TimeSelect label="Chiusura" value={exceptionForm.end} onChange={(value) => setExceptionForm((current) => ({ ...current, end: value }))} /></div>}
           <Textarea placeholder="Note facoltative" value={exceptionForm.notes} onChange={(event) => setExceptionForm((current) => ({ ...current, notes: event.target.value }))} rows={2} />
           {exceptionForm.kind === "closure" && <label className="flex min-h-11 items-center gap-2 text-sm"><Checkbox checked={exceptionForm.recurring} onCheckedChange={(value) => setExceptionForm((current) => ({ ...current, recurring: value === true }))} />Ripeti ogni anno</label>}
-          <Button type="button" className="w-full" onClick={saveException} disabled={exceptionBusy}>{exceptionBusy ? "Salvataggio..." : "Salva eccezione"}</Button>
-          <div className="space-y-2">{calendarExceptions.length === 0 ? <p className="text-xs text-muted-foreground">Nessuna eccezione configurata.</p> : calendarExceptions.slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).map((item) => <div key={item.exception_id} className="flex items-center justify-between gap-2 rounded-xl border p-3 text-sm"><div><p className="font-medium">{item.kind === "closure" ? "Chiusura" : "Apertura speciale"} · {item.start_date}{item.end_date !== item.start_date ? ` → ${item.end_date}` : ""}</p><p className="text-xs text-muted-foreground">{item.reason}{item.recurring ? " · annuale" : ""}{item.start ? ` · ${item.start}–${item.end}` : ""}</p></div><Button type="button" variant="ghost" size="sm" onClick={() => deleteException(item.exception_id)} disabled={exceptionBusy}>Elimina</Button></div>)}</div>
+          <Button type="button" className="w-full" onClick={saveException} disabled={exceptionBusy}>{exceptionBusy ? "Salvataggio..." : editingExceptionId ? "Salva modifica" : "Salva eccezione"}</Button>
+          <div className="space-y-2">{calendarExceptions.length === 0 ? <p className="text-xs text-muted-foreground">Nessuna eccezione configurata.</p> : calendarExceptions.slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).map((item) => <div key={item.exception_id} className="flex items-center justify-between gap-2 rounded-xl border p-3 text-sm"><div><p className="font-medium">{item.kind === "closure" ? "Chiusura straordinaria" : "Apertura straordinaria"} · {item.start_date}{item.end_date !== item.start_date ? ` → ${item.end_date}` : ""}</p><p className="text-xs text-muted-foreground">{item.reason}{item.recurring ? " · annuale" : ""}{item.start ? ` · ${item.start}–${item.end}` : ""}</p></div><div className="flex shrink-0 gap-1"><Button type="button" variant="ghost" size="sm" onClick={() => editException(item)} disabled={exceptionBusy}>Modifica</Button><Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={() => deleteException(item.exception_id)} disabled={exceptionBusy}>Elimina</Button></div></div>)}</div>
         </CardContent></Card>
         <Card><CardHeader><CardTitle className="text-lg">Aree di lavoro</CardTitle></CardHeader><CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">Le stesse aree vengono utilizzate dagli appuntamenti. La rimozione è bloccata se ci sono appuntamenti futuri.</p>
