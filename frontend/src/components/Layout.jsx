@@ -266,7 +266,7 @@ export const Layout = ({ children }) => {
             }
           >
             <span className="mobile-bottom-nav-icon-shell">
-              {renderNavIcon(item, "mobile-bottom-nav-icon w-6 h-6")}
+              {renderNavIcon(item, "mobile-bottom-nav-icon w-7 h-7")}
             </span>
             {showMobileNavLabels && <span className="mobile-bottom-nav-label">{item.shortLabel || item.label}</span>}
           </NavLink>

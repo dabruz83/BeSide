@@ -237,7 +237,7 @@
 }
 
 .mobile-bottom-nav-icon-shell {
-    @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-full;
+    @apply flex h-10 w-10 shrink-0 items-center justify-center rounded-full;
     transition: color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease;
 }
 
