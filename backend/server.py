@@ -6266,6 +6266,11 @@ async def admin_update_support_ticket(ticket_id: str, data: SupportTicketUpdate,
     if data.message:
         updates.pop("messages", None)
         await db.support_tickets.update_one({"ticket_id": ticket_id}, {"$push": {"messages": {"author_type": "platform_owner", "message": data.message.strip(), "created_at": now_iso}}, "$set": {**updates, "updated_at": now_iso}})
+        if ticket.get("company_id") and ticket.get("requester_email"):
+            await send_configured_notification(
+                ticket["company_id"], "support_reply", ticket["requester_email"],
+                {"azienda": "Beside", "tipo_lavoro": "Assistenza"}, ticket_id,
+            )
     else:
         await db.support_tickets.update_one({"ticket_id": ticket_id}, {"$set": {**updates, "updated_at": now_iso}})
     await audit_event("support_ticket_updated", user=admin_user, request=request, company_id=ticket.get("company_id"), metadata={"ticket_id": ticket_id, "status": data.status, "priority": data.priority})
