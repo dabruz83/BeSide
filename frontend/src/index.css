@@ -31,6 +31,7 @@
         --input: 214 32% 91%;
         --ring: 214 52% 25%;
         --radius: 0.375rem;
+        --mobile-surface: 255 255 255 / 0.88;
         
         /* Chart colors */
         --chart-1: 214 52% 25%;
@@ -54,6 +55,7 @@
         --border: 217 25% 28%;
         --input: 217 25% 28%;
         --ring: 198 58% 58%;
+        --mobile-surface: 30 41 59 / 0.88;
     }
 }
 
@@ -86,7 +88,6 @@
 @layer components {
     .dark .mobile-sidebar,
     .dark .mobile-bottom-nav {
-        background: hsl(var(--card) / 0.96);
         border-color: hsl(var(--border));
         color: hsl(var(--foreground));
     }
@@ -176,8 +177,8 @@
 }
 
 .mobile-bottom-nav {
-    left: 12px;
-    right: 12px;
+    left: 18px;
+    right: 18px;
     bottom: calc(10px + env(safe-area-inset-bottom, 0px));
     display: flex;
     align-items: center;
@@ -187,7 +188,7 @@
     padding: 6px;
     border: 1px solid rgb(148 163 184 / 0.35);
     border-radius: 9999px;
-    background: rgb(255 255 255 / 0.92);
+    background: rgb(var(--mobile-surface));
     box-shadow: 0 10px 30px rgb(15 23 42 / 0.16), 0 2px 8px rgb(15 23 42 / 0.08);
     -webkit-backdrop-filter: blur(12px);
     backdrop-filter: blur(12px);
@@ -198,8 +199,11 @@
 }
 
 .mobile-sidebar {
-    bottom: calc(var(--mobile-nav-height, 72px) + env(safe-area-inset-bottom, 0px));
-    max-height: calc(100dvh - var(--mobile-nav-height, 72px) - env(safe-area-inset-bottom, 0px));
+    bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 22px);
+    max-height: calc(100dvh - var(--mobile-nav-height, 76px) - env(safe-area-inset-bottom, 0px) - 22px);
+    background: rgb(var(--mobile-surface));
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
     padding-top: env(safe-area-inset-top, 0px);
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -291,7 +295,7 @@
 }
 
 .calendar-main {
-    padding-bottom: calc(var(--mobile-nav-height, 72px) + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px));
 }
 
 @media (min-width: 768px) {
