@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useUiPreferences } from "@/lib/uiPreferences";
+import { AddCircleButton } from "@/components/AddCircleButton";
 
 const TAX_REGIMES = [
   { value: "forfettario_5", label: "Forfettario 5%" },
@@ -140,6 +141,7 @@ export const ProfilePage = () => {
   const [supportSelectedTicket, setSupportSelectedTicket] = useState(null);
   const [supportLoading, setSupportLoading] = useState(false);
   const [supportBusy, setSupportBusy] = useState(false);
+  const [supportFormOpen, setSupportFormOpen] = useState(false);
   const [notificationSettings, setNotificationSettings] = useState(NOTIFICATION_DEFAULTS);
   const [notificationBusy, setNotificationBusy] = useState(false);
   const [notificationOpenTemplate, setNotificationOpenTemplate] = useState(null);
@@ -149,6 +151,7 @@ export const ProfilePage = () => {
   const [collaboratorEmail, setCollaboratorEmail] = useState("");
   const [collaboratorRole, setCollaboratorRole] = useState("member");
   const [collaboratorBusy, setCollaboratorBusy] = useState(false);
+  const [collaboratorFormOpen, setCollaboratorFormOpen] = useState(false);
   const [deletionForm, setDeletionForm] = useState({ reason: "", details: "", confirmation: "", code: "" });
   const [deletionBusy, setDeletionBusy] = useState(false);
   const [deletionStatus, setDeletionStatus] = useState(null);
@@ -173,6 +176,8 @@ export const ProfilePage = () => {
   const [calendarExceptions, setCalendarExceptions] = useState([]);
   const [exceptionBusy, setExceptionBusy] = useState(false);
   const [editingExceptionId, setEditingExceptionId] = useState(null);
+  const [exceptionFormOpen, setExceptionFormOpen] = useState(false);
+  const [workAreaFormOpen, setWorkAreaFormOpen] = useState(false);
   const [exceptionForm, setExceptionForm] = useState({ kind: "closure", start_date: "", end_date: "", reason: "Ferie", notes: "", recurring: false, start: "", end: "", break_start: "", break_end: "" });
   
   const [formData, setFormData] = useState({
@@ -625,7 +630,7 @@ export const ProfilePage = () => {
       } else toast.error(error.response?.data?.detail?.message || error.response?.data?.detail || "Impossibile salvare l'eccezione.");
     } finally { setExceptionBusy(false); }
   };
-  const editException = (item) => { setExceptionForm({ kind: item.kind, start_date: item.start_date, end_date: item.end_date, reason: item.reason || "Altro", notes: item.notes || "", recurring: Boolean(item.recurring), start: item.start || "", end: item.end || "", break_start: item.break_start || "", break_end: item.break_end || "" }); setEditingExceptionId(item.exception_id); };
+  const editException = (item) => { setExceptionForm({ kind: item.kind, start_date: item.start_date, end_date: item.end_date, reason: item.reason || "Altro", notes: item.notes || "", recurring: Boolean(item.recurring), start: item.start || "", end: item.end || "", break_start: item.break_start || "", break_end: item.break_end || "" }); setEditingExceptionId(item.exception_id); setExceptionFormOpen(true); };
   const deleteException = async (id) => {
     if (!window.confirm("Eliminare questa eccezione?")) return;
     setExceptionBusy(true);
@@ -763,16 +768,16 @@ export const ProfilePage = () => {
       </CardContent></Card>}
 
       {section === "personal" && user?.role === "owner" && <Card>
-        <CardHeader><CardTitle className="text-lg flex items-center gap-2"><Users className="h-5 w-5"/>Gestione collaboratori</CardTitle></CardHeader>
+        <CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg flex items-center gap-2"><Users className="h-5 w-5"/>Gestione collaboratori</CardTitle><AddCircleButton label="Invita collaboratore" onClick={() => setCollaboratorFormOpen((current) => !current)} /></div></CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">Gli utenti Beside sono distinti dal numero di dipendenti. Il piano {collaborators.plan} consente {collaborators.collaborator_limit} collaboratori oltre al titolare.</p>
-          <form onSubmit={inviteCollaborator} className="grid gap-3 sm:grid-cols-[1fr_auto_auto]">
+          {collaboratorFormOpen && <form onSubmit={inviteCollaborator} className="grid gap-3 rounded-xl border border-secondary/30 p-3 sm:grid-cols-[1fr_auto_auto]">
             <Input type="email" required placeholder="Email del collaboratore" value={collaboratorEmail} onChange={e => setCollaboratorEmail(e.target.value)} />
             <select className="rounded-md border bg-background px-3 py-2 text-sm" value={collaboratorRole} onChange={e => setCollaboratorRole(e.target.value)} aria-label="Ruolo collaboratore">
               <option value="admin">Amministratore aziendale</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option>
             </select>
             <Button type="submit" disabled={collaboratorBusy}>Invia invito</Button>
-          </form>
+          </form>}
           {collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"><span className="min-w-0 flex-1 truncate">{invite.email} · {invite.role}</span><div className="flex gap-1"><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => resendCollaboratorInvite(invite.invitation_id)}>Reinvia invito</Button><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div></div>)}</div>}
           {collaborators.members?.filter(member => member.user_id !== user?.user_id).length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Utenti attivi</p>{collaborators.members.filter(member => member.user_id !== user?.user_id).map(member => <div key={member.user_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{member.email}</span><select className="rounded-md border bg-background px-2 py-1 text-xs" value={member.role} disabled={collaboratorBusy} onChange={e => changeCollaboratorRole(member.user_id, e.target.value)}><option value="admin">Amministratore</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={collaboratorBusy} onClick={() => revokeCollaborator(member.user_id)}>Revoca</Button></div>)}</div>}
           {!collaborators.invitations?.length && !collaborators.members?.some(member => member.user_id !== user?.user_id) && <p className="text-sm text-muted-foreground">Nessun collaboratore collegato.</p>}
@@ -1171,20 +1176,21 @@ export const ProfilePage = () => {
           <div className="space-y-2"><p className="text-sm font-medium">Personalizza singoli giorni</p>{workHours.map((item) => <div key={item.day} className="rounded-xl border p-3"><div className="flex items-center justify-between gap-2"><button type="button" className="min-h-11 flex-1 text-left font-medium" onClick={() => setExpandedWorkDays((current) => ({ ...current, [item.day]: !current[item.day] }))}>{WEEK_DAYS[item.day]}</button><span className="text-xs text-muted-foreground">{item.enabled ? "Aperto" : "Chiuso"}</span><Checkbox className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" checked={item.enabled} onCheckedChange={(value) => updateWorkDay(item.day, { enabled: value === true })} aria-label={`${WEEK_DAYS[item.day]} aperto`} /></div>{expandedWorkDays[item.day] && item.enabled && <div className="mt-2 space-y-3"><div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={item.start} onChange={(value) => updateWorkDay(item.day, { start: value })} /><TimeSelect label="Chiusura" value={item.end} onChange={(value) => updateWorkDay(item.day, { end: value })} /></div><div className="grid grid-cols-2 gap-3"><TimeSelect label="Inizio pausa" value={item.break_start} onChange={(value) => updateWorkDay(item.day, { break_start: value })} /><TimeSelect label="Fine pausa" value={item.break_end} onChange={(value) => updateWorkDay(item.day, { break_end: value })} /></div><Button type="button" variant="ghost" size="sm" onClick={() => resetDayToCommon(item.day)}>Rimuovi eccezione</Button></div>}</div>)}</div>
           {!workHoursConfigured && <p className="text-xs text-muted-foreground">Nessuna configurazione salvata.</p>}
         </CardContent></Card>
-        <Card><CardHeader><CardTitle className="text-lg">Aperture e chiusure straordinarie</CardTitle></CardHeader><CardContent className="space-y-3">
+        <Card><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg">Aperture e chiusure straordinarie</CardTitle><AddCircleButton label="Nuova apertura o chiusura straordinaria" onClick={() => { setEditingExceptionId(null); setExceptionFormOpen((current) => !current); }} /></div></CardHeader><CardContent className="space-y-3">
+          {exceptionFormOpen && <>
           <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2"><Button type="button" variant="outline" className={exceptionForm.kind === "closure" ? "border-secondary bg-secondary text-secondary-foreground hover:bg-secondary/90" : "text-primary"} onClick={() => setExceptionForm((current) => ({ ...current, kind: "closure", reason: "Ferie" }))}>Chiusura straordinaria</Button><Button type="button" variant="outline" className={exceptionForm.kind === "special_opening" ? "border-secondary bg-secondary text-secondary-foreground hover:bg-secondary/90" : "text-primary"} onClick={() => setExceptionForm((current) => ({ ...current, kind: "special_opening", reason: "Lavorazione straordinaria", end_date: current.start_date }))}>Apertura straordinaria</Button></div>
           <div className="grid min-w-0 grid-cols-1 gap-3 min-[420px]:grid-cols-2"><label className="min-w-0 space-y-1 text-xs font-medium">{exceptionForm.kind === "closure" ? "Dal" : "Data dell'apertura"}<input type="date" className="mt-1 h-11 w-full min-w-0 max-w-full rounded-xl border px-2 text-base" value={exceptionForm.start_date} onChange={(event) => setExceptionForm((current) => ({ ...current, start_date: event.target.value, ...(current.kind === "special_opening" ? { end_date: event.target.value } : {}) }))} /></label>{exceptionForm.kind === "closure" && <label className="min-w-0 space-y-1 text-xs font-medium">Al<input type="date" className="mt-1 h-11 w-full min-w-0 max-w-full rounded-xl border px-2 text-base" value={exceptionForm.end_date} min={exceptionForm.start_date || undefined} onChange={(event) => setExceptionForm((current) => ({ ...current, end_date: event.target.value }))} /></label>}</div>
           <select className="h-11 w-full rounded-xl border px-2" value={exceptionForm.reason} onChange={(event) => setExceptionForm((current) => ({ ...current, reason: event.target.value }))}>{(exceptionForm.kind === "closure" ? ["Ferie", "Festività", "Manutenzione", "Motivi personali", "Altro"] : ["Lavorazione straordinaria", "Apertura festiva", "Evento o promozione", "Richiesta particolare di un cliente", "Recupero giornata lavorativa", "Altro"]).map((item) => <option key={item}>{item}</option>)}</select>
           {exceptionForm.kind === "special_opening" && <div className="grid grid-cols-2 gap-3"><TimeSelect label="Apertura" value={exceptionForm.start} onChange={(value) => setExceptionForm((current) => ({ ...current, start: value }))} /><TimeSelect label="Chiusura" value={exceptionForm.end} onChange={(value) => setExceptionForm((current) => ({ ...current, end: value }))} /></div>}
           <Textarea placeholder="Note facoltative" value={exceptionForm.notes} onChange={(event) => setExceptionForm((current) => ({ ...current, notes: event.target.value }))} rows={2} />
           {exceptionForm.kind === "closure" && <label className="flex min-h-11 items-center gap-2 text-sm"><Checkbox checked={exceptionForm.recurring} onCheckedChange={(value) => setExceptionForm((current) => ({ ...current, recurring: value === true }))} />Ripeti ogni anno</label>}
-          <Button type="button" className="w-full" onClick={saveException} disabled={exceptionBusy}>{exceptionBusy ? "Salvataggio..." : editingExceptionId ? "Salva modifica" : "Salva eccezione"}</Button>
+          <Button type="button" className="w-full" onClick={saveException} disabled={exceptionBusy}>{exceptionBusy ? "Salvataggio..." : editingExceptionId ? "Salva modifica" : "Salva eccezione"}</Button></>}
           <div className="space-y-2">{calendarExceptions.length === 0 ? <p className="text-xs text-muted-foreground">Nessuna eccezione configurata.</p> : calendarExceptions.slice().sort((a, b) => a.start_date.localeCompare(b.start_date)).map((item) => <div key={item.exception_id} className="flex items-center justify-between gap-2 rounded-xl border p-3 text-sm"><div><p className="font-medium">{item.kind === "closure" ? "Chiusura straordinaria" : "Apertura straordinaria"} · {item.start_date}{item.end_date !== item.start_date ? ` → ${item.end_date}` : ""}</p><p className="text-xs text-muted-foreground">{item.reason}{item.recurring ? " · annuale" : ""}{item.start ? ` · ${item.start}–${item.end}` : ""}</p></div><div className="flex shrink-0 gap-1"><Button type="button" variant="ghost" size="sm" onClick={() => editException(item)} disabled={exceptionBusy}>Modifica</Button><Button type="button" variant="ghost" size="sm" className="text-destructive" onClick={() => deleteException(item.exception_id)} disabled={exceptionBusy}>Elimina</Button></div></div>)}</div>
         </CardContent></Card>
-        <Card><CardHeader><CardTitle className="text-lg">Aree di lavoro</CardTitle></CardHeader><CardContent className="space-y-3">
+        <Card><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg">Aree di lavoro</CardTitle><AddCircleButton label="Aggiungi area di lavoro" onClick={() => { setWorkAreaDrafts((current) => [...current, { area_id: null, name: "" }]); setWorkAreaFormOpen(true); }} disabled={workAreaDrafts.length >= 12} /></div></CardHeader><CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground">Le stesse aree vengono utilizzate dagli appuntamenti. La rimozione è bloccata se ci sono appuntamenti futuri.</p>
-          {workAreaDrafts.map((area, index) => <div key={area.area_id || index} className="flex items-center gap-2"><Input value={area.name} maxLength={80} onChange={(event) => setWorkAreaDrafts((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} /><Button type="button" variant="outline" size="icon" aria-label={`Rimuovi ${area.name || "area"}`} disabled={workAreaDrafts.length === 1} onClick={() => setWorkAreaDrafts((current) => current.filter((_, itemIndex) => itemIndex !== index))}><Trash2 className="h-4 w-4" /></Button></div>)}
-          <Button type="button" variant="outline" onClick={() => setWorkAreaDrafts((current) => [...current, { area_id: null, name: "" }])} disabled={workAreaDrafts.length >= 12}><Plus className="mr-1 h-4 w-4" />Aggiungi area</Button>
+          {workAreaDrafts.filter((area) => area.area_id).map((area, index) => <div key={area.area_id || index} className="flex items-center gap-2"><Input value={area.name} maxLength={80} onChange={(event) => setWorkAreaDrafts((current) => current.map((item) => item.area_id === area.area_id ? { ...item, name: event.target.value } : item))} /><Button type="button" variant="outline" size="icon" aria-label={`Rimuovi ${area.name || "area"}`} disabled={workAreaDrafts.length === 1} onClick={() => setWorkAreaDrafts((current) => current.filter((item) => item.area_id !== area.area_id))}><Trash2 className="h-4 w-4" /></Button></div>)}
+          {workAreaFormOpen && <div className="rounded-xl border border-secondary/30 p-3"><p className="mb-2 text-sm font-medium">Nuova area</p><div className="flex items-center gap-2"><Input autoFocus placeholder="Nome area" value={workAreaDrafts[workAreaDrafts.length - 1]?.name || ""} maxLength={80} onChange={(event) => setWorkAreaDrafts((current) => current.map((item, itemIndex) => itemIndex === current.length - 1 ? { ...item, name: event.target.value } : item))} /><Button type="button" variant="ghost" onClick={() => { setWorkAreaDrafts((current) => current.slice(0, -1)); setWorkAreaFormOpen(false); }}>Annulla</Button></div></div>}
           <Button type="button" className="ml-2" onClick={saveProfileWorkAreas} disabled={workAreasBusy}>{workAreasBusy ? "Salvataggio..." : "Salva aree"}</Button>
         </CardContent></Card>
         <Button variant="outline" onClick={() => navigate("/calendar")}><CalendarDays className="mr-2 h-4 w-4"/>Apri Pianificazione</Button>
@@ -1320,14 +1326,14 @@ export const ProfilePage = () => {
       </>}
 
       {section === "support" && <div className="space-y-4">
-        <Card><CardHeader><CardTitle className="text-lg">Nuova richiesta</CardTitle></CardHeader><CardContent>
-          <form onSubmit={submitSupportTicket} className="space-y-4">
+        <Card><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg">Assistenza</CardTitle><AddCircleButton label="Nuova richiesta di assistenza" onClick={() => setSupportFormOpen((current) => !current)} /></div></CardHeader>{supportFormOpen && <CardContent>
+          <form onSubmit={async (event) => { await submitSupportTicket(event); setSupportFormOpen(false); }} className="space-y-4">
             <div className="space-y-1.5"><Label htmlFor="settings-support-category">Categoria</Label><select id="settings-support-category" className="w-full rounded-md border bg-background p-2.5" value={supportCategory} onChange={(event) => setSupportCategory(event.target.value)}>{SUPPORT_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></div>
             <div className="space-y-1.5"><Label htmlFor="settings-support-subject">Oggetto</Label><Input id="settings-support-subject" required maxLength={200} value={supportSubject} onChange={(event) => setSupportSubject(event.target.value)} /></div>
             <div className="space-y-1.5"><Label htmlFor="settings-support-message">Descrizione del problema</Label><Textarea id="settings-support-message" required maxLength={4000} rows={5} value={supportMessage} onChange={(event) => setSupportMessage(event.target.value)} /></div>
             <Button type="submit" disabled={supportBusy || !supportSubject.trim() || !supportMessage.trim()} className="w-full">{supportBusy ? "Invio..." : "Invia richiesta"}</Button>
           </form>
-        </CardContent></Card>
+        </CardContent>}</Card>
         <Card><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg">Le mie richieste</CardTitle><Button type="button" variant="ghost" size="sm" onClick={loadSupportTickets} disabled={supportLoading}>{supportLoading ? "Caricamento..." : "Aggiorna"}</Button></div></CardHeader><CardContent className="space-y-3">
           {supportSelectedTicket ? <div className="space-y-4"><Button type="button" variant="ghost" className="px-0" onClick={() => setSupportSelectedTicket(null)}>← Tutte le richieste</Button><div><p className="font-semibold">{supportSelectedTicket.subject}</p><p className="text-xs text-muted-foreground">{supportSelectedTicket.ticket_id} · {new Date(supportSelectedTicket.created_at).toLocaleString("it-IT")}</p></div><div className="space-y-3">{(supportSelectedTicket.messages || []).map((item, index) => <div key={`${supportSelectedTicket.ticket_id}-${index}`} className="rounded-lg border bg-muted/20 p-3"><div className="flex items-center justify-between gap-2 text-xs text-muted-foreground"><span>{item.author_type === "platform_owner" ? "Assistenza Beside" : "Tu"}</span><span>{new Date(item.created_at).toLocaleString("it-IT")}</span></div><p className="mt-1 whitespace-pre-wrap text-sm">{item.message}</p></div>)}</div></div> : supportLoading ? <p className="text-sm text-muted-foreground">Caricamento richieste...</p> : supportTickets.length === 0 ? <p className="text-sm text-muted-foreground">Non hai ancora inviato richieste.</p> : <div className="divide-y rounded-lg border">{supportTickets.map((ticket) => <button key={ticket.ticket_id} type="button" onClick={() => setSupportSelectedTicket(ticket)} className="flex w-full items-center justify-between gap-3 p-3 text-left hover:bg-muted/40"><span className="min-w-0"><span className="block truncate font-medium">{ticket.subject}</span><span className="block text-xs text-muted-foreground">{ticket.ticket_id} · {new Date(ticket.created_at).toLocaleDateString("it-IT")}</span></span><span className="shrink-0 rounded-full bg-primary/10 px-2 py-1 text-xs font-medium text-primary">{SUPPORT_STATUS_LABELS[ticket.status] || ticket.status}</span></button>)}</div>}
         </CardContent></Card>

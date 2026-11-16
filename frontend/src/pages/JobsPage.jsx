@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
+import { AddCircleButton } from "@/components/AddCircleButton";
 import { 
   Plus, 
   Wrench, 
@@ -294,10 +295,7 @@ export const JobsPage = () => {
         </div>
         <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
           <DialogTrigger asChild>
-            <Button data-testid="add-job-dialog-btn">
-              <Plus className="w-4 h-4 mr-2" />
-              Nuovo
-            </Button>
+            <AddCircleButton label="Nuovo lavoro o preventivo" className="ml-auto" />
           </DialogTrigger>
           <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
@@ -626,10 +624,7 @@ export const JobsPage = () => {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between">
               <CardTitle className="text-lg">Preventivi</CardTitle>
-              <Button size="sm" onClick={() => { setFormData(prev => ({ ...prev, is_quote: true })); setDialogOpen(true); }}>
-                <Plus className="w-4 h-4 mr-2" />
-                Nuovo Preventivo
-              </Button>
+              <AddCircleButton label="Nuovo preventivo" onClick={() => { setFormData(prev => ({ ...prev, is_quote: true })); setDialogOpen(true); }} />
             </CardHeader>
             <CardContent>
               {quotes.length === 0 ? (
