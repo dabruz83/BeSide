@@ -100,7 +100,10 @@ export const JobsPage = () => {
     waste_percentage: "",
     lead_source: "",
     notes: "",
-    is_quote: searchParams.get("mode") === "quote"
+    is_quote: searchParams.get("mode") === "quote",
+    post_work_enabled: false,
+    post_work_days: 30,
+    post_work_conditions: ""
   });
 
   useEffect(() => {
@@ -171,7 +174,10 @@ export const JobsPage = () => {
         waste_percentage: "",
         lead_source: "",
         notes: "",
-        is_quote: false
+        is_quote: false,
+        post_work_enabled: false,
+        post_work_days: 30,
+        post_work_conditions: ""
       });
       fetchJobs();
       fetchAnalytics();
@@ -190,6 +196,28 @@ export const JobsPage = () => {
       fetchAnalytics();
     } catch (error) {
       toast.error("Errore nell'eliminazione");
+    }
+  };
+
+  const setDelivered = async (job, delivered = true) => {
+    const message = delivered ? "Segnare questo lavoro come consegnato?" : "Annullare la consegna registrata?";
+    if (!window.confirm(message)) return;
+    try {
+      await axios.post(`${API}/jobs/${job.job_id}/delivery`, { delivered });
+      toast.success(delivered ? "Lavoro segnato come consegnato." : "Consegna annullata.");
+      fetchJobs();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile aggiornare la consegna.");
+    }
+  };
+
+  const togglePostWork = async (quote) => {
+    try {
+      await axios.put(`${API}/jobs/${quote.job_id}/post-work`, { enabled: !quote.post_work_enabled, days: quote.post_work_days || 30, conditions: quote.post_work_conditions || "" });
+      toast.success(quote.post_work_enabled ? "Controllo post-lavorazione disattivato." : "Controllo post-lavorazione attivato.");
+      fetchJobs();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile aggiornare il controllo.");
     }
   };
 
@@ -455,6 +483,11 @@ export const JobsPage = () => {
                   rows={formData.is_quote ? 4 : 2}
                 />
               </div>
+
+              {formData.is_quote && <div className="space-y-3 rounded-xl border border-secondary/40 bg-secondary/5 p-3">
+                <div className="flex items-center justify-between gap-3"><div><Label htmlFor="post-work-enabled">Servizi post-lavorazione</Label><p className="text-xs text-muted-foreground">Controllo gratuito dopo la consegna, disattivato per impostazione predefinita.</p></div><Switch id="post-work-enabled" checked={formData.post_work_enabled} onCheckedChange={(checked) => setFormData({ ...formData, post_work_enabled: checked })} /></div>
+                {formData.post_work_enabled && <><div className="space-y-1.5"><Label>Scadenza controllo</Label><Select value={String(formData.post_work_days)} onValueChange={(value) => setFormData({ ...formData, post_work_days: Number(value) })}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="15">15 giorni</SelectItem><SelectItem value="30">30 giorni</SelectItem><SelectItem value="60">60 giorni</SelectItem></SelectContent></Select></div><div className="space-y-1.5"><Label>Condizioni e clausole</Label><Textarea rows={3} value={formData.post_work_conditions} onChange={(event) => setFormData({ ...formData, post_work_conditions: event.target.value })} placeholder="Condizioni del controllo post-lavorazione..." /></div></>}
+              </div>}
               
               <Button type="submit" className="w-full" data-testid="job-submit-btn">
                 {formData.is_quote ? (
@@ -552,6 +585,13 @@ export const JobsPage = () => {
                           <p className="font-semibold">{formatCurrency(job.hourly_rate)}</p>
                         </div>
                         <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setDelivered(job, Boolean(job.delivered) ? false : true)}
+                        >
+                          {job.delivered ? "Annulla consegna" : "Segna consegnato"}
+                        </Button>
+                        <Button
                           variant="ghost"
                           size="icon"
                           className="text-muted-foreground hover:text-destructive"
@@ -619,6 +659,9 @@ export const JobsPage = () => {
                             <Button size="sm" className="rounded-full" onClick={() => navigate("/calendar?job=" + encodeURIComponent(quote.job_id))}>
                               Aggiungi al calendario
                             </Button>
+                            <Button size="sm" variant="outline" onClick={() => setDelivered(quote, Boolean(quote.delivered) ? false : true)}>
+                              {quote.delivered ? "Annulla consegna" : "Segna consegnato"}
+                            </Button>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>
                                 <Button size="sm" variant="outline" className="rounded-full">Contatta</Button>
@@ -637,6 +680,7 @@ export const JobsPage = () => {
                             </DropdownMenu>
                           </>
                         )}
+                        <Button size="sm" variant="outline" onClick={() => togglePostWork(quote)}>{quote.post_work_enabled ? "Disattiva controllo" : "Abilita controllo"}</Button>
                         {quote.quote_link && (
                           <div className="flex items-center gap-2">
                             <Button

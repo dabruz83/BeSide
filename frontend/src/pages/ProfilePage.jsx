@@ -71,6 +71,9 @@ const NOTIFICATION_DEFAULTS = {
     client_appointment_reminder: false,
     client_reminder_lead: "24h",
     client_reminder_custom_minutes: null,
+    postwork_thanks: false,
+    postwork_check_invite: false,
+    postwork_invite_lead_days: 3,
   },
   templates: {
     quote_accepted: { subject: "Preventivo accettato • Beside", body: "<p>Il preventivo di {nome_cliente} è stato accettato.</p>" },
@@ -81,6 +84,8 @@ const NOTIFICATION_DEFAULTS = {
     client_appointment_modified: { subject: "Appuntamento modificato • Beside", body: "<p>Il tuo appuntamento è stato modificato.</p>" },
     client_appointment_cancelled: { subject: "Appuntamento annullato • Beside", body: "<p>Il tuo appuntamento è stato annullato.</p>" },
     client_appointment_reminder: { subject: "Promemoria appuntamento • Beside", body: "<p>Ti ricordiamo l'appuntamento del {data} alle {ora}.</p>" },
+    postwork_thanks: { subject: "Grazie per aver scelto Beside", body: "<p>Grazie {nome_cliente} per aver scelto {azienda}.</p>" },
+    postwork_check_invite: { subject: "Controllo post-lavorazione", body: "<p>È disponibile il controllo post-lavorazione per il lavoro eseguito.</p>" },
   },
 };
 const NOTIFICATION_TEMPLATE_LABELS = {
@@ -92,6 +97,8 @@ const NOTIFICATION_TEMPLATE_LABELS = {
   client_appointment_modified: "Modifica appuntamento",
   client_appointment_cancelled: "Annullamento appuntamento",
   client_appointment_reminder: "Promemoria al cliente",
+  postwork_thanks: "Ringraziamento alla consegna",
+  postwork_check_invite: "Invito al controllo post-lavorazione",
 };
 const WEEK_DAYS = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
 const emptyWorkHours = () => WEEK_DAYS.map((_, day) => ({ day, enabled: false, start: "", end: "", break_start: "", break_end: "" }));
@@ -1190,10 +1197,12 @@ export const ProfilePage = () => {
           {[["client_quote", "Invio del preventivo"], ["client_appointment_confirmed", "Conferma appuntamento"], ["client_appointment_modified", "Modifica appuntamento"], ["client_appointment_cancelled", "Annullamento appuntamento"], ["client_appointment_reminder", "Promemoria appuntamento"]].map(([key, label]) => <label key={key} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm"><span>{label}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: value === true } }))} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>)}
           <label className="block pt-2 text-sm font-medium">Anticipo promemoria cliente<select className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.client_reminder_lead} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, client_reminder_lead: event.target.value } }))}><option value="24h">24 ore</option><option value="48h">48 ore</option><option value="custom">Personalizzato</option></select></label>
           {notificationSettings.preferences.client_reminder_lead === "custom" && <label className="block text-sm font-medium">Minuti di anticipo<input type="number" min="15" max="10080" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.client_reminder_custom_minutes || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, client_reminder_custom_minutes: event.target.value ? Number(event.target.value) : null } }))} /></label>}
+          {["postwork_thanks", "postwork_check_invite"].map((key) => <label key={key} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border border-secondary/30 px-3 py-2 text-sm"><span>{NOTIFICATION_TEMPLATE_LABELS[key]}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: value === true } }))} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>)}
+          <label className="block text-sm font-medium">Anticipo invito controllo post-lavorazione<select className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.postwork_invite_lead_days ?? 3} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, postwork_invite_lead_days: Number(event.target.value) } }))}><option value="0">Alla scadenza</option><option value="1">1 giorno prima</option><option value="3">3 giorni prima</option><option value="7">7 giorni prima</option></select></label>
           <p className="pt-2 text-xs text-muted-foreground">I nuovi invii automatici ai clienti sono disattivati finché non li abiliti. Gli invii manuali restano disponibili.</p>
         </CardContent></Card>
         <Card><CardHeader><CardTitle className="text-lg">Modelli email</CardTitle></CardHeader><CardContent className="space-y-2">
-          <p className="text-xs text-muted-foreground">Variabili disponibili: {'{nome_cliente}'} {'{azienda}'} {'{tipo_lavoro}'} {'{data}'} {'{ora}'} {'{indirizzo}'} {'{telefono}'} {'{link_preventivo}'}</p>
+          <p className="text-xs text-muted-foreground">Variabili disponibili: {'{nome_cliente}'} {'{azienda}'} {'{tipo_lavoro}'} {'{data}'} {'{ora}'} {'{indirizzo}'} {'{telefono}'} {'{link_preventivo}'} {'{link_assistenza}'}</p>
           {Object.entries(notificationSettings.templates).map(([key, template]) => <div key={key} className="rounded-xl border p-3"><button type="button" className="flex min-h-11 w-full items-center justify-between text-left font-medium" onClick={() => setNotificationOpenTemplate((current) => current === key ? null : key)}><span>{NOTIFICATION_TEMPLATE_LABELS[key] || key}</span><span className="text-xs text-muted-foreground">{notificationOpenTemplate === key ? "Chiudi" : "Modifica"}</span></button>{notificationOpenTemplate === key && <div className="mt-2 space-y-2"><Input aria-label={`Oggetto ${key}`} value={template.subject} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], subject: event.target.value } } }))} /><Textarea aria-label={`Testo ${key}`} rows={4} value={template.body} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], body: event.target.value } } }))} /><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setNotificationPreview(template)}>Anteprima</Button><Button type="button" variant="ghost" size="sm" onClick={() => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...NOTIFICATION_DEFAULTS.templates[key] } } }))}>Ripristina modello originale</Button></div></div>}</div>)}
           {notificationPreview && <div className="rounded-xl bg-muted/40 p-3 text-sm"><p className="font-medium">Anteprima: {notificationPreview.subject}</p><div className="mt-2 whitespace-pre-wrap text-muted-foreground">{notificationPreview.body}</div></div>}
           <Button type="button" className="w-full" onClick={saveNotificationSettings} disabled={notificationBusy}>{notificationBusy ? "Salvataggio..." : "Salva modifiche"}</Button>

@@ -445,6 +445,15 @@ export const CalendarPage = () => {
     } catch (error) { toast.error(error.response?.data?.detail || "Impossibile annullare"); }
     finally { setSaving(false); }
   };
+  const markLinkedJobDelivered = async () => {
+    if (!editing?.job_id || !window.confirm("Segnare il lavoro collegato come consegnato?")) return;
+    try {
+      await axios.post(`${API}/jobs/${editing.job_id}/delivery`, { delivered: true });
+      toast.success("Lavoro segnato come consegnato.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile registrare la consegna.");
+    }
+  };
   const pointerDown = (e, event) => {
     if (e.button !== 0) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -792,8 +801,9 @@ export const CalendarPage = () => {
             </div>
             </div>
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-background px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-              {editing ? <div className="flex gap-2">
+              {editing ? <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" onClick={() => downloadCalendar(editing)}><Download className="w-4 h-4 mr-1" />Esporta .ics</Button>
+                {editing.job_id && <Button type="button" variant="outline" onClick={markLinkedJobDelivered}>Segna consegnato</Button>}
                 <Button type="button" variant="destructive" onClick={cancelEvent} disabled={saving}><Trash2 className="w-4 h-4" /></Button>
               </div> : <span />}
               <Button type="submit" className="ml-auto rounded-full px-6" disabled={saving}>{saving ? "Salvataggio..." : "Salva"}</Button>

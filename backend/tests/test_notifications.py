@@ -9,6 +9,14 @@ def test_notification_defaults_keep_existing_installer_alerts_and_disable_client
     assert settings["preferences"]["installer_support_reply"] is True
     assert settings["preferences"]["client_quote"] is False
     assert settings["preferences"]["client_appointment_reminder"] is False
+    assert settings["preferences"]["postwork_thanks"] is False
+    assert settings["preferences"]["postwork_check_invite"] is False
+
+
+def test_post_work_models_keep_safe_defaults_and_delivery_validation():
+    quote = server.JobCreate(client_name="Cliente", job_type="ppf_full", vehicle_type="suv", quote_amount=1000, hours_worked=0, materials_cost=0, is_quote=True, post_work_enabled=True)
+    assert quote.post_work_days == 30
+    assert server.JobDeliveryRequest().delivered is True
 
 
 def test_notification_template_rejects_unknown_variables():

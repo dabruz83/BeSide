@@ -188,6 +188,7 @@ if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RE
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     reminder_task = None
+    post_work_task = None
     deletion_tasks = []
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
@@ -202,6 +203,7 @@ async def lifespan(_app: FastAPI):
         logger.info("Multi-tenant migration completed: %s", stats)
         await db.email_notification_jobs.create_index("job_id", unique=True)
         reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email, send_configured_notification))
+        post_work_task = asyncio.create_task(run_post_work_notification_worker())
         deletion_tasks = await _resume_account_deletions()
         yield
     finally:
@@ -209,6 +211,12 @@ async def lifespan(_app: FastAPI):
             reminder_task.cancel()
             try:
                 await reminder_task
+            except asyncio.CancelledError:
+                pass
+        if post_work_task is not None:
+            post_work_task.cancel()
+            try:
+                await post_work_task
             except asyncio.CancelledError:
                 pass
         for task in deletion_tasks:
@@ -517,6 +525,9 @@ class JobCreate(BaseModel):
     lead_source: Optional[str] = Field(default=None, max_length=100)
     notes: Optional[str] = Field(default=None, max_length=4000)
     is_quote: bool = False  # True = preventivo, False = lavoro completato
+    post_work_enabled: bool = False
+    post_work_days: int = Field(default=30, ge=15, le=60)
+    post_work_conditions: Optional[str] = Field(default=None, max_length=4000)
 
 class JobResponse(BaseModel):
     job_id: str
@@ -541,6 +552,21 @@ class JobResponse(BaseModel):
     quote_link: Optional[str] = None
     completed_date: str
     created_at: str
+    post_work_enabled: bool = False
+    post_work_days: int = 30
+    post_work_conditions: Optional[str] = None
+    post_work_conditions_accepted: Optional[str] = None
+    delivered_at: Optional[str] = None
+    delivered: bool = False
+
+class JobDeliveryRequest(BaseModel):
+    delivered: bool = True
+    notes: Optional[str] = Field(default=None, max_length=2000)
+
+class PostWorkUpdate(BaseModel):
+    enabled: bool
+    days: int = Field(default=30, ge=15, le=60)
+    conditions: Optional[str] = Field(default=None, max_length=4000)
 
 # Quote Models
 class QuoteAcceptance(BaseModel):
@@ -2476,6 +2502,7 @@ send_email_sendgrid = send_email
 NOTIFICATION_ALLOWED_VARIABLES = {
     "nome_cliente", "azienda", "tipo_lavoro", "data", "ora",
     "indirizzo", "telefono", "link_preventivo",
+    "link_assistenza",
 }
 NOTIFICATION_DEFAULT_PREFERENCES = {
     "installer_quote_accepted": True,
@@ -2488,6 +2515,9 @@ NOTIFICATION_DEFAULT_PREFERENCES = {
     "client_appointment_reminder": False,
     "client_reminder_lead": "24h",
     "client_reminder_custom_minutes": None,
+    "postwork_thanks": False,
+    "postwork_check_invite": False,
+    "postwork_invite_lead_days": 3,
 }
 NOTIFICATION_DEFAULT_TEMPLATES = {
     "quote_accepted": {"subject": "Preventivo accettato • Beside", "body": "<p>Il preventivo di {nome_cliente} è stato accettato.</p>"},
@@ -2498,6 +2528,8 @@ NOTIFICATION_DEFAULT_TEMPLATES = {
     "client_appointment_modified": {"subject": "Appuntamento modificato • Beside", "body": "<p>Il tuo appuntamento è stato modificato.</p>"},
     "client_appointment_cancelled": {"subject": "Appuntamento annullato • Beside", "body": "<p>Il tuo appuntamento è stato annullato.</p>"},
     "client_appointment_reminder": {"subject": "Promemoria appuntamento • Beside", "body": "<p>Ti ricordiamo l'appuntamento del {data} alle {ora}.</p>"},
+    "postwork_thanks": {"subject": "Grazie per aver scelto Beside", "body": "<p>Grazie {nome_cliente} per aver scelto {azienda}.</p>"},
+    "postwork_check_invite": {"subject": "Controllo post-lavorazione", "body": "<p>È disponibile il controllo post-lavorazione per il lavoro eseguito.</p><p>Per assistenza: {link_assistenza}</p>"},
 }
 
 def _notification_settings(company: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2542,11 +2574,47 @@ async def send_configured_notification(company_id: str, event: str, recipient: s
     try:
         await db.email_notification_jobs.insert_one({"job_id": job_id, "company_id": company_id, "event": event, "recipient": recipient, "status": "sending", "attempts": 1, "created_at": datetime.now(timezone.utc).isoformat()})
     except DuplicateKeyError:
-        return {"status": "duplicate"}
+        existing = await db.email_notification_jobs.find_one({"job_id": job_id}, {"_id": 0, "status": 1, "attempts": 1})
+        if not existing or existing.get("status") == "sent":
+            return {"status": "duplicate"}
+        if int(existing.get("attempts", 0)) >= 3:
+            return {"status": "failed"}
+        await db.email_notification_jobs.update_one({"job_id": job_id}, {"$set": {"status": "sending"}, "$inc": {"attempts": 1}})
     rendered = render_notification_template(settings["templates"].get(event, NOTIFICATION_DEFAULT_TEMPLATES.get(event, {"subject": event, "body": ""})), context or {})
     delivered = await send_email(recipient, rendered["subject"], rendered["body"])
     await db.email_notification_jobs.update_one({"job_id": job_id}, {"$set": {"status": "sent" if delivered else "failed", "completed_at": datetime.now(timezone.utc).isoformat()}})
     return {"status": "sent" if delivered else "failed"}
+
+async def run_post_work_notification_worker() -> None:
+    await db.post_work_notification_jobs.create_index("job_id", unique=True)
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            pending = await db.post_work_notification_jobs.find({"status": "pending", "due_at": {"$lte": now.isoformat()}, "attempts": {"$lt": 3}}).limit(100).to_list(100)
+            for item in pending:
+                claimed = await db.post_work_notification_jobs.find_one_and_update(
+                    {"job_id": item["job_id"], "status": "pending"},
+                    {"$set": {"status": "sending", "attempts": int(item.get("attempts", 0)) + 1}},
+                    return_document=ReturnDocument.AFTER,
+                )
+                if not claimed:
+                    continue
+                job = await db.jobs.find_one({"job_id": item["source_job_id"], "company_id": item["company_id"]}, {"_id": 0})
+                if not job or not job.get("delivered") or not job.get("post_work_enabled") or not job.get("client_email"):
+                    await db.post_work_notification_jobs.update_one({"job_id": item["job_id"]}, {"$set": {"status": "cancelled"}})
+                    continue
+                result = await send_configured_notification(item["company_id"], item["event"], job["client_email"], {"nome_cliente": job.get("client_name"), "tipo_lavoro": job.get("job_type"), "azienda": "Beside", "link_assistenza": f"{PUBLIC_APP_URL}/support"}, item["job_id"])
+                if result["status"] == "sent":
+                    await db.post_work_notification_jobs.update_one({"job_id": item["job_id"]}, {"$set": {"status": "sent", "sent_at": now.isoformat()}})
+                elif result["status"] in {"disabled", "duplicate"}:
+                    await db.post_work_notification_jobs.update_one({"job_id": item["job_id"]}, {"$set": {"status": "cancelled" if result["status"] == "disabled" else "sent"}})
+                else:
+                    await db.post_work_notification_jobs.update_one({"job_id": item["job_id"], "status": "sending"}, {"$set": {"status": "pending", "due_at": (now + timedelta(hours=1)).isoformat()}})
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Post-work notification scheduler cycle failed")
+        await asyncio.sleep(45)
 
 async def send_registration_notification(user_email: str, business_name: str, registration_date: str):
     """Send notification email to admin when a new user registers"""
@@ -4518,6 +4586,11 @@ async def update_notification_settings(payload: NotificationSettingsUpdate, curr
         if not 15 <= custom_minutes <= 10080:
             raise HTTPException(status_code=422, detail="Anticipo personalizzato non valido")
         preferences["client_reminder_custom_minutes"] = custom_minutes
+    if incoming_preferences.get("post_work_invite_lead_days") is not None:
+        lead_days = int(incoming_preferences["post_work_invite_lead_days"])
+        if not 0 <= lead_days <= 30:
+            raise HTTPException(status_code=422, detail="Anticipo controllo post-lavorazione non valido")
+        preferences["post_work_invite_lead_days"] = lead_days
     templates = dict(existing_settings["templates"])
     for key, value in (payload.templates or {}).items():
         if key not in NOTIFICATION_DEFAULT_TEMPLATES or not isinstance(value, dict):
@@ -4591,6 +4664,12 @@ async def create_job(
         "is_quote": job_data.is_quote,
         "quote_status": "pending" if job_data.is_quote else None,
         "quote_link": quote_link,
+        "post_work_enabled": bool(job_data.post_work_enabled),
+        "post_work_days": int(job_data.post_work_days),
+        "post_work_conditions": (job_data.post_work_conditions or "").strip() or None,
+        "post_work_conditions_accepted": None,
+        "delivered": False,
+        "delivered_at": None,
         "completed_date": now.isoformat(),
         "created_at": now.isoformat(),
     })
@@ -4650,6 +4729,42 @@ async def get_job(job_id: str, current_user: Dict = Depends(get_current_user)):
     if not job:
         raise HTTPException(status_code=404, detail="Lavoro non trovato")
     return job
+
+@api_router.post("/jobs/{job_id}/delivery")
+async def update_job_delivery(job_id: str, data: JobDeliveryRequest, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
+    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0})
+    if not job or (job.get("is_quote") and job.get("quote_status") != "accepted"):
+        raise HTTPException(status_code=404, detail="Lavoro non trovato")
+    if data.delivered and job.get("delivered"):
+        raise HTTPException(status_code=409, detail="Lavoro già segnato come consegnato")
+    if not data.delivered and not job.get("delivered"):
+        raise HTTPException(status_code=409, detail="Consegna non presente")
+    now = datetime.now(timezone.utc)
+    if data.delivered:
+        delivered_at = now.isoformat()
+        await db.jobs.update_one(company_scope(current_user, job_id=job_id, delivered={"$ne": True}), {"$set": {"delivered": True, "delivered_at": delivered_at, "delivery_notes": data.notes}})
+        if job.get("post_work_enabled") and job.get("client_email"):
+            company = await db.companies.find_one({"company_id": current_user["company_id"]}, {"_id": 0})
+            lead_days = int((_notification_settings(company)["preferences"].get("post_work_invite_lead_days") or 3))
+            due = now + timedelta(days=max(0, int(job.get("post_work_days") or 30) - lead_days))
+            await db.post_work_notification_jobs.insert_many([
+                {"job_id": f"{job_id}:postwork_thanks", "source_job_id": job_id, "company_id": current_user["company_id"], "event": "postwork_thanks", "due_at": now.isoformat(), "status": "pending", "attempts": 0},
+                {"job_id": f"{job_id}:postwork_check_invite", "source_job_id": job_id, "company_id": current_user["company_id"], "event": "postwork_check_invite", "due_at": due.isoformat(), "status": "pending", "attempts": 0},
+            ], ordered=False)
+        return {"status": "delivered", "delivered_at": delivered_at}
+    await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$set": {"delivered": False, "delivered_at": None, "delivery_notes": data.notes}})
+    await db.post_work_notification_jobs.update_many({"source_job_id": job_id, "company_id": current_user["company_id"], "status": {"$in": ["pending", "sending"]}}, {"$set": {"status": "cancelled", "cancelled_at": now.isoformat()}})
+    return {"status": "delivery_cancelled"}
+
+@api_router.put("/jobs/{job_id}/post-work")
+async def update_job_post_work(job_id: str, data: PostWorkUpdate, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
+    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0, "is_quote": 1})
+    if not job or not job.get("is_quote"):
+        raise HTTPException(status_code=404, detail="Preventivo non trovato")
+    await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$set": {"post_work_enabled": data.enabled, "post_work_days": data.days, "post_work_conditions": (data.conditions or "").strip() or None}})
+    if not data.enabled:
+        await db.post_work_notification_jobs.update_many({"source_job_id": job_id, "company_id": current_user["company_id"], "status": {"$in": ["pending", "sending"]}}, {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc).isoformat()}})
+    return {"status": "updated", "enabled": data.enabled, "days": data.days}
 
 @api_router.delete("/jobs/{job_id}")
 async def delete_job(
@@ -4727,6 +4842,11 @@ async def get_public_quote(token: str, request: Request):
         "notes": job.get("notes"),
         "quote_status": job.get("quote_status"),
         "created_at": job["created_at"],
+        "post_work": {
+            "enabled": bool(job.get("post_work_enabled")),
+            "days": int(job.get("post_work_days") or 30),
+            "conditions": job.get("post_work_conditions_accepted") or job.get("post_work_conditions"),
+        } if job.get("post_work_enabled") else None,
         "business_name": (owner or {}).get("business_info", {}).get("commercial_name")
             or (company or {}).get("name")
             or (owner or {}).get("business_name"),
@@ -4770,6 +4890,8 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks
         "client_signature": acceptance.client_signature,
         "client_notes": acceptance.notes
     }
+    if acceptance.accepted and job.get("post_work_enabled"):
+        update_fields["post_work_conditions_accepted"] = job.get("post_work_conditions") or "Controllo post-lavorazione incluso"
     
     result = await db.jobs.update_one(
         {"job_id": quote_token["job_id"], "company_id": job["company_id"],

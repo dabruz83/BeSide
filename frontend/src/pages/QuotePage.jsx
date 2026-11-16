@@ -259,6 +259,14 @@ export const QuotePage = () => {
               </div>
             )}
 
+            {quote.post_work?.enabled && (
+              <div className="border-t border-border pt-4 rounded-xl bg-secondary/5 p-4">
+                <h4 className="font-semibold mb-2">Controllo post-lavorazione incluso</h4>
+                <p className="text-sm text-muted-foreground">Controllo gratuito entro {quote.post_work.days} giorni dalla consegna.</p>
+                {quote.post_work.conditions && <p className="mt-2 text-sm whitespace-pre-line">{quote.post_work.conditions}</p>}
+              </div>
+            )}
+
             {/* Total */}
             <div className="border-t border-border pt-4">
               <div className="flex items-center justify-between p-4 bg-primary/5 rounded-lg">
