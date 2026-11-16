@@ -510,7 +510,7 @@ def register_calendar_routes(router, db, company_scope, require_company_roles):
             await _unlock_company(db, company_id, lock)
 
 
-async def run_calendar_reminder_worker(db, send_email, every_seconds: int = 45):
+async def run_calendar_reminder_worker(db, send_email, notification_sender=None, every_seconds: int = 45):
     """Durable email reminders for installers; avoids duplicate sends per revision.
 
     Events are checked with an atomic send claim. If email delivery fails, the
@@ -579,7 +579,11 @@ async def run_calendar_reminder_worker(db, send_email, every_seconds: int = 45):
                     try:
                         # A reminder goes only to the company owner. Other
                         # employee recipients are a later configurable feature.
-                        if await send_email(email, "Promemoria lavoro • Beside", content):
+                        if notification_sender:
+                            delivery = (await notification_sender(event["company_id"], "appointment_reminder", email, {"nome_cliente": event.get("client_name") or "", "azienda": (company or {}).get("name") or "", "data": date_text, "ora": "", "tipo_lavoro": event.get("title") or ""}, f"{event['event_id']}:{event.get('revision', 1)}:{lead}"))["status"] == "sent"
+                        else:
+                            delivery = await send_email(email, "Promemoria lavoro • Beside", content)
+                        if delivery:
                             await db.calendar_reminder_claims.update_one(
                                 key, {"$set": {
                                     "status": "sent",

@@ -59,6 +59,40 @@ const SUPPORT_CATEGORIES = [
 ];
 
 const SUPPORT_STATUS_LABELS = { open: "Aperto", pending: "In lavorazione", closed: "Chiuso" };
+const NOTIFICATION_DEFAULTS = {
+  preferences: {
+    installer_quote_accepted: true,
+    installer_appointment_reminder: true,
+    installer_support_reply: true,
+    client_quote: false,
+    client_appointment_confirmed: false,
+    client_appointment_modified: false,
+    client_appointment_cancelled: false,
+    client_appointment_reminder: false,
+    client_reminder_lead: "24h",
+    client_reminder_custom_minutes: null,
+  },
+  templates: {
+    quote_accepted: { subject: "Preventivo accettato • Beside", body: "<p>Il preventivo di {nome_cliente} è stato accettato.</p>" },
+    appointment_reminder: { subject: "Promemoria appuntamento • Beside", body: "<p>Promemoria per {nome_cliente}: appuntamento il {data} alle {ora}.</p>" },
+    support_reply: { subject: "Risposta alla tua richiesta • Beside", body: "<p>Hai ricevuto una risposta alla tua richiesta di assistenza.</p>" },
+    client_quote: { subject: "Il tuo preventivo Beside", body: "<p>Il tuo preventivo è disponibile: {link_preventivo}</p>" },
+    client_appointment_confirmed: { subject: "Appuntamento confermato • Beside", body: "<p>Il tuo appuntamento è confermato per {data} alle {ora}.</p>" },
+    client_appointment_modified: { subject: "Appuntamento modificato • Beside", body: "<p>Il tuo appuntamento è stato modificato.</p>" },
+    client_appointment_cancelled: { subject: "Appuntamento annullato • Beside", body: "<p>Il tuo appuntamento è stato annullato.</p>" },
+    client_appointment_reminder: { subject: "Promemoria appuntamento • Beside", body: "<p>Ti ricordiamo l'appuntamento del {data} alle {ora}.</p>" },
+  },
+};
+const NOTIFICATION_TEMPLATE_LABELS = {
+  quote_accepted: "Preventivo accettato",
+  appointment_reminder: "Promemoria appuntamento",
+  support_reply: "Risposta assistenza",
+  client_quote: "Invio preventivo al cliente",
+  client_appointment_confirmed: "Conferma appuntamento",
+  client_appointment_modified: "Modifica appuntamento",
+  client_appointment_cancelled: "Annullamento appuntamento",
+  client_appointment_reminder: "Promemoria al cliente",
+};
 const WEEK_DAYS = ["Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato", "Domenica"];
 const emptyWorkHours = () => WEEK_DAYS.map((_, day) => ({ day, enabled: false, start: "", end: "", break_start: "", break_end: "" }));
 const timeOptions = () => ["", ...Array.from({ length: 48 }, (_, index) => {
@@ -98,6 +132,10 @@ export const ProfilePage = () => {
   const [supportSelectedTicket, setSupportSelectedTicket] = useState(null);
   const [supportLoading, setSupportLoading] = useState(false);
   const [supportBusy, setSupportBusy] = useState(false);
+  const [notificationSettings, setNotificationSettings] = useState(NOTIFICATION_DEFAULTS);
+  const [notificationBusy, setNotificationBusy] = useState(false);
+  const [notificationOpenTemplate, setNotificationOpenTemplate] = useState(null);
+  const [notificationPreview, setNotificationPreview] = useState(null);
   const [collaborators, setCollaborators] = useState({ members: [], invitations: [], collaborator_limit: 0, plan: "essential" });
   const [collaboratorEmail, setCollaboratorEmail] = useState("");
   const [collaboratorRole, setCollaboratorRole] = useState("member");
@@ -219,6 +257,29 @@ export const ProfilePage = () => {
   useEffect(() => {
     if (section === "support" && user?.user_id) loadSupportTickets();
   }, [section, user?.user_id]);
+
+  useEffect(() => {
+    if (section !== "notifications" || !user?.user_id) return;
+    axios.get(`${API}/notifications/settings`).then(({ data }) => {
+      setNotificationSettings({
+        preferences: { ...NOTIFICATION_DEFAULTS.preferences, ...(data.preferences || {}) },
+        templates: { ...NOTIFICATION_DEFAULTS.templates, ...(data.templates || {}) },
+      });
+    }).catch((error) => toast.error(error.response?.data?.detail || "Impossibile caricare le notifiche."));
+  }, [section, user?.user_id]);
+
+  const saveNotificationSettings = async () => {
+    setNotificationBusy(true);
+    try {
+      const { data } = await axios.put(`${API}/notifications/settings`, notificationSettings);
+      setNotificationSettings(data);
+      toast.success("Preferenze e modelli salvati.");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile salvare le notifiche.");
+    } finally {
+      setNotificationBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (section !== "calendar" || !user?.user_id) return;
@@ -638,7 +699,7 @@ export const ProfilePage = () => {
     { key: "personal", title: "Profilo personale", subtitle: "Nome e dati di accesso", icon: UserRound },
     { key: "activity", title: "La mia attività", subtitle: "Dati aziendali, fiscali e documenti", icon: Building2 },
     { key: "calendar", title: "Agenda e lavorazioni", subtitle: "Orari, aree e promemoria", icon: CalendarDays },
-    { key: "notifications", title: "Notifiche", subtitle: "Promemoria e comunicazioni", icon: Bell },
+    { key: "notifications", title: "Notifiche e comunicazioni", subtitle: "Email, promemoria e modelli", icon: Bell },
     { key: "appearance", title: "Aspetto e accessibilità", subtitle: "Tema, icone e dimensione testi", icon: Monitor },
     { key: "security", title: "Sicurezza e privacy", subtitle: "MFA, contatto fidato e consensi", icon: ShieldCheck },
     { key: "subscription", title: "Abbonamento", subtitle: "Piano e rinnovi", icon: CreditCard },
@@ -1120,12 +1181,24 @@ export const ProfilePage = () => {
         <Button variant="outline" onClick={() => navigate("/calendar")}><CalendarDays className="mr-2 h-4 w-4"/>Apri Pianificazione</Button>
       </div>}
 
-      {section === "notifications" && <Card><CardContent className="pt-5 space-y-3">
-        <p className="text-sm">Promemoria appuntamenti</p>
-        <p className="text-sm text-muted-foreground">Il promemoria iniziale è di 30 minuti. Puoi modificarlo nella scheda di ogni appuntamento.</p>
-        <p className="text-xs text-muted-foreground">Le preferenze globali dei canali di notifica saranno disponibili quando i relativi invii saranno attivati.</p>
-        <Button variant="outline" onClick={() => navigate("/calendar")}>Apri l'agenda</Button>
-      </CardContent></Card>}
+      {section === "notifications" && <div className="space-y-4">
+        <Card><CardHeader><CardTitle className="text-lg">Le mie notifiche</CardTitle></CardHeader><CardContent className="space-y-2">
+          {[["installer_quote_accepted", "Preventivo accettato"], ["installer_appointment_reminder", "Promemoria appuntamento"], ["installer_support_reply", "Risposta a ticket di assistenza"]].map(([key, label]) => <label key={key} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm"><span>{label}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: value === true } }))} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>)}
+          <p className="pt-2 text-xs text-muted-foreground">Gli avvisi operativi restano attivi per gli account esistenti finché non li disattivi.</p>
+        </CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-lg">Comunicazioni ai clienti</CardTitle></CardHeader><CardContent className="space-y-2">
+          {[["client_quote", "Invio del preventivo"], ["client_appointment_confirmed", "Conferma appuntamento"], ["client_appointment_modified", "Modifica appuntamento"], ["client_appointment_cancelled", "Annullamento appuntamento"], ["client_appointment_reminder", "Promemoria appuntamento"]].map(([key, label]) => <label key={key} className="flex min-h-12 items-center justify-between gap-3 rounded-xl border px-3 py-2 text-sm"><span>{label}</span><Checkbox checked={Boolean(notificationSettings.preferences[key])} onCheckedChange={(value) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, [key]: value === true } }))} className="data-[state=checked]:border-secondary data-[state=checked]:bg-secondary data-[state=checked]:text-secondary-foreground" /></label>)}
+          <label className="block pt-2 text-sm font-medium">Anticipo promemoria cliente<select className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.client_reminder_lead} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, client_reminder_lead: event.target.value } }))}><option value="24h">24 ore</option><option value="48h">48 ore</option><option value="custom">Personalizzato</option></select></label>
+          {notificationSettings.preferences.client_reminder_lead === "custom" && <label className="block text-sm font-medium">Minuti di anticipo<input type="number" min="15" max="10080" className="mt-1 h-11 w-full rounded-xl border bg-background px-3" value={notificationSettings.preferences.client_reminder_custom_minutes || ""} onChange={(event) => setNotificationSettings((current) => ({ ...current, preferences: { ...current.preferences, client_reminder_custom_minutes: event.target.value ? Number(event.target.value) : null } }))} /></label>}
+          <p className="pt-2 text-xs text-muted-foreground">I nuovi invii automatici ai clienti sono disattivati finché non li abiliti. Gli invii manuali restano disponibili.</p>
+        </CardContent></Card>
+        <Card><CardHeader><CardTitle className="text-lg">Modelli email</CardTitle></CardHeader><CardContent className="space-y-2">
+          <p className="text-xs text-muted-foreground">Variabili disponibili: {'{nome_cliente}'} {'{azienda}'} {'{tipo_lavoro}'} {'{data}'} {'{ora}'} {'{indirizzo}'} {'{telefono}'} {'{link_preventivo}'}</p>
+          {Object.entries(notificationSettings.templates).map(([key, template]) => <div key={key} className="rounded-xl border p-3"><button type="button" className="flex min-h-11 w-full items-center justify-between text-left font-medium" onClick={() => setNotificationOpenTemplate((current) => current === key ? null : key)}><span>{NOTIFICATION_TEMPLATE_LABELS[key] || key}</span><span className="text-xs text-muted-foreground">{notificationOpenTemplate === key ? "Chiudi" : "Modifica"}</span></button>{notificationOpenTemplate === key && <div className="mt-2 space-y-2"><Input aria-label={`Oggetto ${key}`} value={template.subject} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], subject: event.target.value } } }))} /><Textarea aria-label={`Testo ${key}`} rows={4} value={template.body} onChange={(event) => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...current.templates[key], body: event.target.value } } }))} /><div className="flex flex-wrap gap-2"><Button type="button" variant="outline" size="sm" onClick={() => setNotificationPreview(template)}>Anteprima</Button><Button type="button" variant="ghost" size="sm" onClick={() => setNotificationSettings((current) => ({ ...current, templates: { ...current.templates, [key]: { ...NOTIFICATION_DEFAULTS.templates[key] } } }))}>Ripristina modello originale</Button></div></div>}</div>)}
+          {notificationPreview && <div className="rounded-xl bg-muted/40 p-3 text-sm"><p className="font-medium">Anteprima: {notificationPreview.subject}</p><div className="mt-2 whitespace-pre-wrap text-muted-foreground">{notificationPreview.body}</div></div>}
+          <Button type="button" className="w-full" onClick={saveNotificationSettings} disabled={notificationBusy}>{notificationBusy ? "Salvataggio..." : "Salva modifiche"}</Button>
+        </CardContent></Card>
+      </div>}
 
       {section === "appearance" && <Card><CardContent className="space-y-6 pt-5">
         <div>

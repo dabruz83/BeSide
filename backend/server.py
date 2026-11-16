@@ -200,7 +200,8 @@ async def lifespan(_app: FastAPI):
             )
             logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
-        reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email))
+        await db.email_notification_jobs.create_index("job_id", unique=True)
+        reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email, send_configured_notification))
         deletion_tasks = await _resume_account_deletions()
         yield
     finally:
@@ -463,6 +464,10 @@ class UserUpdate(BaseModel):
 class PrivacyPreferencesUpdate(BaseModel):
     email_opt_in: bool = False
     profiling_opt_in: bool = False
+
+class NotificationSettingsUpdate(BaseModel):
+    preferences: Dict[str, Any] = Field(default_factory=dict)
+    templates: Dict[str, Any] = Field(default_factory=dict)
 
 class SupportTicketCreate(BaseModel):
     category: str = Field(default="other", max_length=40)
@@ -2468,6 +2473,81 @@ async def send_email(to_email: str, subject: str, html_content: str) -> bool:
 # notification call sites continue to use the same single email adapter.
 send_email_sendgrid = send_email
 
+NOTIFICATION_ALLOWED_VARIABLES = {
+    "nome_cliente", "azienda", "tipo_lavoro", "data", "ora",
+    "indirizzo", "telefono", "link_preventivo",
+}
+NOTIFICATION_DEFAULT_PREFERENCES = {
+    "installer_quote_accepted": True,
+    "installer_appointment_reminder": True,
+    "installer_support_reply": True,
+    "client_quote": False,
+    "client_appointment_confirmed": False,
+    "client_appointment_modified": False,
+    "client_appointment_cancelled": False,
+    "client_appointment_reminder": False,
+    "client_reminder_lead": "24h",
+    "client_reminder_custom_minutes": None,
+}
+NOTIFICATION_DEFAULT_TEMPLATES = {
+    "quote_accepted": {"subject": "Preventivo accettato • Beside", "body": "<p>Il preventivo di {nome_cliente} è stato accettato.</p>"},
+    "appointment_reminder": {"subject": "Promemoria appuntamento • Beside", "body": "<p>Promemoria per {nome_cliente}: appuntamento il {data} alle {ora}.</p>"},
+    "support_reply": {"subject": "Risposta alla tua richiesta • Beside", "body": "<p>Hai ricevuto una risposta alla tua richiesta di assistenza.</p>"},
+    "client_quote": {"subject": "Il tuo preventivo Beside", "body": "<p>Il tuo preventivo è disponibile: {link_preventivo}</p>"},
+    "client_appointment_confirmed": {"subject": "Appuntamento confermato • Beside", "body": "<p>Il tuo appuntamento è confermato per {data} alle {ora}.</p>"},
+    "client_appointment_modified": {"subject": "Appuntamento modificato • Beside", "body": "<p>Il tuo appuntamento è stato modificato.</p>"},
+    "client_appointment_cancelled": {"subject": "Appuntamento annullato • Beside", "body": "<p>Il tuo appuntamento è stato annullato.</p>"},
+    "client_appointment_reminder": {"subject": "Promemoria appuntamento • Beside", "body": "<p>Ti ricordiamo l'appuntamento del {data} alle {ora}.</p>"},
+}
+
+def _notification_settings(company: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    company = company or {}
+    preferences = dict(NOTIFICATION_DEFAULT_PREFERENCES)
+    preferences.update(company.get("notification_preferences") or {})
+    templates = {key: dict(value) for key, value in NOTIFICATION_DEFAULT_TEMPLATES.items()}
+    for key, value in (company.get("notification_templates") or {}).items():
+        if key in templates and isinstance(value, dict):
+            templates[key].update({"subject": str(value.get("subject", templates[key]["subject"])), "body": str(value.get("body", templates[key]["body"]))})
+    return {"preferences": preferences, "templates": templates}
+
+def validate_notification_template(template: Dict[str, Any]) -> Dict[str, str]:
+    subject = str(template.get("subject", "")).strip()
+    body = str(template.get("body", "")).strip()
+    if not subject or len(subject) > 200 or not body or len(body) > 12000:
+        raise ValueError("Oggetto e testo del modello sono obbligatori e hanno una lunghezza non valida")
+    tokens = set(re.findall(r"\{([a-zA-Z0-9_]+)\}", subject + "\n" + body))
+    invalid = tokens - NOTIFICATION_ALLOWED_VARIABLES
+    if invalid:
+        raise ValueError(f"Segnaposto non consentito: {', '.join(sorted(invalid))}")
+    lowered_body = body.lower()
+    if re.search(r"<script\b|javascript:|\son[a-z]+\s*=", lowered_body):
+        raise ValueError("Il modello contiene HTML non sicuro")
+    return {"subject": subject, "body": body}
+
+def render_notification_template(template: Dict[str, str], context: Dict[str, Any]) -> Dict[str, str]:
+    values = {key: html.escape(str(context.get(key, "")), quote=True) for key in NOTIFICATION_ALLOWED_VARIABLES}
+    return {field: re.sub(r"\{([a-zA-Z0-9_]+)\}", lambda match: values.get(match.group(1), match.group(0)), template[field]) for field in ("subject", "body")}
+
+async def send_configured_notification(company_id: str, event: str, recipient: str, context: Optional[Dict[str, Any]] = None, dedupe_key: Optional[str] = None) -> Dict[str, str]:
+    company = await db.companies.find_one({"company_id": company_id}, {"_id": 0})
+    if not company or _billing_is_suspended(company):
+        return {"status": "disabled"}
+    settings = _notification_settings(company)
+    preference_key = {"quote_accepted": "installer_quote_accepted", "appointment_reminder": "installer_appointment_reminder", "support_reply": "installer_support_reply"}.get(event, event)
+    if not settings["preferences"].get(preference_key, False):
+        return {"status": "disabled"}
+    if not recipient:
+        return {"status": "failed"}
+    job_id = f"{event}:{company_id}:{recipient}:{dedupe_key or uuid.uuid4().hex}"
+    try:
+        await db.email_notification_jobs.insert_one({"job_id": job_id, "company_id": company_id, "event": event, "recipient": recipient, "status": "sending", "attempts": 1, "created_at": datetime.now(timezone.utc).isoformat()})
+    except DuplicateKeyError:
+        return {"status": "duplicate"}
+    rendered = render_notification_template(settings["templates"].get(event, NOTIFICATION_DEFAULT_TEMPLATES.get(event, {"subject": event, "body": ""})), context or {})
+    delivered = await send_email(recipient, rendered["subject"], rendered["body"])
+    await db.email_notification_jobs.update_one({"job_id": job_id}, {"$set": {"status": "sent" if delivered else "failed", "completed_at": datetime.now(timezone.utc).isoformat()}})
+    return {"status": "sent" if delivered else "failed"}
+
 async def send_registration_notification(user_email: str, business_name: str, registration_date: str):
     """Send notification email to admin when a new user registers"""
     safe_business_name = html.escape(business_name)
@@ -4415,6 +4495,44 @@ async def account_deletion_status(operation_id: str, current_user: Dict = Depend
 
 register_calendar_routes(api_router, db, company_scope, require_company_roles)
 
+@api_router.get("/notifications/settings")
+async def get_notification_settings(current_user: Dict = Depends(get_current_user)):
+    company = await db.companies.find_one({"company_id": current_user.get("company_id")}, {"_id": 0})
+    return _notification_settings(company)
+
+@api_router.put("/notifications/settings")
+async def update_notification_settings(payload: NotificationSettingsUpdate, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
+    existing_company = await db.companies.find_one({"company_id": current_user.get("company_id")}, {"_id": 0})
+    existing_settings = _notification_settings(existing_company)
+    preferences = dict(NOTIFICATION_DEFAULT_PREFERENCES)
+    preferences.update(existing_settings["preferences"])
+    incoming_preferences = payload.preferences or {}
+    boolean_keys = {key for key, value in NOTIFICATION_DEFAULT_PREFERENCES.items() if isinstance(value, bool)}
+    for key in boolean_keys:
+        if key in incoming_preferences:
+            preferences[key] = bool(incoming_preferences[key])
+    if incoming_preferences.get("client_reminder_lead") in {"24h", "48h", "custom"}:
+        preferences["client_reminder_lead"] = incoming_preferences["client_reminder_lead"]
+    if incoming_preferences.get("client_reminder_custom_minutes") is not None:
+        custom_minutes = int(incoming_preferences["client_reminder_custom_minutes"])
+        if not 15 <= custom_minutes <= 10080:
+            raise HTTPException(status_code=422, detail="Anticipo personalizzato non valido")
+        preferences["client_reminder_custom_minutes"] = custom_minutes
+    templates = dict(existing_settings["templates"])
+    for key, value in (payload.templates or {}).items():
+        if key not in NOTIFICATION_DEFAULT_TEMPLATES or not isinstance(value, dict):
+            raise HTTPException(status_code=422, detail="Modello email non valido")
+        try:
+            templates[key] = validate_notification_template(value)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    await db.companies.update_one(
+        {"company_id": current_user.get("company_id")},
+        {"$set": {"notification_preferences": preferences, "notification_templates": templates, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    company = await db.companies.find_one({"company_id": current_user.get("company_id")}, {"_id": 0})
+    return _notification_settings(company)
+
 
 @api_router.post("/jobs", response_model=JobResponse)
 async def create_job(
@@ -4679,15 +4797,10 @@ async def accept_quote(token: str, acceptance: QuoteAcceptance, background_tasks
             }
             amount = f"{float(job.get('quote_amount') or 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             background_tasks.add_task(
-                send_email_sendgrid, owner["email"], "Preventivo accettato • Beside",
-                "<div style='font-family:Arial,sans-serif;text-align:center'>"
-                "<div style='font-size:48px;color:#16a34a'>✓</div>"
-                "<h2>Preventivo accettato</h2>"
-                f"<p><strong>{html.escape(job['client_name'])}</strong><br>"
-                f"{html.escape(job_labels.get(job.get('job_type'), 'Lavoro'))}<br>"
-                f"<strong>€ {amount}</strong></p>"
-                f'<p><a href="{html.escape(calendar_url, quote=True)}" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#1e3a5f;color:white;text-decoration:none">Aggiungi al calendario</a></p>'
-                "</div>",
+                send_configured_notification,
+                job["company_id"], "quote_accepted", owner["email"],
+                {"nome_cliente": job.get("client_name"), "azienda": (company or {}).get("name"), "tipo_lavoro": job_labels.get(job.get("job_type"), "Lavoro"), "link_preventivo": calendar_url},
+                job["job_id"],
             )
 
     # If accepted, add to lead sources
