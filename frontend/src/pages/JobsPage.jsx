@@ -236,6 +236,16 @@ export const JobsPage = () => {
     toast.success("Link copiato!");
   };
 
+  const copyPostWorkSupportLink = async (job) => {
+    try {
+      const { data } = await axios.post(`${API}/jobs/${job.job_id}/post-work-support-link`);
+      await navigator.clipboard.writeText(data.url);
+      toast.success("Link assistenza copiato!");
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile generare il link assistenza.");
+    }
+  };
+
   const getJobTypeLabel = (type) => JOB_TYPES.find(j => j.value === type)?.label || LEGACY_JOB_TYPE_LABELS[type] || type;
   const getVehicleTypeLabel = (type) => VEHICLE_TYPES.find(v => v.value === type)?.label || type;
 
@@ -591,6 +601,9 @@ export const JobsPage = () => {
                         >
                           {job.delivered ? "Annulla consegna" : "Segna consegnato"}
                         </Button>
+                        <Button variant="outline" size="sm" onClick={() => copyPostWorkSupportLink(job)}>
+                          <Copy className="mr-1 h-4 w-4" /> Link assistenza
+                        </Button>
                         <Button
                           variant="ghost"
                           size="icon"
@@ -661,6 +674,9 @@ export const JobsPage = () => {
                             </Button>
                             <Button size="sm" variant="outline" onClick={() => setDelivered(quote, Boolean(quote.delivered) ? false : true)}>
                               {quote.delivered ? "Annulla consegna" : "Segna consegnato"}
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => copyPostWorkSupportLink(quote)}>
+                              <Copy className="mr-1 h-4 w-4" /> Link assistenza
                             </Button>
                             <DropdownMenu>
                               <DropdownMenuTrigger asChild>

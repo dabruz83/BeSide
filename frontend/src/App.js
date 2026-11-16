@@ -30,6 +30,7 @@ import { OnboardingWizardPage } from "@/pages/OnboardingWizardPage";
 import { ProfilePage } from "@/pages/ProfilePage";
 import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
 import { QuotePage } from "@/pages/QuotePage";
+import { PostWorkSupportPage } from "@/pages/PostWorkSupportPage";
 import { AdminPage } from "@/pages/AdminPage";
 import { ConfiguratorPage } from "@/pages/ConfiguratorPage";
 import { LegalTermsPage } from "@/pages/LegalTermsPage";
@@ -292,6 +293,7 @@ const AppRouter = () => {
       <Route path="/onboarding/client/:token" element={<ClientOnboardingPage />} />
       <Route path="/personalizza" element={<ProtectedRoute><OnboardingWizardPage /></ProtectedRoute>} />
       <Route path="/quote/:token" element={<QuotePage />} />
+      <Route path="/post-work/:token" element={<PostWorkSupportPage />} />
       <Route path="/admin" element={<AdminPage />} />
       
       {/* Protected Routes */}

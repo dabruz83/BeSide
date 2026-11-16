@@ -202,6 +202,9 @@ async def lifespan(_app: FastAPI):
             logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
         await db.email_notification_jobs.create_index("job_id", unique=True)
+        await db.post_work_support_links.create_index("token_hash", unique=True)
+        await db.post_work_support_links.create_index([("company_id", 1), ("job_id", 1)])
+        await db.post_work_support_requests.create_index([("company_id", 1), ("job_id", 1), ("created_at", -1)])
         reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email, send_configured_notification))
         post_work_task = asyncio.create_task(run_post_work_notification_worker())
         deletion_tasks = await _resume_account_deletions()
@@ -567,6 +570,10 @@ class PostWorkUpdate(BaseModel):
     enabled: bool
     days: int = Field(default=30, ge=15, le=60)
     conditions: Optional[str] = Field(default=None, max_length=4000)
+
+class PostWorkSupportStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(new|in_progress|resolved)$")
+    reply: Optional[str] = Field(default=None, max_length=4000)
 
 # Quote Models
 class QuoteAcceptance(BaseModel):
@@ -2501,7 +2508,7 @@ send_email_sendgrid = send_email
 
 NOTIFICATION_ALLOWED_VARIABLES = {
     "nome_cliente", "azienda", "tipo_lavoro", "data", "ora",
-    "indirizzo", "telefono", "link_preventivo",
+    "indirizzo", "telefono", "link_preventivo", "link_assistenza",
 }
 NOTIFICATION_DEFAULT_PREFERENCES = {
     "installer_quote_accepted": True,
@@ -2527,8 +2534,8 @@ NOTIFICATION_DEFAULT_TEMPLATES = {
     "client_appointment_modified": {"subject": "Appuntamento modificato • Beside", "body": "<p>Il tuo appuntamento è stato modificato.</p>"},
     "client_appointment_cancelled": {"subject": "Appuntamento annullato • Beside", "body": "<p>Il tuo appuntamento è stato annullato.</p>"},
     "client_appointment_reminder": {"subject": "Promemoria appuntamento • Beside", "body": "<p>Ti ricordiamo l'appuntamento del {data} alle {ora}.</p>"},
-    "postwork_thanks": {"subject": "Grazie per aver scelto Beside", "body": "<p>Grazie {nome_cliente} per aver scelto {azienda}.</p>"},
-    "postwork_check_invite": {"subject": "Controllo post-lavorazione", "body": "<p>È disponibile il controllo post-lavorazione per il lavoro eseguito.</p>"},
+    "postwork_thanks": {"subject": "Grazie per aver scelto Beside", "body": "<p>Grazie {nome_cliente} per aver scelto {azienda}.</p><p>{link_assistenza}</p>"},
+    "postwork_check_invite": {"subject": "Controllo post-lavorazione", "body": "<p>È disponibile il controllo post-lavorazione per il lavoro eseguito.</p><p>{link_assistenza}</p>"},
 }
 
 def _notification_settings(company: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2588,12 +2595,16 @@ async def _notification_company_context(company_id: str, job: Optional[Dict[str,
     company = await db.companies.find_one({"company_id": company_id}, {"_id": 0}) or {}
     owner = await db.users.find_one({"user_id": company.get("owner_user_id"), "company_id": company_id}, {"_id": 0, "business_name": 1, "business_info": 1}) or {}
     info = owner.get("business_info") or {}
+    support_url = ""
+    if job and job.get("post_work_support_token"):
+        support_url = f"{FRONTEND_PUBLIC_URL}/post-work/{job['post_work_support_token']}"
     return {
         "azienda": info.get("commercial_name") or company.get("name") or owner.get("business_name") or "",
         "indirizzo": info.get("public_address") or info.get("indirizzo") or "",
         "telefono": info.get("telefono") or "",
         "nome_cliente": (job or {}).get("client_name") or "",
         "tipo_lavoro": (job or {}).get("job_type") or "",
+        "link_assistenza": support_url,
     }
 
 async def run_post_work_notification_worker() -> None:
@@ -4740,6 +4751,111 @@ async def get_job(job_id: str, current_user: Dict = Depends(get_current_user)):
     if not job:
         raise HTTPException(status_code=404, detail="Lavoro non trovato")
     return job
+
+def _post_work_support_token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+def _post_work_support_url(token: str) -> str:
+    return f"{FRONTEND_PUBLIC_URL}/post-work/{token}"
+
+@api_router.post("/jobs/{job_id}/post-work-support-link")
+async def create_post_work_support_link(job_id: str, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
+    """Create or return the revocable customer link for a specific job."""
+    job = await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 0, "job_id": 1, "client_name": 1, "post_work_support_token": 1})
+    if not job:
+        raise HTTPException(status_code=404, detail="Lavoro non trovato")
+    existing = await db.post_work_support_links.find_one({"job_id": job_id, "company_id": current_user["company_id"], "revoked": {"$ne": True}}, {"_id": 0, "expires_at": 1})
+    now = datetime.now(timezone.utc)
+    if existing and (not existing.get("expires_at") or parse_datetime(existing["expires_at"]) > now):
+        if job.get("post_work_support_token"):
+            return {"url": _post_work_support_url(job["post_work_support_token"]), "expires_at": existing.get("expires_at")}
+    token = secrets.token_urlsafe(32)
+    expires_at = (now + timedelta(days=180)).isoformat()
+    await db.post_work_support_links.update_many({"job_id": job_id, "company_id": current_user["company_id"], "revoked": {"$ne": True}}, {"$set": {"revoked": True, "revoked_at": now.isoformat()}})
+    await db.post_work_support_links.insert_one({
+        "token_hash": _post_work_support_token_hash(token),
+        "job_id": job_id,
+        "company_id": current_user["company_id"],
+        "created_at": now.isoformat(),
+        "expires_at": expires_at,
+        "revoked": False,
+    })
+    await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$set": {"post_work_support_token": token}})
+    return {"url": _post_work_support_url(token), "expires_at": expires_at}
+
+@api_router.delete("/jobs/{job_id}/post-work-support-link")
+async def revoke_post_work_support_link(job_id: str, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
+    result = await db.post_work_support_links.update_many({"job_id": job_id, "company_id": current_user["company_id"], "revoked": {"$ne": True}}, {"$set": {"revoked": True, "revoked_at": datetime.now(timezone.utc).isoformat()}})
+    await db.jobs.update_one(company_scope(current_user, job_id=job_id), {"$unset": {"post_work_support_token": ""}})
+    return {"status": "revoked", "revoked": result.modified_count > 0}
+
+@api_router.get("/jobs/{job_id}/post-work-support/requests")
+async def list_post_work_support_requests(job_id: str, current_user: Dict = Depends(require_company_roles("owner", "admin", "member"))):
+    if not await db.jobs.find_one(company_scope(current_user, job_id=job_id), {"_id": 1}):
+        raise HTTPException(status_code=404, detail="Lavoro non trovato")
+    requests = await db.post_work_support_requests.find({"job_id": job_id, "company_id": current_user["company_id"]}, {"_id": 0}).sort("created_at", -1).to_list(100)
+    return {"requests": requests}
+
+@api_router.patch("/jobs/{job_id}/post-work-support/requests/{request_id}")
+async def update_post_work_support_request(job_id: str, request_id: str, data: PostWorkSupportStatusUpdate, current_user: Dict = Depends(require_company_roles("owner", "admin"))):
+    if data.reply:
+        _validate_support_content("", data.reply)
+    now = datetime.now(timezone.utc).isoformat()
+    update: Dict[str, Any] = {"status": data.status, "updated_at": now}
+    if data.reply and data.reply.strip():
+        update["$push"] = {"messages": {"author_type": "installer", "message": data.reply.strip(), "created_at": now}}
+    if "$push" in update:
+        push = update.pop("$push")
+        result = await db.post_work_support_requests.update_one({"request_id": request_id, "job_id": job_id, "company_id": current_user["company_id"]}, {"$set": update, "$push": push})
+    else:
+        result = await db.post_work_support_requests.update_one({"request_id": request_id, "job_id": job_id, "company_id": current_user["company_id"]}, {"$set": update})
+    if result.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Segnalazione non trovata")
+    return {"status": data.status}
+
+@api_router.get("/post-work/{token}")
+async def get_public_post_work_support(token: str, request: Request):
+    await enforce_rate_limit(request, "post_work_support_view", limit=30, window_seconds=60 * 60)
+    link = await db.post_work_support_links.find_one({"token_hash": _post_work_support_token_hash(token), "revoked": {"$ne": True}}, {"_id": 0, "job_id": 1, "company_id": 1, "expires_at": 1})
+    if not link or (link.get("expires_at") and parse_datetime(link["expires_at"]) <= datetime.now(timezone.utc)):
+        raise HTTPException(status_code=404, detail="Link assistenza non valido o scaduto")
+    job = await db.jobs.find_one({"job_id": link["job_id"], "company_id": link["company_id"]}, {"_id": 0, "client_name": 1, "job_type": 1})
+    if not job:
+        raise HTTPException(status_code=404, detail="Lavorazione non disponibile")
+    return {"client_name": job.get("client_name", ""), "job_type": job.get("job_type", "")}
+
+@api_router.post("/post-work/{token}/requests")
+async def create_public_post_work_support_request(
+    token: str,
+    request: Request,
+    message: str = Form(...),
+    photos: Optional[List[UploadFile]] = File(None),
+):
+    await enforce_rate_limit(request, "post_work_support_submit", limit=3, window_seconds=60 * 60)
+    link = await db.post_work_support_links.find_one({"token_hash": _post_work_support_token_hash(token), "revoked": {"$ne": True}}, {"_id": 0, "job_id": 1, "company_id": 1, "expires_at": 1})
+    if not link or (link.get("expires_at") and parse_datetime(link["expires_at"]) <= datetime.now(timezone.utc)):
+        raise HTTPException(status_code=404, detail="Link assistenza non valido o scaduto")
+    text = message.strip()
+    if not text or len(text) > 4000:
+        raise HTTPException(status_code=422, detail="Descrizione non valida")
+    _validate_support_content("", text)
+    stored_photos = []
+    for photo in (photos or [])[:4]:
+        if photo.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+            raise HTTPException(status_code=422, detail="Sono consentite solo immagini JPG, PNG o WEBP")
+        content = await photo.read(5 * 1024 * 1024 + 1)
+        if len(content) > 5 * 1024 * 1024:
+            raise HTTPException(status_code=413, detail="Immagine troppo grande")
+        stored_photos.append({"content_type": photo.content_type, "filename": Path(photo.filename or "foto").name[:120], "data_base64": base64.b64encode(content).decode("ascii")})
+    now_iso = datetime.now(timezone.utc).isoformat()
+    request_id = f"pws_{uuid.uuid4().hex[:16]}"
+    await db.post_work_support_requests.insert_one({
+        "request_id": request_id, "job_id": link["job_id"], "company_id": link["company_id"],
+        "status": "new", "created_at": now_iso, "updated_at": now_iso,
+        "messages": [{"author_type": "customer", "message": text, "created_at": now_iso}],
+        "photos": stored_photos,
+    })
+    return {"request_id": request_id, "status": "new", "message": "Segnalazione inviata correttamente"}
 
 @api_router.post("/jobs/{job_id}/delivery")
 async def update_job_delivery(job_id: str, data: JobDeliveryRequest, current_user: Dict = Depends(require_company_roles("owner", "admin"))):

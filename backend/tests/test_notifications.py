@@ -19,11 +19,23 @@ def test_post_work_models_keep_safe_defaults_and_delivery_validation():
     assert server.JobDeliveryRequest().delivered is True
 
 
-def test_post_work_automations_are_independent_and_support_link_is_not_default():
+def test_post_work_automations_are_independent_and_support_link_is_explicit():
     assert server.NOTIFICATION_DEFAULT_PREFERENCES["postwork_thanks"] is False
     assert server.NOTIFICATION_DEFAULT_PREFERENCES["postwork_check_invite"] is False
-    assert "link_assistenza" not in server.NOTIFICATION_ALLOWED_VARIABLES
-    assert "support" not in server.NOTIFICATION_DEFAULT_TEMPLATES["postwork_check_invite"]["body"]
+    assert "link_assistenza" in server.NOTIFICATION_ALLOWED_VARIABLES
+    assert "{link_assistenza}" in server.NOTIFICATION_DEFAULT_TEMPLATES["postwork_check_invite"]["body"]
+
+
+def test_post_work_support_tokens_are_non_enumerable_and_context_uses_company_name():
+    token = "random-token-value"
+    assert server._post_work_support_token_hash(token) != token
+    assert server._post_work_support_token_hash(token) == server._post_work_support_token_hash(token)
+    rendered = server.render_notification_template(
+        {"subject": "Assistenza", "body": "{azienda} {link_assistenza}"},
+        {"azienda": "Officina Test", "link_assistenza": "https://app.example/post-work/opaque"},
+    )
+    assert "Officina Test" in rendered["body"]
+    assert "opaque" in rendered["body"]
 
 
 def test_notification_template_rejects_unknown_variables():
