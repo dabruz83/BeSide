@@ -590,7 +590,7 @@ export const CashPlanSection = () => {
           }}
           className="space-y-4"
         >
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList>
             <TabsTrigger value="actual" data-testid="cash-plan-actual-tab">Consuntivo</TabsTrigger>
             <TabsTrigger value="forecast" data-testid="cash-plan-forecast-tab">Previsione</TabsTrigger>
           </TabsList>

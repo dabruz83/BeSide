@@ -271,7 +271,7 @@ export const MarketingPage = () => {
       </div>
 
       <Tabs defaultValue="analytics" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-2">
+        <TabsList>
           <TabsTrigger value="analytics">
             <TrendingUp className="w-4 h-4 mr-2" />
             Analytics & ROI

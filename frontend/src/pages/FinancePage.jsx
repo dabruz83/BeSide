@@ -227,7 +227,7 @@ export const FinancePage = () => {
       </div>
 
       <Tabs defaultValue="calculator" className="space-y-6">
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList>
           <TabsTrigger value="calculator" data-testid="tab-calculator">
             <Calculator className="w-4 h-4 mr-2" />
             Calcolatore

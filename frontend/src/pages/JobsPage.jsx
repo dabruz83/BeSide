@@ -514,7 +514,7 @@ export const JobsPage = () => {
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-3">
+        <TabsList>
           <TabsTrigger value="lavori" data-testid="tab-lavori">
             <Wrench className="w-4 h-4 mr-2" />
             Lavori ({completedJobs.length})
