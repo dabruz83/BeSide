@@ -748,7 +748,7 @@ export const CalendarPage = () => {
                 <div className="flex items-center justify-between gap-3">
                   <Label htmlFor="appointment-work-area">Area di lavoro *</Label>
                   <button type="button" onClick={openAreaManager}
-                    className="text-sm font-medium text-primary hover:underline">
+                    className="inline-flex min-h-9 items-center rounded-full px-3 text-sm font-medium text-primary hover:bg-primary/5 hover:underline">
                     Gestisci aree
                   </button>
                 </div>
