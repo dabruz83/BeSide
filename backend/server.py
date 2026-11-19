@@ -3245,8 +3245,13 @@ async def passkey_registration_options(
     current_user: Dict[str, Any] = Depends(require_recent_mfa_user),
 ):
     _require_webauthn_enabled()
-    await enforce_rate_limit(request, "passkey_registration_options", PASSKEY_MAX_ATTEMPTS, 15 * 60,
-                             identifier=current_user["user_id"])
+    await enforce_rate_limit(
+        request,
+        "passkey_registration_options",
+        limit=PASSKEY_MAX_ATTEMPTS,
+        window_seconds=15 * 60,
+        identifier=current_user["user_id"],
+    )
     deps = _webauthn_dependencies()
     existing = await db.passkeys.find({"user_id": current_user["user_id"], "revoked_at": None}, {"credential_id": 1}).to_list(50)
     descriptors = [
@@ -3288,8 +3293,13 @@ async def passkey_registration_verify(
     current_user: Dict[str, Any] = Depends(require_recent_mfa_user),
 ):
     _require_webauthn_enabled()
-    await enforce_rate_limit(request, "passkey_registration_verify", PASSKEY_MAX_ATTEMPTS, 15 * 60,
-                             identifier=current_user["user_id"])
+    await enforce_rate_limit(
+        request,
+        "passkey_registration_verify",
+        limit=PASSKEY_MAX_ATTEMPTS,
+        window_seconds=15 * 60,
+        identifier=current_user["user_id"],
+    )
     challenge_id = str(data.credential.get("challenge_id") or data.credential.get("challengeId") or "")
     if not challenge_id:
         raise HTTPException(status_code=400, detail="Challenge passkey mancante")
@@ -3327,7 +3337,12 @@ async def passkey_registration_verify(
 @api_router.post("/auth/passkeys/authentication/options")
 async def passkey_authentication_options(request: Request):
     _require_webauthn_enabled()
-    await enforce_rate_limit(request, "passkey_authentication_options", 15, 15 * 60)
+    await enforce_rate_limit(
+        request,
+        "passkey_authentication_options",
+        limit=15,
+        window_seconds=15 * 60,
+    )
     deps = _webauthn_dependencies()
     options = deps["generate_authentication_options"](
         rp_id=WEBAUTHN_RP_ID,
@@ -3352,7 +3367,12 @@ async def passkey_authentication_options(request: Request):
 @api_router.post("/auth/passkeys/authentication/verify")
 async def passkey_authentication_verify(data: PasskeyCredentialRequest, response: Response, request: Request):
     _require_webauthn_enabled()
-    await enforce_rate_limit(request, "passkey_authentication_verify", 10, 15 * 60)
+    await enforce_rate_limit(
+        request,
+        "passkey_authentication_verify",
+        limit=10,
+        window_seconds=15 * 60,
+    )
     challenge_id = str(data.credential.get("challenge_id") or data.credential.get("challengeId") or "")
     credential_id = str(data.credential.get("id") or data.credential.get("rawId") or "")
     if not challenge_id or not credential_id:
