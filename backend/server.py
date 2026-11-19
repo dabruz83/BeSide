@@ -3352,6 +3352,8 @@ async def passkey_authentication_verify(data: PasskeyCredentialRequest, response
     user = await _load_active_user(passkey["user_id"])
     if email_verification_blocks_access(user) or user.get("role") == RECOVERY_CONTACT_ROLE:
         raise HTTPException(status_code=403, detail="Account non abilitato all'accesso")
+    _ensure_billing_scope(request, user)
+    _ensure_deletion_scope(request, user)
     deps = _webauthn_dependencies()
     try:
         parsed_credential = deps["parse_authentication_credential_json"](data.credential)
