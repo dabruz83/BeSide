@@ -125,7 +125,12 @@ export const ProfilePage = () => {
   const [saving, setSaving] = useState(false);
   const [section, setSection] = useState(null);
   const [activitySubsection, setActivitySubsection] = useState("info");
-  const [personal, setPersonal] = useState({ first_name: user?.first_name || "", last_name: "" });
+  const [personal, setPersonal] = useState({ first_name: user?.first_name || "", last_name: "", picture: user?.picture || "" });
+  const [securityPanel, setSecurityPanel] = useState(null);
+  const [passwordChange, setPasswordChange] = useState({ current_password: "", new_password: "", confirm_password: "", code: "" });
+  const [passwordChangeBusy, setPasswordChangeBusy] = useState(false);
+  const [passkeyNameModal, setPasskeyNameModal] = useState(null);
+  const [passkeyRevokeTarget, setPasskeyRevokeTarget] = useState(null);
   const [accountReason, setAccountReason] = useState("");
   const [accountReasonDetails, setAccountReasonDetails] = useState("");
   const [searchingCompany, setSearchingCompany] = useState(false);
@@ -222,7 +227,7 @@ export const ProfilePage = () => {
   useEffect(() => {
     axios.get(`${API}/auth/onboarding-profile`).then(({ data }) => {
       const p = data.personal || {};
-      setPersonal({ first_name: p.first_name || user?.first_name || "", last_name: p.last_name || "" });
+      setPersonal({ first_name: p.first_name || user?.first_name || "", last_name: p.last_name || "", picture: user?.picture || "" });
     }).catch(() => {});
   }, [user?.user_id]);
 
@@ -280,10 +285,7 @@ export const ProfilePage = () => {
       const { data } = await axios.post(`${API}/auth/passkeys/registration/options`);
       const { challenge_id: challengeId, ...optionsJSON } = data;
       const credential = await startRegistration({ optionsJSON });
-      const name = window.prompt("Nome della passkey", "iPhone / Face ID") || "Passkey";
-      await axios.post(`${API}/auth/passkeys/registration/verify`, { credential: { ...credential, challenge_id: challengeId }, name });
-      toast.success("Passkey registrata.");
-      await loadPasskeys();
+      setPasskeyNameModal({ credential: { ...credential, challenge_id: challengeId }, name: "iPhone / Face ID" });
     } catch (error) {
       if (error?.name === "NotAllowedError" || error?.name === "AbortError") toast.info("Registrazione passkey annullata.");
       else toast.error(error.response?.data?.detail || "Impossibile registrare la passkey.");
@@ -292,11 +294,29 @@ export const ProfilePage = () => {
     }
   };
 
-  const renamePasskey = async (credentialId, currentName) => {
-    const name = window.prompt("Nome della passkey", currentName || "Passkey");
-    if (!name?.trim()) return;
+  const completePasskeyRegistration = async () => {
+    if (!passkeyNameModal?.name?.trim()) return;
+    setPasskeyBusy(true);
     try {
-      await axios.patch(`${API}/auth/passkeys/${encodeURIComponent(credentialId)}`, { name: name.trim() });
+      await axios.post(`${API}/auth/passkeys/registration/verify`, { credential: passkeyNameModal.credential, name: passkeyNameModal.name.trim() });
+      setPasskeyNameModal(null);
+      toast.success("Passkey registrata.");
+      await loadPasskeys();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile registrare la passkey.");
+    } finally { setPasskeyBusy(false); }
+  };
+
+  const renamePasskey = async (credentialId, currentName) => {
+    const name = currentName || "Passkey";
+    setPasskeyNameModal({ credentialId, name, rename: true });
+  };
+
+  const completePasskeyRename = async () => {
+    if (!passkeyNameModal?.name?.trim() || !passkeyNameModal.credentialId) return;
+    try {
+      await axios.patch(`${API}/auth/passkeys/${encodeURIComponent(passkeyNameModal.credentialId)}`, { name: passkeyNameModal.name.trim() });
+      setPasskeyNameModal(null);
       await loadPasskeys();
     } catch (error) {
       toast.error(error.response?.data?.detail || "Impossibile rinominare la passkey.");
@@ -304,10 +324,15 @@ export const ProfilePage = () => {
   };
 
   const revokePasskey = async (credentialId) => {
-    if (!window.confirm("Revocare questa passkey? Dovrai usare un altro metodo di accesso.")) return;
+    setPasskeyRevokeTarget(credentialId);
+  };
+
+  const confirmRevokePasskey = async () => {
+    if (!passkeyRevokeTarget) return;
     setPasskeyBusy(true);
     try {
-      await axios.delete(`${API}/auth/passkeys/${encodeURIComponent(credentialId)}`);
+      await axios.delete(`${API}/auth/passkeys/${encodeURIComponent(passkeyRevokeTarget)}`);
+      setPasskeyRevokeTarget(null);
       toast.success("Passkey revocata.");
       await loadPasskeys();
     } catch (error) {
@@ -315,6 +340,37 @@ export const ProfilePage = () => {
     } finally {
       setPasskeyBusy(false);
     }
+  };
+
+  const handleProfilePhoto = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type) || file.size > 300 * 1024) {
+      toast.error("Usa un'immagine PNG, JPG o WebP di massimo 300 KB.");
+      event.target.value = "";
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => setPersonal((current) => ({ ...current, picture: String(reader.result) }));
+    reader.onerror = () => toast.error("Impossibile leggere la foto.");
+    reader.readAsDataURL(file);
+  };
+
+  const changePassword = async (event) => {
+    event.preventDefault();
+    if (passwordChange.new_password !== passwordChange.confirm_password) {
+      toast.error("Le nuove password non coincidono.");
+      return;
+    }
+    setPasswordChangeBusy(true);
+    try {
+      await axios.post(`${API}/auth/password/change`, passwordChange);
+      setPasswordChange({ current_password: "", new_password: "", confirm_password: "", code: "" });
+      toast.success("Password aggiornata.");
+    } catch (error) {
+      setPasswordChange((current) => ({ ...current, code: "" }));
+      toast.error(error.response?.data?.detail || "Impossibile aggiornare la password.");
+    } finally { setPasswordChangeBusy(false); }
   };
 
   const loadSupportTickets = async () => {
@@ -398,11 +454,11 @@ export const ProfilePage = () => {
   };
 
   useEffect(() => {
-    if (section === "personal" && user?.role === "owner") loadCollaborators();
+    if (section === "activity" && user?.role === "owner") loadCollaborators();
   }, [section, user?.user_id, user?.role]);
 
   useEffect(() => {
-    if (section !== "personal" || !user?.user_id) return;
+    if (section !== "security" || !user?.user_id) return;
     axios.get(`${API}/auth/email-change/status`).then(({ data }) => setEmailChange(data)).catch(() => {});
   }, [section, user?.user_id]);
 
@@ -609,7 +665,7 @@ export const ProfilePage = () => {
   const handleSave = async () => {
     setSaving(true);
     try {
-      const payload = section === "personal" ? personal
+      const payload = section === "personal" ? { first_name: personal.first_name, last_name: personal.last_name, picture: personal.picture }
         : section === "activity" ? { business_name: formData.business_name, team_size: formData.team_size, services: formData.services, tax_regime: formData.tax_regime, business_info: businessInfo }
         : section === "fiscal" ? { tax_regime: formData.tax_regime, business_info: businessInfo }
         : section === "quotes" ? { business_info: businessInfo } : null;
@@ -822,55 +878,22 @@ export const ProfilePage = () => {
         </>
       )}
 
-      {section === "personal" && <Card><CardContent className="space-y-4 pt-5">
-        <div className="grid grid-cols-2 gap-3">
-          <div className="space-y-1"><Label>Nome</Label><Input value={personal.first_name} onChange={e => setPersonal(p => ({...p, first_name: e.target.value}))} /></div>
-          <div className="space-y-1"><Label>Cognome</Label><Input value={personal.last_name} onChange={e => setPersonal(p => ({...p, last_name: e.target.value}))} /></div>
+      {section === "personal" && <Card><CardContent className="space-y-5 pt-5">
+        <div className="flex flex-col items-center gap-3 rounded-2xl bg-muted/30 p-4 sm:flex-row">
+          <Avatar className="h-28 w-28"><AvatarImage src={personal.picture || user?.picture} alt="Foto profilo" /><AvatarFallback className="bg-primary/10 text-2xl text-primary">{getInitials(`${personal.first_name} ${personal.last_name}`.trim() || user?.name)}</AvatarFallback></Avatar>
+          <div className="flex flex-wrap justify-center gap-2 sm:justify-start"><label className="inline-flex min-h-11 cursor-pointer items-center rounded-full border px-4 py-2 text-sm"><input type="file" accept="image/png,image/jpeg,image/webp" className="sr-only" onChange={handleProfilePhoto} />Sostituisci foto</label><Button type="button" variant="outline" onClick={() => setPersonal((current) => ({ ...current, picture: "" }))} disabled={!personal.picture && !user?.picture}>Rimuovi foto</Button></div>
         </div>
-        <div className="space-y-2"><Label>Email di accesso</Label><div className="flex gap-2"><Input value={user?.email || ""} disabled /><Button type="button" variant="outline" onClick={() => setEmailChangeOpen(value => !value)}>Modifica</Button></div>{emailChange.status === "pending" && <div className="rounded-md border border-primary/30 bg-primary/5 p-3 text-xs"><p>Verifica richiesta in attesa per {emailChange.email}.</p><Button type="button" variant="link" className="h-auto px-0" disabled={emailChangeBusy} onClick={cancelEmailChange}>Annulla richiesta</Button></div>}{emailChangeOpen && <form onSubmit={requestEmailChange} className="space-y-2 rounded-md border p-3"><Input type="email" required placeholder="Nuovo indirizzo email" value={emailChangeForm.email} onChange={e => setEmailChangeForm(f => ({ ...f, email: e.target.value }))}/><Input inputMode="numeric" maxLength={6} required placeholder="Codice Authenticator" value={emailChangeForm.code} onChange={e => setEmailChangeForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code"/><p className="text-xs text-muted-foreground">L'indirizzo attuale resta attivo fino alla verifica del nuovo.</p><Button type="submit" className="w-full" disabled={emailChangeBusy}>Invia verifica</Button></form>}</div>
-        <div className="space-y-1"><Label>Ruolo</Label><Input value={user?.role || ""} disabled /></div>
+        <p className="text-xs text-muted-foreground">PNG, JPG o WebP, massimo 300 KB. La foto è personale e non modifica il logo dell'attività.</p>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2"><div className="space-y-1"><Label>Nome</Label><Input value={personal.first_name} onChange={e => setPersonal(p => ({...p, first_name: e.target.value}))} /></div><div className="space-y-1"><Label>Cognome</Label><Input value={personal.last_name} onChange={e => setPersonal(p => ({...p, last_name: e.target.value}))} /></div></div>
+        <div className="space-y-1"><Label>Ruolo aziendale</Label><Input value={user?.role || ""} disabled /></div>
+        <div className="space-y-1"><Label>Attività associata</Label><Input value={user?.business_name || ""} disabled /></div>
+        <div className="space-y-2"><Label>Email di accesso</Label><div className="flex flex-wrap gap-2"><Input className="min-w-0 flex-1" value={user?.email || ""} disabled /><Button type="button" variant="outline" onClick={() => { setSection("security"); setSecurityPanel("email"); }}>Gestisci email di accesso</Button></div></div>
         <Button onClick={handleSave} disabled={saving} className="w-full" data-testid="profile-save-btn">Salva modifiche</Button>
       </CardContent></Card>}
 
-      {section === "personal" && user?.role === "owner" && <Card>
-        <CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg flex items-center gap-2"><Users className="h-5 w-5"/>Gestione collaboratori</CardTitle><AddCircleButton label="Invita collaboratore" onClick={() => setCollaboratorFormOpen((current) => !current)} /></div></CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">Gli utenti Beside sono distinti dal numero di dipendenti. Il piano {collaborators.plan} consente {collaborators.collaborator_limit} collaboratori oltre al titolare.</p>
-          {collaboratorFormOpen && <form onSubmit={inviteCollaborator} className="grid gap-3 rounded-xl border border-secondary/30 p-3 sm:grid-cols-[1fr_auto_auto]">
-            <Input type="email" required placeholder="Email del collaboratore" value={collaboratorEmail} onChange={e => setCollaboratorEmail(e.target.value)} />
-            <select className="rounded-md border bg-background px-3 py-2 text-sm" value={collaboratorRole} onChange={e => setCollaboratorRole(e.target.value)} aria-label="Ruolo collaboratore">
-              <option value="admin">Amministratore aziendale</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option>
-            </select>
-            <Button type="submit" disabled={collaboratorBusy}>Invia invito</Button>
-          </form>}
-          {collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"><span className="min-w-0 flex-1 truncate">{invite.email} · {invite.role}</span><div className="flex gap-1"><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => resendCollaboratorInvite(invite.invitation_id)}>Reinvia invito</Button><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div></div>)}</div>}
-          {collaborators.members?.filter(member => member.user_id !== user?.user_id).length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Utenti attivi</p>{collaborators.members.filter(member => member.user_id !== user?.user_id).map(member => <div key={member.user_id} className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{member.email}</span><select className="rounded-md border bg-background px-2 py-1 text-xs" value={member.role} disabled={collaboratorBusy} onChange={e => changeCollaboratorRole(member.user_id, e.target.value)}><option value="admin">Amministratore</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={collaboratorBusy} onClick={() => revokeCollaborator(member.user_id)}>Revoca</Button></div>)}</div>}
-          {!collaborators.invitations?.length && !collaborators.members?.some(member => member.user_id !== user?.user_id) && <p className="text-sm text-muted-foreground">Nessun collaboratore collegato.</p>}
-        </CardContent>
-      </Card>}
-
-      {section === "personal" && user?.role === "owner" && <Card className="border-destructive/40">
-        <CardHeader><CardTitle className="text-lg flex items-center gap-2 text-destructive"><Trash2 className="h-5 w-5"/>Elimina definitivamente account</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          {deletionStatus ? <div className="space-y-3 text-sm"><p className="font-medium text-destructive">Eliminazione avviata</p><p>L'accesso operativo è stato bloccato. Lo stato persistente è: {deletionStatus.status}.</p><Button type="button" className="w-full" onClick={() => logout().then(() => navigate("/login"))}>Torna al login</Button></div> : <>
-            <p className="text-sm text-muted-foreground">L'operazione è irreversibile: perderai subito l'accesso e l'eventuale periodo di abbonamento residuo, senza rimborso automatico.</p>
-            <form onSubmit={requestAccountDeletion} className="space-y-3">
-              <select className="w-full rounded-md border bg-background p-2.5 text-sm" value={deletionForm.reason} onChange={e => setDeletionForm(f => ({ ...f, reason: e.target.value }))}>
-                <option value="">Motivo (facoltativo)</option><option value="pausa">Pausa o chiusura attività</option><option value="utilizzo">Utilizzo insufficiente</option><option value="costo">Costo abbonamento</option><option value="funzioni">Funzionalità mancanti</option><option value="alternativa">Altra soluzione</option><option value="altro">Altro</option>
-              </select>
-              {deletionForm.reason === "altro" && (
-                <Textarea rows={2} placeholder="Note facoltative" value={deletionForm.details} onChange={e => setDeletionForm(f => ({ ...f, details: e.target.value }))}/>
-              )}
-              <Input placeholder="Digita ELIMINA" value={deletionForm.confirmation} onChange={e => setDeletionForm(f => ({ ...f, confirmation: e.target.value }))} autoComplete="off" />
-              <Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator" value={deletionForm.code} onChange={e => setDeletionForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code" />
-              <Button type="submit" variant="destructive" className="w-full" disabled={deletionBusy}>{deletionBusy ? "Eliminazione in corso…" : "Elimina definitivamente"}</Button>
-            </form>
-          </>}
-        </CardContent>
-      </Card>}
-
       {section === "activity" && <>
         <div className="rounded-full border border-border/70 bg-background/80 p-1 shadow-sm backdrop-blur-sm"><div className="grid grid-cols-4 gap-1"><button type="button" onClick={() => setActivitySubsection("info")} className={`min-h-11 min-w-0 rounded-full px-1 text-xs font-medium transition-colors sm:px-2 sm:text-sm ${activitySubsection === "info" ? "bg-secondary text-secondary-foreground" : "text-primary hover:bg-muted/60"}`}>Attività</button><button type="button" onClick={() => setActivitySubsection("contacts")} className={`min-h-11 min-w-0 rounded-full px-1 text-xs font-medium transition-colors sm:px-2 sm:text-sm ${activitySubsection === "contacts" ? "bg-secondary text-secondary-foreground" : "text-primary hover:bg-muted/60"}`}>Recapiti</button><button type="button" onClick={() => setActivitySubsection("fiscal")} className={`min-h-11 min-w-0 rounded-full px-1 text-xs font-medium transition-colors sm:px-2 sm:text-sm ${activitySubsection === "fiscal" ? "bg-secondary text-secondary-foreground" : "text-primary hover:bg-muted/60"}`}>Fiscali</button><button type="button" onClick={() => setActivitySubsection("quotes")} className={`min-h-11 min-w-0 rounded-full px-1 text-xs font-medium transition-colors sm:px-2 sm:text-sm ${activitySubsection === "quotes" ? "bg-secondary text-secondary-foreground" : "text-primary hover:bg-muted/60"}`}>Preventivi</button></div></div>
+        {user?.role === "owner" && <Card><CardHeader><div className="flex items-center justify-between gap-3"><CardTitle className="text-lg flex items-center gap-2"><Users className="h-5 w-5"/>Gestione collaboratori</CardTitle><AddCircleButton label="Invita collaboratore" onClick={() => setCollaboratorFormOpen((current) => !current)} /></div></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">Gli utenti Beside sono distinti dal numero di dipendenti. Il piano {collaborators.plan} consente {collaborators.collaborator_limit} collaboratori oltre al titolare.</p>{collaboratorFormOpen && <form onSubmit={inviteCollaborator} className="grid gap-3 rounded-xl border border-secondary/30 p-3 sm:grid-cols-[1fr_auto_auto]"><Input type="email" required placeholder="Email del collaboratore" value={collaboratorEmail} onChange={e => setCollaboratorEmail(e.target.value)} /><select className="rounded-md border bg-background px-3 py-2 text-sm" value={collaboratorRole} onChange={e => setCollaboratorRole(e.target.value)} aria-label="Ruolo collaboratore"><option value="admin">Amministratore aziendale</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="submit" disabled={collaboratorBusy}>Invia invito</Button></form>}{collaborators.invitations?.length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Inviti in attesa</p>{collaborators.invitations.map(invite => <div key={invite.invitation_id} className="flex flex-wrap items-center justify-between gap-2 rounded-md border p-3 text-sm"><span className="min-w-0 flex-1 truncate">{invite.email} · {invite.role}</span><div className="flex gap-1"><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => resendCollaboratorInvite(invite.invitation_id)}>Reinvia invito</Button><Button type="button" variant="ghost" size="sm" disabled={collaboratorBusy} onClick={() => cancelCollaboratorInvite(invite.invitation_id)}>Annulla</Button></div></div>)}</div>}{collaborators.members?.filter(member => member.user_id !== user?.user_id).length > 0 && <div className="space-y-2"><p className="text-sm font-medium">Utenti attivi</p>{collaborators.members.filter(member => member.user_id !== user?.user_id).map(member => <div key={member.user_id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border p-3 text-sm"><span className="min-w-0 truncate">{member.email}</span><select className="rounded-md border bg-background px-2 py-1 text-xs" value={member.role} disabled={collaboratorBusy} onChange={e => changeCollaboratorRole(member.user_id, e.target.value)}><option value="admin">Amministratore</option><option value="member">Collaboratore</option><option value="viewer">Sola lettura</option></select><Button type="button" variant="ghost" size="sm" className="text-destructive" disabled={collaboratorBusy} onClick={() => revokeCollaborator(member.user_id)}>Revoca</Button></div>)}</div>}{!collaborators.invitations?.length && !collaborators.members?.some(member => member.user_id !== user?.user_id) && <p className="text-sm text-muted-foreground">Nessun collaboratore collegato.</p>}</CardContent></Card>}
         <div className={activitySubsection === "info" ? "space-y-4" : "hidden"}>
 <Card>
                 <CardHeader>
@@ -1308,78 +1331,14 @@ export const ProfilePage = () => {
         </div>
       </CardContent></Card>}
 
-      {section === "security" && <>
-<Card id="sicurezza">
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <ShieldCheck className="w-5 h-5" />
-                Sicurezza
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Autenticazione MFA: {user?.totp_enabled ? "attiva" : "da configurare"}.
-                Il recupero dell'accesso prevede l'aiuto di una persona fidata, senza darle accesso ai tuoi dati.
-              </p>
-              {user?.totp_enabled ? (
-                <>
-                  {recoveryContact && (
-                    <div className="rounded-md bg-muted p-3 space-y-1 text-sm">
-                      <p className="font-medium">Contatto: {recoveryContact.contact_email}</p>
-                      <p>Stato: {recoveryContact.status}</p>
-                      {recoveryContact.security_period_ends_at && (
-                        <p className="text-xs text-muted-foreground">
-                          Fine periodo di sicurezza: {new Date(recoveryContact.security_period_ends_at).toLocaleString("it-IT")}
-                        </p>
-                      )}
-                    </div>
-                  )}
-                  {!recoveryContact && (
-                    <>
-                      <p className="text-sm">Invita una persona fidata: riceverà un'email e potrà accettare con un clic, senza creare un account Beside. Dopo il periodo di sicurezza potrà confermare soltanto una richiesta di recupero.</p>
-                      <Label htmlFor="trusted-contact-email">Email del contatto fidato</Label>
-                      <Input id="trusted-contact-email" type="email" value={contactEmail} onChange={(e) => setContactEmail(e.target.value)} placeholder="contatto@esempio.it" autoComplete="off" />
-                    </>
-                  )}
-                  <Label htmlFor="trusted-contact-password">Password attuale per autorizzare l'operazione</Label>
-                  <Input id="trusted-contact-password" type="password" value={contactPassword} onChange={(e) => setContactPassword(e.target.value)} autoComplete="current-password" />
-                  <Label htmlFor="trusted-contact-totp">Nuovo codice Authenticator (6 cifre)</Label>
-                  <Input id="trusted-contact-totp" inputMode="numeric" maxLength={6} value={contactTotp} onChange={(e) => setContactTotp(e.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code" />
-                  {recoveryContact ? (
-                    <Button type="button" variant="destructive" disabled={contactBusy} onClick={handleContactRevoke}>Revoca contatto fidato</Button>
-                  ) : (
-                    <Button type="button" disabled={contactBusy} onClick={handleContactInvite}>Invita contatto fidato</Button>
-                  )}
-                  <p className="text-xs text-muted-foreground">Non riutilizzare il codice TOTP appena utilizzato per accedere: inserisci un codice successivo.</p>
-                </>
-              ) : (
-                <p className="text-sm text-muted-foreground">Completa la configurazione MFA per abilitare un contatto fidato.</p>
-              )}
-            </CardContent>
-          </Card>
-          {passkeyConfig.enabled && passkeyConfig.supported && <Card>
-            <CardHeader className="flex flex-row items-center justify-between gap-3">
-              <div>
-                <CardTitle className="text-lg">Passkey e accesso rapido</CardTitle>
-                <p className="mt-1 text-sm text-muted-foreground">Usa Face ID o la sicurezza del dispositivo senza sostituire TOTP.</p>
-              </div>
-              <AddCircleButton label="Aggiungi passkey" onClick={registerPasskey} disabled={passkeyBusy} />
-            </CardHeader>
-            <CardContent className="space-y-2">
-              {passkeys.length === 0 ? <p className="text-sm text-muted-foreground">Nessuna passkey registrata.</p> : passkeys.map((passkey) => <div key={passkey.credential_id} className="flex items-center justify-between gap-3 rounded-xl border p-3">
-                <div className="min-w-0">
-                  <p className="truncate font-medium">{passkey.name || "Passkey"}</p>
-                  <p className="text-xs text-muted-foreground">Ultimo utilizzo: {passkey.last_used_at ? new Date(passkey.last_used_at).toLocaleString("it-IT") : "mai"}</p>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={() => renamePasskey(passkey.credential_id, passkey.name)}>Rinomina</Button>
-                  <Button type="button" variant="destructive" size="sm" disabled={passkeyBusy} onClick={() => revokePasskey(passkey.credential_id)}>Revoca</Button>
-                </div>
-              </div>)}
-            </CardContent>
-          </Card>}
-<Card><CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label><p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze senza compromettere l'accesso a Beside.</p><Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button></CardContent></Card>
-      </>}
+      {section === "security" && <div className="space-y-3">
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "email" ? null : "email")}><span className="flex items-center gap-2 font-semibold"><Mail className="h-5 w-5 text-secondary"/>Email di accesso</span><span className="text-xs text-muted-foreground">{securityPanel === "email" ? "Chiudi" : "Gestisci"}</span></button></CardHeader>{securityPanel === "email" && <CardContent className="space-y-3"><p className="text-sm text-muted-foreground">Indirizzo attuale: {user?.email || "—"}</p>{emailChange.status === "pending" && <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-sm"><p>Verifica richiesta in attesa per {emailChange.email}.</p><Button type="button" variant="link" className="h-auto px-0" disabled={emailChangeBusy} onClick={cancelEmailChange}>Annulla richiesta</Button></div>}<form onSubmit={requestEmailChange} className="space-y-2"><Label htmlFor="security-new-email">Nuovo indirizzo email</Label><Input id="security-new-email" type="email" required value={emailChangeForm.email} onChange={e => setEmailChangeForm(f => ({ ...f, email: e.target.value }))}/><Label htmlFor="security-email-code">Codice Authenticator</Label><Input id="security-email-code" inputMode="numeric" maxLength={6} required value={emailChangeForm.code} onChange={e => setEmailChangeForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code"/><Button type="submit" className="w-full" disabled={emailChangeBusy}>Invia verifica</Button></form></CardContent>}</Card>
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "password" ? null : "password")}><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-5 w-5 text-secondary"/>Password</span><span className="text-xs text-muted-foreground">{securityPanel === "password" ? "Chiudi" : "Cambia"}</span></button></CardHeader>{securityPanel === "password" && <CardContent><form onSubmit={changePassword} className="space-y-3"><Input type="password" required placeholder="Password attuale" value={passwordChange.current_password} onChange={e => setPasswordChange(p => ({ ...p, current_password: e.target.value }))}/><Input type="password" required minLength={10} placeholder="Nuova password (minimo 10 caratteri)" value={passwordChange.new_password} onChange={e => setPasswordChange(p => ({ ...p, new_password: e.target.value }))}/><Input type="password" required minLength={10} placeholder="Conferma nuova password" value={passwordChange.confirm_password} onChange={e => setPasswordChange(p => ({ ...p, confirm_password: e.target.value }))}/>{user?.totp_enabled && <Input inputMode="numeric" required maxLength={6} placeholder="Codice Authenticator" value={passwordChange.code} onChange={e => setPasswordChange(p => ({ ...p, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code"/>}<Button type="submit" className="w-full" disabled={passwordChangeBusy}>{passwordChangeBusy ? "Aggiornamento..." : "Aggiorna password"}</Button></form></CardContent>}</Card>
+        <Card><CardHeader><div className="flex items-center justify-between gap-3"><button type="button" className="flex min-h-12 flex-1 items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "passkey" ? null : "passkey")}><span className="font-semibold">Passkey e accesso rapido</span><span className="text-xs text-muted-foreground">{passkeyConfig.enabled ? `${passkeys.length} configurata/e` : "Non configurata"}</span></button><AddCircleButton label="Aggiungi passkey" onClick={() => { setSecurityPanel("passkey"); registerPasskey(); }} disabled={passkeyBusy || !passkeyConfig.enabled || !passkeyConfig.supported} /></div></CardHeader>{securityPanel === "passkey" && <CardContent className="space-y-2"><p className="text-sm text-muted-foreground">Usa Face ID o la sicurezza del dispositivo senza sostituire Authenticator.</p>{!passkeyConfig.enabled || !passkeyConfig.supported ? <p className="text-sm text-muted-foreground">Passkey non disponibile su questo dispositivo o ambiente.</p> : passkeys.length === 0 ? <p className="text-sm text-muted-foreground">Nessuna passkey registrata.</p> : passkeys.map((passkey) => <div key={passkey.credential_id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3"><div className="min-w-0"><p className="truncate font-medium">{passkey.name || "Passkey"}</p><p className="text-xs text-muted-foreground">Ultimo utilizzo: {passkey.last_used_at ? new Date(passkey.last_used_at).toLocaleString("it-IT") : "mai"}</p></div><div className="flex shrink-0 gap-2"><Button type="button" variant="outline" size="sm" onClick={() => renamePasskey(passkey.credential_id, passkey.name)}>Rinomina</Button><Button type="button" variant="destructive" size="sm" disabled={passkeyBusy} onClick={() => revokePasskey(passkey.credential_id)}>Revoca</Button></div></div>)}</CardContent>}</Card>
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "authenticator" ? null : "authenticator")}><span className="font-semibold">Authenticator</span><span className="text-xs text-muted-foreground">{user?.totp_enabled ? "Attivo" : "Non attivo"}</span></button></CardHeader>{securityPanel === "authenticator" && <CardContent><p className="text-sm text-muted-foreground">Authenticator TOTP è {user?.totp_enabled ? "attivo" : "da configurare"} e resta disponibile come alternativa alle Passkey.</p></CardContent>}</Card>
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "trusted" ? null : "trusted")}><span className="font-semibold">Contatto fidato</span><span className="text-xs text-muted-foreground">{recoveryContact ? "Configurato" : "Non configurato"}</span></button></CardHeader>{securityPanel === "trusted" && <CardContent className="space-y-3">{recoveryContact ? <div className="rounded-xl bg-muted p-3 text-sm"><p className="font-medium">{recoveryContact.contact_email}</p><p>Stato: {recoveryContact.status}</p>{recoveryContact.security_period_ends_at && <p className="text-xs text-muted-foreground">Periodo di sicurezza fino al {new Date(recoveryContact.security_period_ends_at).toLocaleString("it-IT")}</p>}</div> : <p className="text-sm text-muted-foreground">Nessun contatto fidato configurato.</p>}<p className="text-sm text-muted-foreground">Il contatto fidato può aiutarti a recuperare l'accesso, ma non può visualizzare i tuoi dati.</p>{user?.totp_enabled && <><Input type="email" placeholder="Email del contatto fidato" value={contactEmail} onChange={e => setContactEmail(e.target.value)} autoComplete="off"/><Input type="password" placeholder="Password attuale" value={contactPassword} onChange={e => setContactPassword(e.target.value)} autoComplete="current-password"/><Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator" value={contactTotp} onChange={e => setContactTotp(e.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code"/>{recoveryContact ? <Button type="button" variant="destructive" disabled={contactBusy} onClick={handleContactRevoke}>Revoca contatto fidato</Button> : <Button type="button" disabled={contactBusy} onClick={handleContactInvite}>Invita contatto fidato</Button>}</>}</CardContent>}</Card>
+        <Card><CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label><p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze senza compromettere l'accesso a Beside.</p><Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button></CardContent></Card>
+      </div>}
 
       {section === "subscription" && <>
 <Card>
@@ -1427,7 +1386,10 @@ export const ProfilePage = () => {
 
       {section === "account" && <div className="space-y-4">
         <Card><CardHeader><CardTitle className="text-lg flex items-center gap-2"><PauseCircle className="h-5 w-5"/>Sospendi temporaneamente l’account</CardTitle></CardHeader><CardContent className="space-y-4"><p className="text-sm text-muted-foreground">La sospensione disattiva il rinnovo alla scadenza naturale del periodo pagato, senza perdere i giorni residui. Puoi annullarla finché non è diventata effettiva.</p><Button variant="outline" className="w-full" onClick={() => navigate("/subscription")}>Gestisci sospensione e rinnovo</Button></CardContent></Card>
+        {user?.role === "owner" && <Card className="border-destructive/40"><CardHeader><CardTitle className="text-lg flex items-center gap-2 text-destructive"><Trash2 className="h-5 w-5"/>Elimina definitivamente account</CardTitle></CardHeader><CardContent className="space-y-4">{deletionStatus ? <div className="space-y-3 text-sm"><p className="font-medium text-destructive">Eliminazione avviata</p><p>L'accesso operativo è stato bloccato. Lo stato persistente è: {deletionStatus.status}.</p><Button type="button" className="w-full" onClick={() => logout().then(() => navigate("/login"))}>Torna al login</Button></div> : <><p className="text-sm text-muted-foreground">L'operazione è irreversibile: perderai subito l'accesso e l'eventuale periodo di abbonamento residuo, senza rimborso automatico.</p><form onSubmit={requestAccountDeletion} className="space-y-3"><select className="w-full rounded-md border bg-background p-2.5 text-sm" value={deletionForm.reason} onChange={e => setDeletionForm(f => ({ ...f, reason: e.target.value }))}><option value="">Motivo (facoltativo)</option><option value="pausa">Pausa o chiusura attività</option><option value="utilizzo">Utilizzo insufficiente</option><option value="costo">Costo abbonamento</option><option value="funzioni">Funzionalità mancanti</option><option value="alternativa">Altra soluzione</option><option value="altro">Altro</option></select>{deletionForm.reason === "altro" && <Textarea rows={2} placeholder="Note facoltative" value={deletionForm.details} onChange={e => setDeletionForm(f => ({ ...f, details: e.target.value }))}/>}<Input placeholder="Digita ELIMINA" value={deletionForm.confirmation} onChange={e => setDeletionForm(f => ({ ...f, confirmation: e.target.value }))} autoComplete="off" /><Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator" value={deletionForm.code} onChange={e => setDeletionForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code" /><Button type="submit" variant="destructive" className="w-full" disabled={deletionBusy}>{deletionBusy ? "Eliminazione in corso…" : "Elimina definitivamente"}</Button></form></>}</CardContent></Card>}
       </div>}
+      {passkeyNameModal && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" role="dialog" aria-modal="true" aria-labelledby="passkey-dialog-title"><div className="w-full max-w-sm rounded-3xl bg-card p-5 shadow-2xl"><h2 id="passkey-dialog-title" className="text-lg font-semibold">{passkeyNameModal.rename ? "Rinomina passkey" : "Nomina passkey"}</h2><p className="mt-1 text-sm text-muted-foreground">Scegli un nome riconoscibile per questo dispositivo.</p><Input className="mt-4" autoFocus value={passkeyNameModal.name} onChange={e => setPasskeyNameModal(current => ({ ...current, name: e.target.value }))} /><div className="mt-4 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setPasskeyNameModal(null)}>Annulla</Button><Button type="button" onClick={passkeyNameModal.rename ? completePasskeyRename : completePasskeyRegistration} disabled={passkeyBusy}>Conferma</Button></div></div></div>}
+      {passkeyRevokeTarget && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/45 p-4" role="dialog" aria-modal="true" aria-labelledby="revoke-passkey-title"><div className="w-full max-w-sm rounded-3xl bg-card p-5 shadow-2xl"><h2 id="revoke-passkey-title" className="text-lg font-semibold">Revocare questa passkey?</h2><p className="mt-1 text-sm text-muted-foreground">Dovrai usare un altro metodo di accesso a Beside.</p><div className="mt-4 flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setPasskeyRevokeTarget(null)}>Annulla</Button><Button type="button" variant="destructive" onClick={confirmRevokePasskey} disabled={passkeyBusy}>Revoca</Button></div></div></div>}
     </div>
   );
 };

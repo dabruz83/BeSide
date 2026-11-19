@@ -473,6 +473,11 @@ class EmailChangeRequest(BaseModel):
     email: EmailStr
     code: str = Field(min_length=6, max_length=6)
 
+class PasswordChangeRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=10, max_length=128)
+    code: Optional[str] = Field(default=None, min_length=6, max_length=6)
+
 class CompanyStatusUpdate(BaseModel):
     status: str
 
@@ -512,6 +517,7 @@ class UserUpdate(BaseModel):
     business_info: Optional[BusinessInfo] = None
     marketing_emails_opt_in: Optional[bool] = None
     marketing_profiling_opt_in: Optional[bool] = None
+    picture: Optional[str] = Field(default=None, max_length=500000)
 
 class PrivacyPreferencesUpdate(BaseModel):
     email_opt_in: bool = False
@@ -3657,6 +3663,14 @@ async def update_profile(
             preferences["profiling_opt_in"] = update_data.marketing_profiling_opt_in
         preferences.update({"version": CONSENT_VERSION, "updated_at": datetime.now(timezone.utc).isoformat()})
         update_fields["marketing_preferences"] = preferences
+
+    if update_data.picture is not None:
+        picture = update_data.picture.strip()
+        if picture and not re.match(r"^data:image/(?:png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$", picture):
+            raise HTTPException(status_code=422, detail="Formato foto profilo non valido")
+        if len(picture) > 400000:
+            raise HTTPException(status_code=422, detail="La foto profilo è troppo grande")
+        update_fields["picture"] = picture or None
     
     if update_fields:
         update_fields["updated_at"] = datetime.now(timezone.utc).isoformat()
@@ -3667,6 +3681,44 @@ async def update_profile(
 
     updated_user = await _load_active_user(current_user["user_id"])
     return public_user(updated_user)
+
+
+@api_router.post("/auth/password/change")
+async def change_password(
+    data: PasswordChangeRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    current_user: Dict = Depends(get_current_user),
+):
+    """Change the authenticated user's password without revoking the current session."""
+    await enforce_rate_limit(
+        request,
+        "auth_password_change",
+        limit=5,
+        window_seconds=15 * 60,
+        identifier=current_user["user_id"],
+    )
+    if not verify_password(data.current_password, current_user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Password attuale non corretta")
+    validate_password_strength(data.new_password)
+    if data.current_password == data.new_password:
+        raise HTTPException(status_code=400, detail="La nuova password deve essere diversa da quella attuale")
+    if current_user.get("totp_enabled"):
+        if not data.code or not await _consume_current_totp(current_user, data.code):
+            raise HTTPException(status_code=401, detail="Codice Authenticator non valido o già utilizzato")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.users.update_one(
+        {"user_id": current_user["user_id"], "company_id": current_user.get("company_id")},
+        {"$set": {"password_hash": hash_password(data.new_password), "updated_at": now_iso}},
+    )
+    await audit_event("password_changed", user=current_user, request=request)
+    background_tasks.add_task(
+        send_email_sendgrid,
+        current_user["email"],
+        "Password Beside aggiornata",
+        "<p>La password del tuo account Beside è stata modificata.</p><p>Se non riconosci questa operazione, contatta subito l'assistenza.</p>",
+    )
+    return {"message": "Password aggiornata."}
 
 @api_router.post("/auth/email-change/request")
 async def request_email_change(
