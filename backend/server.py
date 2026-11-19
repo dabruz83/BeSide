@@ -168,13 +168,25 @@ WEBAUTHN_ORIGINS = [
     for origin in os.environ.get("WEBAUTHN_ORIGIN", "").split(",")
     if origin.strip()
 ]
+RAILWAY_STAGING_ENVIRONMENT_ID = "168135ce-6410-4890-8eff-ea6578b813c1"
+STAGING_WEBAUTHN_RP_ID = "frontend-staging-d66d.up.railway.app"
+STAGING_WEBAUTHN_ORIGIN = "https://frontend-staging-d66d.up.railway.app"
 if WEBAUTHN_ENABLED:
     if not WEBAUTHN_RP_ID or not WEBAUTHN_ORIGINS:
         raise RuntimeError("WEBAUTHN_RP_ID and WEBAUTHN_ORIGIN are required when WEBAUTHN_ENABLED=true")
     if any(urlparse(origin).scheme != "https" or not urlparse(origin).netloc for origin in WEBAUTHN_ORIGINS):
         raise RuntimeError("WEBAUTHN_ORIGIN must contain explicit HTTPS origins")
-    if any(".up.railway.app" in (urlparse(origin).hostname or "") for origin in WEBAUTHN_ORIGINS):
-        raise RuntimeError("Use the canonical HTTPS domain for WebAuthn, not a temporary Railway domain")
+    railway_origin_configured = any(".up.railway.app" in (urlparse(origin).hostname or "") for origin in WEBAUTHN_ORIGINS)
+    staging_environment = (
+        APP_ENV == "staging"
+        and os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() == RAILWAY_STAGING_ENVIRONMENT_ID
+    )
+    if railway_origin_configured and not (
+        staging_environment
+        and WEBAUTHN_RP_ID == STAGING_WEBAUTHN_RP_ID
+        and WEBAUTHN_ORIGINS == [STAGING_WEBAUTHN_ORIGIN]
+    ):
+        raise RuntimeError("Use only the explicitly approved staging Railway domain for WebAuthn")
 if APP_ENV == "local":
     from urllib.parse import urlparse
     if urlparse(MONGO_URL).hostname not in {"localhost", "127.0.0.1", "::1"} or not DB_NAME.startswith(("beside_demo", "beside_test_")):
