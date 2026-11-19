@@ -30,6 +30,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import { useUiPreferences } from "@/lib/uiPreferences";
 import { AddCircleButton } from "@/components/AddCircleButton";
+import { browserSupportsWebAuthn, startRegistration } from "@simplewebauthn/browser";
 
 const TAX_REGIMES = [
   { value: "forfettario_5", label: "Forfettario 5%" },
@@ -130,6 +131,9 @@ export const ProfilePage = () => {
   const [searchingCompany, setSearchingCompany] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [recoveryContact, setRecoveryContact] = useState(null);
+  const [passkeyConfig, setPasskeyConfig] = useState({ enabled: false, supported: false });
+  const [passkeys, setPasskeys] = useState([]);
+  const [passkeyBusy, setPasskeyBusy] = useState(false);
   const [contactEmail, setContactEmail] = useState("");
   const [contactPassword, setContactPassword] = useState("");
   const [contactTotp, setContactTotp] = useState("");
@@ -251,6 +255,67 @@ export const ProfilePage = () => {
       .then((response) => setRecoveryContact(response.data.contact))
       .catch(() => setRecoveryContact(null));
   }, [user?.user_id, user?.totp_enabled]);
+
+  const loadPasskeys = async () => {
+    if (!browserSupportsWebAuthn()) return;
+    try {
+      const { data: status } = await axios.get(`${API}/auth/passkeys/status`);
+      setPasskeyConfig({ enabled: Boolean(status.enabled), supported: true });
+      if (status.enabled) {
+        const { data } = await axios.get(`${API}/auth/passkeys`);
+        setPasskeys(data.passkeys || []);
+      }
+    } catch {
+      setPasskeyConfig({ enabled: false, supported: true });
+    }
+  };
+
+  useEffect(() => {
+    if (section === "security" && user?.user_id) loadPasskeys();
+  }, [section, user?.user_id]);
+
+  const registerPasskey = async () => {
+    setPasskeyBusy(true);
+    try {
+      const { data } = await axios.post(`${API}/auth/passkeys/registration/options`);
+      const { challenge_id: challengeId, ...optionsJSON } = data;
+      const credential = await startRegistration({ optionsJSON });
+      const name = window.prompt("Nome della passkey", "iPhone / Face ID") || "Passkey";
+      await axios.post(`${API}/auth/passkeys/registration/verify`, { credential: { ...credential, challenge_id: challengeId }, name });
+      toast.success("Passkey registrata.");
+      await loadPasskeys();
+    } catch (error) {
+      if (error?.name === "NotAllowedError" || error?.name === "AbortError") toast.info("Registrazione passkey annullata.");
+      else toast.error(error.response?.data?.detail || "Impossibile registrare la passkey.");
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
+
+  const renamePasskey = async (credentialId, currentName) => {
+    const name = window.prompt("Nome della passkey", currentName || "Passkey");
+    if (!name?.trim()) return;
+    try {
+      await axios.patch(`${API}/auth/passkeys/${encodeURIComponent(credentialId)}`, { name: name.trim() });
+      await loadPasskeys();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile rinominare la passkey.");
+    }
+  };
+
+  const revokePasskey = async (credentialId) => {
+    if (!window.confirm("Revocare questa passkey? Dovrai usare un altro metodo di accesso.")) return;
+    setPasskeyBusy(true);
+    try {
+      await axios.delete(`${API}/auth/passkeys/${encodeURIComponent(credentialId)}`);
+      toast.success("Passkey revocata.");
+      await loadPasskeys();
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Impossibile revocare la passkey.");
+    } finally {
+      setPasskeyBusy(false);
+    }
+  };
 
   const loadSupportTickets = async () => {
     setSupportLoading(true);
@@ -1292,6 +1357,27 @@ export const ProfilePage = () => {
               )}
             </CardContent>
           </Card>
+          {passkeyConfig.enabled && passkeyConfig.supported && <Card>
+            <CardHeader className="flex flex-row items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-lg">Passkey e accesso rapido</CardTitle>
+                <p className="mt-1 text-sm text-muted-foreground">Usa Face ID o la sicurezza del dispositivo senza sostituire TOTP.</p>
+              </div>
+              <AddCircleButton label="Aggiungi passkey" onClick={registerPasskey} disabled={passkeyBusy} />
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {passkeys.length === 0 ? <p className="text-sm text-muted-foreground">Nessuna passkey registrata.</p> : passkeys.map((passkey) => <div key={passkey.credential_id} className="flex items-center justify-between gap-3 rounded-xl border p-3">
+                <div className="min-w-0">
+                  <p className="truncate font-medium">{passkey.name || "Passkey"}</p>
+                  <p className="text-xs text-muted-foreground">Ultimo utilizzo: {passkey.last_used_at ? new Date(passkey.last_used_at).toLocaleString("it-IT") : "mai"}</p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  <Button type="button" variant="outline" size="sm" onClick={() => renamePasskey(passkey.credential_id, passkey.name)}>Rinomina</Button>
+                  <Button type="button" variant="destructive" size="sm" disabled={passkeyBusy} onClick={() => revokePasskey(passkey.credential_id)}>Revoca</Button>
+                </div>
+              </div>)}
+            </CardContent>
+          </Card>}
 <Card><CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label><p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze senza compromettere l'accesso a Beside.</p><Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button></CardContent></Card>
       </>}
 

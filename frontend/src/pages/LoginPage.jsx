@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth, API } from "@/App";
 import axios from "axios";
@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { toast } from "sonner";
 import { Eye, EyeOff, Mail, Lock } from "lucide-react";
+import { browserSupportsWebAuthn, startAuthentication } from "@simplewebauthn/browser";
 
 const getErrorMessage = (error, fallback) => {
   const detail = error.response?.data?.detail;
@@ -24,7 +25,16 @@ export const LoginPage = () => {
   const [unverifiedEmail, setUnverifiedEmail] = useState("");
   const [twoFactorRequired, setTwoFactorRequired] = useState(false);
   const [twoFactorCode, setTwoFactorCode] = useState("");
+  const [passkeyEnabled, setPasskeyEnabled] = useState(false);
+  const [passkeyLoading, setPasskeyLoading] = useState(false);
   const oauthLoginUrl = (process.env.REACT_APP_OAUTH_LOGIN_URL || "").trim().replace(/\/+$/, "");
+
+  useEffect(() => {
+    if (!browserSupportsWebAuthn()) return;
+    axios.get(`${API}/auth/passkeys/status`)
+      .then(({ data }) => setPasskeyEnabled(Boolean(data.enabled)))
+      .catch(() => setPasskeyEnabled(false));
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -98,6 +108,29 @@ export const LoginPage = () => {
       toast.success(response.data.message);
     } catch (error) {
       toast.error(getErrorMessage(error, "Impossibile inviare l'email di verifica"));
+    }
+  };
+
+  const loginWithPasskey = async () => {
+    setPasskeyLoading(true);
+    try {
+      const { data } = await axios.post(`${API}/auth/passkeys/authentication/options`);
+      const { challenge_id: challengeId, ...optionsJSON } = data;
+      const credential = await startAuthentication({ optionsJSON });
+      const response = await axios.post(`${API}/auth/passkeys/authentication/verify`, {
+        credential: { ...credential, challenge_id: challengeId },
+      });
+      login(response.data.user);
+      toast.success("Accesso con passkey effettuato!");
+      navigate("/dashboard");
+    } catch (error) {
+      if (error?.name === "NotAllowedError" || error?.name === "AbortError") {
+        toast.info("Accesso con passkey annullato.");
+      } else {
+        toast.error(getErrorMessage(error, "Impossibile accedere con la passkey"));
+      }
+    } finally {
+      setPasskeyLoading(false);
     }
   };
 
@@ -175,6 +208,11 @@ export const LoginPage = () => {
             >
               {loading ? "Accesso in corso..." : "Accedi"}
             </Button>
+            {passkeyEnabled && (
+              <Button type="button" variant="outline" className="w-full" onClick={loginWithPasskey} disabled={loading || passkeyLoading}>
+                {passkeyLoading ? "Verifica passkey..." : "Accedi con Passkey"}
+              </Button>
+            )}
             {unverifiedEmail && (
               <Button type="button" variant="outline" className="w-full" onClick={resendVerification}>
                 Reinvia email di verifica

@@ -25,6 +25,7 @@ import re
 import base64
 import struct
 import json
+from urllib.parse import urlparse
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
@@ -142,6 +143,9 @@ MFA_RECOVERY_MAX_ATTEMPTS = 5
 MFA_RECOVERY_HOLD_HOURS = 24
 MFA_RECOVERY_AUTHORIZATION_MINUTES = 10
 RECOVERY_CONTACT_ROLE = "recovery_contact"
+PASSKEY_CHALLENGE_MINUTES = 5
+PASSKEY_RECENT_MFA_MINUTES = 10
+PASSKEY_MAX_ATTEMPTS = 5
 
 
 def get_boolean_environment_variable(name: str, default: bool) -> bool:
@@ -157,6 +161,20 @@ def get_boolean_environment_variable(name: str, default: bool) -> bool:
 APP_ENV = os.environ.get("APP_ENV", "production")
 EXTERNAL_SERVICES_ENABLED = get_boolean_environment_variable("EXTERNAL_SERVICES_ENABLED", False)
 RESEND_ENABLED = get_boolean_environment_variable("RESEND_ENABLED", False)
+WEBAUTHN_ENABLED = get_boolean_environment_variable("WEBAUTHN_ENABLED", False)
+WEBAUTHN_RP_ID = os.environ.get("WEBAUTHN_RP_ID", "").strip().lower()
+WEBAUTHN_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get("WEBAUTHN_ORIGIN", "").split(",")
+    if origin.strip()
+]
+if WEBAUTHN_ENABLED:
+    if not WEBAUTHN_RP_ID or not WEBAUTHN_ORIGINS:
+        raise RuntimeError("WEBAUTHN_RP_ID and WEBAUTHN_ORIGIN are required when WEBAUTHN_ENABLED=true")
+    if any(urlparse(origin).scheme != "https" or not urlparse(origin).netloc for origin in WEBAUTHN_ORIGINS):
+        raise RuntimeError("WEBAUTHN_ORIGIN must contain explicit HTTPS origins")
+    if any(".up.railway.app" in (urlparse(origin).hostname or "") for origin in WEBAUTHN_ORIGINS):
+        raise RuntimeError("Use the canonical HTTPS domain for WebAuthn, not a temporary Railway domain")
 if APP_ENV == "local":
     from urllib.parse import urlparse
     if urlparse(MONGO_URL).hostname not in {"localhost", "127.0.0.1", "::1"} or not DB_NAME.startswith(("beside_demo", "beside_test_")):
@@ -202,6 +220,10 @@ async def lifespan(_app: FastAPI):
             logger.info("Staging legacy backup code cleanup: %s accounts", cleanup.modified_count)
         logger.info("Multi-tenant migration completed: %s", stats)
         await db.email_notification_jobs.create_index("job_id", unique=True)
+        await db.passkeys.create_index("credential_id", unique=True)
+        await db.passkeys.create_index([("user_id", 1), ("revoked_at", 1)])
+        await db.webauthn_challenges.create_index("challenge_id", unique=True)
+        await db.webauthn_challenges.create_index("expires_at_dt", expireAfterSeconds=0)
         await db.post_work_support_links.create_index("token_hash", unique=True)
         await db.post_work_support_links.create_index([("company_id", 1), ("job_id", 1)])
         await db.post_work_support_requests.create_index([("company_id", 1), ("job_id", 1), ("created_at", -1)])
@@ -427,6 +449,13 @@ class AccountDeletionRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6)
     reason: Optional[str] = Field(default="", max_length=60)
     details: Optional[str] = Field(default="", max_length=500)
+
+class PasskeyCredentialRequest(BaseModel):
+    credential: Dict[str, Any]
+    name: Optional[str] = Field(default="", max_length=80)
+
+class PasskeyRenameRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
 
 class EmailChangeRequest(BaseModel):
     email: EmailStr
@@ -1193,6 +1222,76 @@ def _ensure_mfa_setup_scope(request: Request) -> None:
     if request.url.path not in allowed:
         raise HTTPException(status_code=401, detail="Configurazione 2FA richiesta")
 
+def _webauthn_dependencies():
+    """Load WebAuthn helpers lazily so disabled deployments need no runtime path."""
+    try:
+        from webauthn import (
+            generate_authentication_options,
+            generate_registration_options,
+            verify_authentication_response,
+            verify_registration_response,
+        )
+        from webauthn.helpers import (
+            base64url_to_bytes,
+            bytes_to_base64url,
+            options_to_json,
+            parse_authentication_credential_json,
+            parse_registration_credential_json,
+        )
+        from webauthn.helpers.cose import COSEAlgorithmIdentifier
+        from webauthn.helpers.structs import (
+            AuthenticatorSelectionCriteria,
+            PublicKeyCredentialDescriptor,
+            ResidentKeyRequirement,
+            UserVerificationRequirement,
+        )
+    except ImportError as exc:
+        logger.error("WebAuthn dependency unavailable")
+        raise HTTPException(status_code=503, detail="Accesso con passkey non disponibile") from exc
+    return {
+        "generate_authentication_options": generate_authentication_options,
+        "generate_registration_options": generate_registration_options,
+        "verify_authentication_response": verify_authentication_response,
+        "verify_registration_response": verify_registration_response,
+        "base64url_to_bytes": base64url_to_bytes,
+        "bytes_to_base64url": bytes_to_base64url,
+        "options_to_json": options_to_json,
+        "parse_authentication_credential_json": parse_authentication_credential_json,
+        "parse_registration_credential_json": parse_registration_credential_json,
+        "COSEAlgorithmIdentifier": COSEAlgorithmIdentifier,
+        "AuthenticatorSelectionCriteria": AuthenticatorSelectionCriteria,
+        "PublicKeyCredentialDescriptor": PublicKeyCredentialDescriptor,
+        "ResidentKeyRequirement": ResidentKeyRequirement,
+        "UserVerificationRequirement": UserVerificationRequirement,
+    }
+
+def _require_webauthn_enabled() -> None:
+    if not WEBAUTHN_ENABLED:
+        raise HTTPException(status_code=404, detail="Passkey non disponibile")
+
+def _passkey_challenge_id() -> str:
+    return f"challenge_{uuid.uuid4().hex}"
+
+async def _consume_webauthn_challenge(challenge_id: str, purpose: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    query: Dict[str, Any] = {
+        "challenge_id": challenge_id,
+        "purpose": purpose,
+        "consumed_at": None,
+        "expires_at_dt": {"$gt": now},
+    }
+    if user_id is not None:
+        query["user_id"] = user_id
+    challenge = await db.webauthn_challenges.find_one_and_update(
+        query,
+        {"$set": {"consumed_at": now.isoformat()}},
+        projection={"_id": 0},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not challenge:
+        raise HTTPException(status_code=400, detail="Challenge passkey non valida o scaduta")
+    return challenge
+
 async def get_current_user(request: Request) -> Dict[str, Any]:
     token = _extract_request_token(request)
     if not token:
@@ -1264,6 +1363,23 @@ async def get_current_user(request: Request) -> Dict[str, Any]:
         raise
     except Exception:
         raise HTTPException(status_code=401, detail="Token non valido")
+
+async def require_recent_mfa_user(
+    request: Request,
+    current_user: Dict[str, Any] = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """Require a completed, recent MFA-bound session for passkey management."""
+    token = _extract_request_token(request)
+    session = await db.user_sessions.find_one(
+        {"token_hash": hash_token(token or ""), "revoked_at": None, "session_type": "jwt"},
+        {"_id": 0, "mfa_verified": 1, "created_at": 1},
+    )
+    if not session or not session.get("mfa_verified"):
+        raise HTTPException(status_code=403, detail="Verifica MFA recente richiesta")
+    created_at = parse_datetime(session.get("created_at"))
+    if created_at + timedelta(minutes=PASSKEY_RECENT_MFA_MINUTES) <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=403, detail="Verifica MFA recente richiesta")
+    return current_user
 
 async def get_admin_user(request: Request) -> Dict[str, Any]:
     """Require explicit platform privileges, never a company role alone."""
@@ -3106,6 +3222,200 @@ async def login(user_data: UserLogin, response: Response, request: Request):
     await audit_event("login_password_verified", user=user, request=request,
                       metadata={"mfa_setup_required": True})
     return {"mfa_setup_required": True, "expires_in": MFA_SESSION_MINUTES * 60}
+
+@api_router.get("/auth/passkeys/status")
+async def passkey_status():
+    return {"enabled": bool(WEBAUTHN_ENABLED), "rp_id": WEBAUTHN_RP_ID if WEBAUTHN_ENABLED else None}
+
+@api_router.post("/auth/passkeys/registration/options")
+async def passkey_registration_options(
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_recent_mfa_user),
+):
+    _require_webauthn_enabled()
+    await enforce_rate_limit(request, "passkey_registration_options", PASSKEY_MAX_ATTEMPTS, 15 * 60,
+                             identifier=current_user["user_id"])
+    deps = _webauthn_dependencies()
+    existing = await db.passkeys.find({"user_id": current_user["user_id"], "revoked_at": None}, {"credential_id": 1}).to_list(50)
+    descriptors = [
+        deps["PublicKeyCredentialDescriptor"](id=deps["base64url_to_bytes"](item["credential_id"]))
+        for item in existing
+    ]
+    options = deps["generate_registration_options"](
+        rp_id=WEBAUTHN_RP_ID,
+        rp_name="Beside",
+        user_name=current_user["email"],
+        user_display_name=current_user.get("full_name") or current_user["email"],
+        user_id=current_user["user_id"].encode("utf-8"),
+        authenticator_selection=deps["AuthenticatorSelectionCriteria"](
+            resident_key=deps["ResidentKeyRequirement"].REQUIRED,
+            user_verification=deps["UserVerificationRequirement"].REQUIRED,
+        ),
+        exclude_credentials=descriptors,
+    )
+    challenge_id = _passkey_challenge_id()
+    now = datetime.now(timezone.utc)
+    await db.webauthn_challenges.insert_one({
+        "challenge_id": challenge_id,
+        "purpose": "registration",
+        "user_id": current_user["user_id"],
+        "challenge": deps["bytes_to_base64url"](options.challenge),
+        "created_at": now.isoformat(),
+        "expires_at_dt": now + timedelta(minutes=PASSKEY_CHALLENGE_MINUTES),
+        "expires_at": (now + timedelta(minutes=PASSKEY_CHALLENGE_MINUTES)).isoformat(),
+        "consumed_at": None,
+    })
+    payload = json.loads(deps["options_to_json"](options))
+    payload["challenge_id"] = challenge_id
+    return payload
+
+@api_router.post("/auth/passkeys/registration/verify")
+async def passkey_registration_verify(
+    data: PasskeyCredentialRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_recent_mfa_user),
+):
+    _require_webauthn_enabled()
+    await enforce_rate_limit(request, "passkey_registration_verify", PASSKEY_MAX_ATTEMPTS, 15 * 60,
+                             identifier=current_user["user_id"])
+    challenge_id = str(data.credential.get("challenge_id") or data.credential.get("challengeId") or "")
+    if not challenge_id:
+        raise HTTPException(status_code=400, detail="Challenge passkey mancante")
+    challenge = await _consume_webauthn_challenge(challenge_id, "registration", current_user["user_id"])
+    deps = _webauthn_dependencies()
+    try:
+        verification = deps["verify_registration_response"](
+            credential=data.credential,
+            expected_challenge=deps["base64url_to_bytes"](challenge["challenge"]),
+            expected_rp_id=WEBAUTHN_RP_ID,
+            expected_origin=WEBAUTHN_ORIGINS,
+            require_user_verification=True,
+        )
+    except Exception:
+        raise HTTPException(status_code=400, detail="Registrazione passkey non valida")
+    credential_id = deps["bytes_to_base64url"](verification.credential_id)
+    now = datetime.now(timezone.utc)
+    try:
+        await db.passkeys.insert_one({
+            "credential_id": credential_id,
+            "user_id": current_user["user_id"],
+            "company_id": current_user.get("company_id"),
+            "credential_public_key": deps["bytes_to_base64url"](verification.credential_public_key),
+            "sign_count": int(verification.sign_count),
+            "name": (data.name or "Passkey").strip() or "Passkey",
+            "created_at": now.isoformat(),
+            "last_used_at": None,
+            "revoked_at": None,
+        })
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Passkey già registrata")
+    await audit_event("passkey_registered", user=current_user, request=request)
+    return {"created": True, "credential_id": credential_id}
+
+@api_router.post("/auth/passkeys/authentication/options")
+async def passkey_authentication_options(request: Request):
+    _require_webauthn_enabled()
+    await enforce_rate_limit(request, "passkey_authentication_options", 15, 15 * 60)
+    deps = _webauthn_dependencies()
+    options = deps["generate_authentication_options"](
+        rp_id=WEBAUTHN_RP_ID,
+        user_verification=deps["UserVerificationRequirement"].REQUIRED,
+    )
+    challenge_id = _passkey_challenge_id()
+    now = datetime.now(timezone.utc)
+    await db.webauthn_challenges.insert_one({
+        "challenge_id": challenge_id,
+        "purpose": "authentication",
+        "user_id": None,
+        "challenge": deps["bytes_to_base64url"](options.challenge),
+        "created_at": now.isoformat(),
+        "expires_at_dt": now + timedelta(minutes=PASSKEY_CHALLENGE_MINUTES),
+        "expires_at": (now + timedelta(minutes=PASSKEY_CHALLENGE_MINUTES)).isoformat(),
+        "consumed_at": None,
+    })
+    payload = json.loads(deps["options_to_json"](options))
+    payload["challenge_id"] = challenge_id
+    return payload
+
+@api_router.post("/auth/passkeys/authentication/verify")
+async def passkey_authentication_verify(data: PasskeyCredentialRequest, response: Response, request: Request):
+    _require_webauthn_enabled()
+    await enforce_rate_limit(request, "passkey_authentication_verify", 10, 15 * 60)
+    challenge_id = str(data.credential.get("challenge_id") or data.credential.get("challengeId") or "")
+    credential_id = str(data.credential.get("id") or data.credential.get("rawId") or "")
+    if not challenge_id or not credential_id:
+        raise HTTPException(status_code=400, detail="Credenziale passkey incompleta")
+    challenge = await _consume_webauthn_challenge(challenge_id, "authentication")
+    passkey = await db.passkeys.find_one({"credential_id": credential_id, "revoked_at": None}, {"_id": 0})
+    if not passkey:
+        raise HTTPException(status_code=401, detail="Passkey non riconosciuta")
+    user = await _load_active_user(passkey["user_id"])
+    if email_verification_blocks_access(user) or user.get("role") == RECOVERY_CONTACT_ROLE:
+        raise HTTPException(status_code=403, detail="Account non abilitato all'accesso")
+    deps = _webauthn_dependencies()
+    try:
+        parsed_credential = deps["parse_authentication_credential_json"](data.credential)
+        if parsed_credential.raw_id != deps["base64url_to_bytes"](credential_id):
+            raise ValueError("credential id mismatch")
+        if parsed_credential.response.user_handle is not None and parsed_credential.response.user_handle != user["user_id"].encode("utf-8"):
+            raise ValueError("user handle mismatch")
+        verification = deps["verify_authentication_response"](
+            credential=data.credential,
+            expected_challenge=deps["base64url_to_bytes"](challenge["challenge"]),
+            expected_rp_id=WEBAUTHN_RP_ID,
+            expected_origin=WEBAUTHN_ORIGINS,
+            credential_public_key=deps["base64url_to_bytes"](passkey["credential_public_key"]),
+            credential_current_sign_count=int(passkey.get("sign_count", 0)),
+            require_user_verification=True,
+        )
+    except Exception:
+        raise HTTPException(status_code=401, detail="Verifica passkey non riuscita")
+    new_count = int(verification.new_sign_count)
+    old_count = int(passkey.get("sign_count", 0))
+    if old_count and new_count and new_count <= old_count:
+        raise HTTPException(status_code=401, detail="Contatore passkey non valido")
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await db.passkeys.update_one(
+        {"credential_id": credential_id, "revoked_at": None},
+        {"$set": {"sign_count": new_count, "last_used_at": now_iso}},
+    )
+    access_token = await create_authenticated_session(user, mfa_verified=True)
+    set_session_cookie(response, access_token)
+    await audit_event("passkey_login", user=user, request=request, metadata={"user_verification": True})
+    return {"user": public_user(user)}
+
+@api_router.get("/auth/passkeys")
+async def list_passkeys(current_user: Dict[str, Any] = Depends(get_current_user)):
+    _require_webauthn_enabled()
+    records = await db.passkeys.find({"user_id": current_user["user_id"], "revoked_at": None}, {"_id": 0, "credential_id": 1, "name": 1, "created_at": 1, "last_used_at": 1}).sort("created_at", -1).to_list(50)
+    return {"passkeys": records}
+
+@api_router.patch("/auth/passkeys/{credential_id}")
+async def rename_passkey(
+    credential_id: str,
+    data: PasskeyRenameRequest,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_recent_mfa_user),
+):
+    _require_webauthn_enabled()
+    result = await db.passkeys.update_one({"credential_id": credential_id, "user_id": current_user["user_id"], "revoked_at": None}, {"$set": {"name": data.name.strip()}})
+    if result.modified_count != 1:
+        raise HTTPException(status_code=404, detail="Passkey non trovata")
+    await audit_event("passkey_renamed", user=current_user, request=request)
+    return {"updated": True}
+
+@api_router.delete("/auth/passkeys/{credential_id}")
+async def revoke_passkey(
+    credential_id: str,
+    request: Request,
+    current_user: Dict[str, Any] = Depends(require_recent_mfa_user),
+):
+    _require_webauthn_enabled()
+    result = await db.passkeys.update_one({"credential_id": credential_id, "user_id": current_user["user_id"], "revoked_at": None}, {"$set": {"revoked_at": datetime.now(timezone.utc).isoformat()}})
+    if result.modified_count != 1:
+        raise HTTPException(status_code=404, detail="Passkey non trovata")
+    await audit_event("passkey_revoked", user=current_user, request=request)
+    return {"revoked": True}
 
 @api_router.post("/auth/session")
 async def process_google_session(request: Request, response: Response):
