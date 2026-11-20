@@ -11,7 +11,8 @@ Demo funzionante di Beside adattata a un professionista che realizza siti web. E
 - Backend: backend/server.py contiene POST /marketing/ai/generate (Google GenAI/GEMINI_API_KEY, EXTERNAL_SERVICES_ENABLED) e GET /marketing/ai/history. ATTENZIONE: prompt e system_instruction sono hardcoded per wrap/automotive.
 - frontend/src/App.js include già route protetta /marketing e /configurator; frontend/src/components/Layout.jsx nasconde /marketing dalla navigazione e mette Configuratore nella nav e nella barra inferiore.
 - Railway esistente ha environments `production` e `staging`; entrambi già usati. **Non modificare nessuno dei due.**
-- Il modulo AI non è validato runtime: verificare disponibilità GEMINI_API_KEY, EXTERNAL_SERVICES_ENABLED, GEMINI_MODEL, limiti e costi; non riportare valori/segreti.
+- **Verifica Railway staging**: tra i nomi delle variabili del backend non compaiono GEMINI_API_KEY né EXTERNAL_SERVICES_ENABLED. Il generatore AI non è utilizzabile così com'è: configurare il provider nel nuovo ambiente e provarlo prima di dichiarare la demo pronta, senza riportare valori/segreti.
+- **WebAuthn**: backend/server.py vincola espressamente WebAuthn al dominio e all'ID dell'attuale ambiente staging. Su un nuovo dominio Agency va progettata/testata una configurazione RP ID e origin sicura senza rimuovere in blocco i controlli; in caso contrario disabilitare passkey nella demo e mantenere login ordinario.
 
 ## Ambito minimo e 4 funzioni di Marketing AI
 Una sola pagina `Marketing AI`, senza nuove dashboard avanzate. Conservare stile turchese, UX smartphone, pulsanti grandi, output copiabile.
