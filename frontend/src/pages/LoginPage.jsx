@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth, API } from "@/App";
 import axios from "axios";
@@ -25,9 +25,21 @@ export const LoginPage = () => {
   const [unverifiedEmail, setUnverifiedEmail] = useState("");
   const [twoFactorRequired, setTwoFactorRequired] = useState(false);
   const [twoFactorCode, setTwoFactorCode] = useState("");
+  const twoFactorInputRef = useRef(null);
+  const twoFactorTimerRef = useRef(null);
+  const twoFactorSubmittedRef = useRef(false);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [passkeyLoading, setPasskeyLoading] = useState(false);
   const oauthLoginUrl = (process.env.REACT_APP_OAUTH_LOGIN_URL || "").trim().replace(/\/+$/, "");
+
+  useEffect(() => {
+    if (twoFactorRequired) {
+      twoFactorInputRef.current?.focus();
+    }
+    return () => {
+      if (twoFactorTimerRef.current) clearTimeout(twoFactorTimerRef.current);
+    };
+  }, [twoFactorRequired]);
 
   useEffect(() => {
     if (!browserSupportsWebAuthn()) return;
@@ -47,6 +59,8 @@ export const LoginPage = () => {
       );
       if (response.data.mfa_required) {
         setTwoFactorRequired(true);
+        setTwoFactorCode("");
+        twoFactorSubmittedRef.current = false;
         toast.success("Inserisci il codice della tua app Authenticator");
         return;
       }
@@ -86,14 +100,19 @@ export const LoginPage = () => {
     }
   };
 
-  const verifyTwoFactor = async (event) => {
-    event.preventDefault();
+  const verifyTwoFactor = async (event, codeOverride = null) => {
+    event?.preventDefault();
+    const code = codeOverride ?? twoFactorCode;
+    if (!/^\d{6}$/.test(code) || loading) return;
+    twoFactorSubmittedRef.current = true;
     setLoading(true);
     try {
-      const response = await axios.post(`${API}/auth/2fa/verify`, { code: twoFactorCode });
+      const response = await axios.post(`${API}/auth/2fa/verify`, { code });
       login(response.data.user);
       navigate("/dashboard");
     } catch (error) {
+      twoFactorSubmittedRef.current = false;
+      setTwoFactorCode("");
       toast.error(getErrorMessage(error, "Codice 2FA non valido o scaduto"));
     } finally {
       setLoading(false);
@@ -225,15 +244,30 @@ export const LoginPage = () => {
               <Label htmlFor="login-two-factor-code">Codice di verifica (6 cifre)</Label>
               <Input
                 id="login-two-factor-code"
+                ref={twoFactorInputRef}
                 inputMode="numeric"
                 maxLength={6}
                 value={twoFactorCode}
-                onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+                onChange={(event) => {
+                  const nextCode = event.target.value.replace(/\D/g, "").slice(0, 6);
+                  setTwoFactorCode(nextCode);
+                  twoFactorSubmittedRef.current = false;
+                  if (twoFactorTimerRef.current) clearTimeout(twoFactorTimerRef.current);
+                  if (nextCode.length === 6 && !loading) {
+                    twoFactorTimerRef.current = setTimeout(() => {
+                      if (twoFactorSubmittedRef.current) return;
+                      twoFactorSubmittedRef.current = true;
+                      verifyTwoFactor(null, nextCode);
+                    }, 300);
+                  }
+                }}
                 autoComplete="one-time-code"
                 autoFocus
+                disabled={loading}
               />
+              {loading && <p className="text-sm text-muted-foreground">Verifica in corso...</p>}
               <Button type="submit" className="w-full" disabled={loading || twoFactorCode.length !== 6}>
-                {loading ? "Verifica..." : "Verifica codice"}
+                {loading ? "Verifica in corso..." : "Verifica codice"}
               </Button>
               <Link
                 to={`/recovery-2fa?email=${encodeURIComponent(formData.email)}`}

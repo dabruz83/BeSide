@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useAuth, API } from "@/App";
 import axios from "axios";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -178,6 +178,23 @@ export const ProfilePage = () => {
   const [savedBreakEnabled, setSavedBreakEnabled] = useState(false);
   const [expandedWorkDays, setExpandedWorkDays] = useState({});
   const [workHoursConfigured, setWorkHoursConfigured] = useState(false);
+  const totpTimers = useRef({});
+  const totpSubmitted = useRef({});
+
+  const scheduleTotpSubmit = (key, code, canSubmit, submit) => {
+    if (totpTimers.current[key]) clearTimeout(totpTimers.current[key]);
+    if (!/^\d{6}$/.test(code) || !canSubmit || totpSubmitted.current[key]) return;
+    totpTimers.current[key] = setTimeout(() => {
+      if (totpSubmitted.current[key]) return;
+      totpSubmitted.current[key] = true;
+      submit();
+    }, 300);
+  };
+
+  const resetTotpSubmit = (key) => {
+    if (totpTimers.current[key]) clearTimeout(totpTimers.current[key]);
+    totpSubmitted.current[key] = false;
+  };
   const [workHoursBusy, setWorkHoursBusy] = useState(false);
   const [workAreas, setWorkAreas] = useState([]);
   const [workAreaDrafts, setWorkAreaDrafts] = useState([]);
@@ -356,19 +373,27 @@ export const ProfilePage = () => {
     reader.readAsDataURL(file);
   };
 
-  const changePassword = async (event) => {
-    event.preventDefault();
-    if (passwordChange.new_password !== passwordChange.confirm_password) {
+  const changePassword = async (event, codeOverride = null) => {
+    event?.preventDefault();
+    const payload = { ...passwordChange, ...(codeOverride !== null ? { code: codeOverride } : {}) };
+    if (!payload.current_password || !payload.new_password || !payload.confirm_password || !/^\d{6}$/.test(payload.code)) {
+      if (event) toast.error("Completa tutti i campi e inserisci un codice Authenticator valido.");
+      return;
+    }
+    if (payload.new_password !== payload.confirm_password) {
       toast.error("Le nuove password non coincidono.");
       return;
     }
+    totpSubmitted.current.password = true;
     setPasswordChangeBusy(true);
     try {
-      await axios.post(`${API}/auth/password/change`, passwordChange);
+      await axios.post(`${API}/auth/password/change`, payload);
       setPasswordChange({ current_password: "", new_password: "", confirm_password: "", code: "" });
+      resetTotpSubmit("password");
       toast.success("Password aggiornata.");
     } catch (error) {
       setPasswordChange((current) => ({ ...current, code: "" }));
+      resetTotpSubmit("password");
       toast.error(error.response?.data?.detail || "Impossibile aggiornare la password.");
     } finally { setPasswordChangeBusy(false); }
   };
@@ -550,21 +575,25 @@ export const ProfilePage = () => {
     }
   };
 
-  const requestEmailChange = async (event) => {
-    event.preventDefault();
-    if (!emailChangeForm.email.trim() || !/^\d{6}$/.test(emailChangeForm.code)) {
+  const requestEmailChange = async (event, codeOverride = null) => {
+    event?.preventDefault();
+    const payload = { ...emailChangeForm, ...(codeOverride !== null ? { code: codeOverride } : {}) };
+    if (!payload.email.trim() || !/^\d{6}$/.test(payload.code)) {
       toast.error("Inserisci il nuovo indirizzo e un codice Authenticator valido.");
       return;
     }
+    totpSubmitted.current.email = true;
     setEmailChangeBusy(true);
     try {
-      const response = await axios.post(`${API}/auth/email-change/request`, emailChangeForm);
+      const response = await axios.post(`${API}/auth/email-change/request`, payload);
       setEmailChange({ status: "pending", email: response.data.email, expires_at: response.data.expires_at });
       setEmailChangeForm({ email: "", code: "" });
+      resetTotpSubmit("email");
       setEmailChangeOpen(false);
       toast.success("Controlla la nuova email per confermare il cambio.");
     } catch (error) {
       setEmailChangeForm(current => ({ ...current, code: "" }));
+      resetTotpSubmit("email");
       toast.error(error.response?.data?.detail || "Impossibile richiedere il cambio email.");
     } finally {
       setEmailChangeBusy(false);
@@ -605,26 +634,30 @@ export const ProfilePage = () => {
     }
   };
 
-  const handleContactInvite = async () => {
-    if (!contactEmail.trim() || !contactPassword || !/^\d{6}$/.test(contactTotp)) {
+  const handleContactInvite = async (codeOverride = null) => {
+    const code = codeOverride ?? contactTotp;
+    if (!contactEmail.trim() || !contactPassword || !/^\d{6}$/.test(code)) {
       toast.error("Inserisci email, password e un codice Authenticator valido.");
       return;
     }
+    totpSubmitted.current.contact = true;
     setContactBusy(true);
     try {
       const response = await axios.post(`${API}/auth/recovery-contact/invite`, {
         email: contactEmail.trim(),
         password: contactPassword,
-        code: contactTotp,
+        code,
       });
       setRecoveryContact({ contact_email: contactEmail.trim(), status: response.data.status });
       setContactPassword("");
       setContactTotp("");
+      resetTotpSubmit("contact");
       toast.success(response.data.message || "Invito inviato.");
     } catch (error) {
       // Keep the authenticated profile and invitation fields, but clear the
       // rejected one-time code so the next TOTP can be entered immediately.
       setContactTotp("");
+      resetTotpSubmit("contact");
       toast.error(error.response?.data?.detail || "Impossibile inviare l'invito.");
     } finally {
       setContactBusy(false);
@@ -1332,11 +1365,11 @@ export const ProfilePage = () => {
       </CardContent></Card>}
 
       {section === "security" && <div className="space-y-3">
-        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "email" ? null : "email")}><span className="flex items-center gap-2 font-semibold"><Mail className="h-5 w-5 text-secondary"/>Email di accesso</span><span className="text-xs text-muted-foreground">{securityPanel === "email" ? "Chiudi" : "Gestisci"}</span></button></CardHeader>{securityPanel === "email" && <CardContent className="space-y-3"><p className="text-sm text-muted-foreground">Indirizzo attuale: {user?.email || "—"}</p>{emailChange.status === "pending" && <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-sm"><p>Verifica richiesta in attesa per {emailChange.email}.</p><Button type="button" variant="link" className="h-auto px-0" disabled={emailChangeBusy} onClick={cancelEmailChange}>Annulla richiesta</Button></div>}<form onSubmit={requestEmailChange} className="space-y-2"><Label htmlFor="security-new-email">Nuovo indirizzo email</Label><Input id="security-new-email" type="email" required value={emailChangeForm.email} onChange={e => setEmailChangeForm(f => ({ ...f, email: e.target.value }))}/><Label htmlFor="security-email-code">Codice Authenticator</Label><Input id="security-email-code" inputMode="numeric" maxLength={6} required value={emailChangeForm.code} onChange={e => setEmailChangeForm(f => ({ ...f, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code"/><Button type="submit" className="w-full" disabled={emailChangeBusy}>Invia verifica</Button></form></CardContent>}</Card>
-        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "password" ? null : "password")}><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-5 w-5 text-secondary"/>Password</span><span className="text-xs text-muted-foreground">{securityPanel === "password" ? "Chiudi" : "Cambia"}</span></button></CardHeader>{securityPanel === "password" && <CardContent><form onSubmit={changePassword} className="space-y-3"><Input type="password" required placeholder="Password attuale" value={passwordChange.current_password} onChange={e => setPasswordChange(p => ({ ...p, current_password: e.target.value }))}/><Input type="password" required minLength={10} placeholder="Nuova password (minimo 10 caratteri)" value={passwordChange.new_password} onChange={e => setPasswordChange(p => ({ ...p, new_password: e.target.value }))}/><Input type="password" required minLength={10} placeholder="Conferma nuova password" value={passwordChange.confirm_password} onChange={e => setPasswordChange(p => ({ ...p, confirm_password: e.target.value }))}/>{user?.totp_enabled && <Input inputMode="numeric" required maxLength={6} placeholder="Codice Authenticator" value={passwordChange.code} onChange={e => setPasswordChange(p => ({ ...p, code: e.target.value.replace(/\D/g, "").slice(0, 6) }))} autoComplete="one-time-code"/>}<Button type="submit" className="w-full" disabled={passwordChangeBusy}>{passwordChangeBusy ? "Aggiornamento..." : "Aggiorna password"}</Button></form></CardContent>}</Card>
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "email" ? null : "email")}><span className="flex items-center gap-2 font-semibold"><Mail className="h-5 w-5 text-secondary"/>Email di accesso</span><span className="text-xs text-muted-foreground">{securityPanel === "email" ? "Chiudi" : "Gestisci"}</span></button></CardHeader>{securityPanel === "email" && <CardContent className="space-y-3"><p className="text-sm text-muted-foreground">Indirizzo attuale: {user?.email || "—"}</p>{emailChange.status === "pending" && <div className="rounded-xl border border-primary/30 bg-primary/5 p-3 text-sm"><p>Verifica richiesta in attesa per {emailChange.email}.</p><Button type="button" variant="link" className="h-auto px-0" disabled={emailChangeBusy} onClick={cancelEmailChange}>Annulla richiesta</Button></div>}<form onSubmit={requestEmailChange} className="space-y-2"><Label htmlFor="security-new-email">Nuovo indirizzo email</Label><Input id="security-new-email" type="email" required value={emailChangeForm.email} onChange={e => setEmailChangeForm(f => ({ ...f, email: e.target.value }))}/><Label htmlFor="security-email-code">Codice Authenticator</Label><Input id="security-email-code" inputMode="numeric" maxLength={6} required value={emailChangeForm.code} onChange={e => { const next = e.target.value.replace(/\D/g, "").slice(0, 6); setEmailChangeForm(f => ({ ...f, code: next })); totpSubmitted.current.email = false; scheduleTotpSubmit("email", next, Boolean(emailChangeForm.email.trim()) && !emailChangeBusy, () => requestEmailChange(null, next)); }} autoComplete="one-time-code" disabled={emailChangeBusy}/>{emailChangeBusy && <p className="text-sm text-muted-foreground">Verifica in corso...</p>}<Button type="submit" className="w-full" disabled={emailChangeBusy}>Invia verifica</Button></form></CardContent>}</Card>
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "password" ? null : "password")}><span className="flex items-center gap-2 font-semibold"><ShieldCheck className="h-5 w-5 text-secondary"/>Password</span><span className="text-xs text-muted-foreground">{securityPanel === "password" ? "Chiudi" : "Cambia"}</span></button></CardHeader>{securityPanel === "password" && <CardContent><form onSubmit={changePassword} className="space-y-3"><Input type="password" required placeholder="Password attuale" value={passwordChange.current_password} onChange={e => setPasswordChange(p => ({ ...p, current_password: e.target.value }))}/><Input type="password" required minLength={10} placeholder="Nuova password (minimo 10 caratteri)" value={passwordChange.new_password} onChange={e => setPasswordChange(p => ({ ...p, new_password: e.target.value }))}/><Input type="password" required minLength={10} placeholder="Conferma nuova password" value={passwordChange.confirm_password} onChange={e => setPasswordChange(p => ({ ...p, confirm_password: e.target.value }))}/>{user?.totp_enabled && <Input inputMode="numeric" required maxLength={6} placeholder="Codice Authenticator" value={passwordChange.code} onChange={e => { const next = e.target.value.replace(/\D/g, "").slice(0, 6); setPasswordChange(p => ({ ...p, code: next })); totpSubmitted.current.password = false; scheduleTotpSubmit("password", next, Boolean(passwordChange.current_password && passwordChange.new_password && passwordChange.confirm_password && passwordChange.new_password === passwordChange.confirm_password) && !passwordChangeBusy, () => changePassword(null, next)); }} autoComplete="one-time-code" disabled={passwordChangeBusy}/>} {passwordChangeBusy && <p className="text-sm text-muted-foreground">Verifica in corso...</p>}<Button type="submit" className="w-full" disabled={passwordChangeBusy}>{passwordChangeBusy ? "Aggiornamento..." : "Aggiorna password"}</Button></form></CardContent>}</Card>
         <Card><CardHeader><div className="flex items-center justify-between gap-3"><button type="button" className="flex min-h-12 flex-1 items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "passkey" ? null : "passkey")}><span className="font-semibold">Passkey e accesso rapido</span><span className="text-xs text-muted-foreground">{passkeyConfig.enabled ? `${passkeys.length} configurata/e` : "Non configurata"}</span></button><AddCircleButton label="Aggiungi passkey" onClick={() => { setSecurityPanel("passkey"); registerPasskey(); }} disabled={passkeyBusy || !passkeyConfig.enabled || !passkeyConfig.supported} /></div></CardHeader>{securityPanel === "passkey" && <CardContent className="space-y-2"><p className="text-sm text-muted-foreground">Usa Face ID o la sicurezza del dispositivo senza sostituire Authenticator.</p>{!passkeyConfig.enabled || !passkeyConfig.supported ? <p className="text-sm text-muted-foreground">Passkey non disponibile su questo dispositivo o ambiente.</p> : passkeys.length === 0 ? <p className="text-sm text-muted-foreground">Nessuna passkey registrata.</p> : passkeys.map((passkey) => <div key={passkey.credential_id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border p-3"><div className="min-w-0"><p className="truncate font-medium">{passkey.name || "Passkey"}</p><p className="text-xs text-muted-foreground">Ultimo utilizzo: {passkey.last_used_at ? new Date(passkey.last_used_at).toLocaleString("it-IT") : "mai"}</p></div><div className="flex shrink-0 gap-2"><Button type="button" variant="outline" size="sm" onClick={() => renamePasskey(passkey.credential_id, passkey.name)}>Rinomina</Button><Button type="button" variant="destructive" size="sm" disabled={passkeyBusy} onClick={() => revokePasskey(passkey.credential_id)}>Revoca</Button></div></div>)}</CardContent>}</Card>
         <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "authenticator" ? null : "authenticator")}><span className="font-semibold">Authenticator</span><span className="text-xs text-muted-foreground">{user?.totp_enabled ? "Attivo" : "Non attivo"}</span></button></CardHeader>{securityPanel === "authenticator" && <CardContent><p className="text-sm text-muted-foreground">Authenticator TOTP è {user?.totp_enabled ? "attivo" : "da configurare"} e resta disponibile come alternativa alle Passkey.</p></CardContent>}</Card>
-        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "trusted" ? null : "trusted")}><span className="font-semibold">Contatto fidato</span><span className="text-xs text-muted-foreground">{recoveryContact ? "Configurato" : "Non configurato"}</span></button></CardHeader>{securityPanel === "trusted" && <CardContent className="space-y-3">{recoveryContact ? <div className="rounded-xl bg-muted p-3 text-sm"><p className="font-medium">{recoveryContact.contact_email}</p><p>Stato: {recoveryContact.status}</p>{recoveryContact.security_period_ends_at && <p className="text-xs text-muted-foreground">Periodo di sicurezza fino al {new Date(recoveryContact.security_period_ends_at).toLocaleString("it-IT")}</p>}</div> : <p className="text-sm text-muted-foreground">Nessun contatto fidato configurato.</p>}<p className="text-sm text-muted-foreground">Il contatto fidato può aiutarti a recuperare l'accesso, ma non può visualizzare i tuoi dati.</p>{user?.totp_enabled && <><Input type="email" placeholder="Email del contatto fidato" value={contactEmail} onChange={e => setContactEmail(e.target.value)} autoComplete="off"/><Input type="password" placeholder="Password attuale" value={contactPassword} onChange={e => setContactPassword(e.target.value)} autoComplete="current-password"/><Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator" value={contactTotp} onChange={e => setContactTotp(e.target.value.replace(/\D/g, "").slice(0, 6))} autoComplete="one-time-code"/>{recoveryContact ? <Button type="button" variant="destructive" disabled={contactBusy} onClick={handleContactRevoke}>Revoca contatto fidato</Button> : <Button type="button" disabled={contactBusy} onClick={handleContactInvite}>Invita contatto fidato</Button>}</>}</CardContent>}</Card>
+        <Card><CardHeader><button type="button" className="flex min-h-12 w-full items-center justify-between text-left" onClick={() => setSecurityPanel(securityPanel === "trusted" ? null : "trusted")}><span className="font-semibold">Contatto fidato</span><span className="text-xs text-muted-foreground">{recoveryContact ? "Configurato" : "Non configurato"}</span></button></CardHeader>{securityPanel === "trusted" && <CardContent className="space-y-3">{recoveryContact ? <div className="rounded-xl bg-muted p-3 text-sm"><p className="font-medium">{recoveryContact.contact_email}</p><p>Stato: {recoveryContact.status}</p>{recoveryContact.security_period_ends_at && <p className="text-xs text-muted-foreground">Periodo di sicurezza fino al {new Date(recoveryContact.security_period_ends_at).toLocaleString("it-IT")}</p>}</div> : <p className="text-sm text-muted-foreground">Nessun contatto fidato configurato.</p>}<p className="text-sm text-muted-foreground">Il contatto fidato può aiutarti a recuperare l'accesso, ma non può visualizzare i tuoi dati.</p>{user?.totp_enabled && <><Input type="email" placeholder="Email del contatto fidato" value={contactEmail} onChange={e => setContactEmail(e.target.value)} autoComplete="off"/><Input type="password" placeholder="Password attuale" value={contactPassword} onChange={e => setContactPassword(e.target.value)} autoComplete="current-password"/><Input inputMode="numeric" maxLength={6} placeholder="Codice Authenticator" value={contactTotp} onChange={e => { const next = e.target.value.replace(/\D/g, "").slice(0, 6); setContactTotp(next); totpSubmitted.current.contact = false; scheduleTotpSubmit("contact", next, Boolean(contactEmail.trim() && contactPassword) && !contactBusy && !recoveryContact, () => handleContactInvite(next)); }} autoComplete="one-time-code" disabled={contactBusy}/>{contactBusy && <p className="text-sm text-muted-foreground">Verifica in corso...</p>}{recoveryContact ? <Button type="button" variant="destructive" disabled={contactBusy} onClick={handleContactRevoke}>Revoca contatto fidato</Button> : <Button type="button" disabled={contactBusy} onClick={handleContactInvite}>Invita contatto fidato</Button>}</>}</CardContent>}</Card>
         <Card><CardHeader><CardTitle className="text-lg">Preferenze privacy e comunicazioni</CardTitle></CardHeader><CardContent className="space-y-3 text-sm"><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.email_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, email_opt_in: value === true }))} /><span>Ricevere comunicazioni commerciali via email (facoltativo).</span></label><label className="flex items-start gap-2"><Checkbox checked={marketingPreferences.profiling_opt_in} onCheckedChange={(value) => setMarketingPreferences((current) => ({ ...current, profiling_opt_in: value === true }))} /><span>Profilazione per offerte commerciali personalizzate (facoltativo).</span></label><p className="text-xs text-muted-foreground">Puoi modificare o revocare queste preferenze senza compromettere l'accesso a Beside.</p><Button type="button" variant="outline" onClick={handleConsentSave}>Salva preferenze</Button></CardContent></Card>
       </div>}
 
