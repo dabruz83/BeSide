@@ -376,7 +376,8 @@ export const ProfilePage = () => {
   const changePassword = async (event, codeOverride = null) => {
     event?.preventDefault();
     const payload = { ...passwordChange, ...(codeOverride !== null ? { code: codeOverride } : {}) };
-    if (!payload.current_password || !payload.new_password || !payload.confirm_password || !/^\d{6}$/.test(payload.code)) {
+    const requiresTotp = Boolean(user?.totp_enabled);
+    if (!payload.current_password || !payload.new_password || !payload.confirm_password || (requiresTotp && !/^\d{6}$/.test(payload.code))) {
       if (event) toast.error("Completa tutti i campi e inserisci un codice Authenticator valido.");
       return;
     }
