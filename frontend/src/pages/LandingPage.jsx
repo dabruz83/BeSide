@@ -49,9 +49,7 @@ export const LandingPage = () => {
       {/* Header */}
       <header className="fixed top-0 left-0 right-0 bg-white/80 backdrop-blur-md border-b border-border z-50">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-primary" style={{ fontFamily: 'Barlow, sans-serif' }}>
-            BESIDE
-          </h1>
+          <img src="/beside-logo.svg" alt="Beside Agency" className="h-8 w-auto max-w-[7.5rem] object-contain object-left sm:h-9" />
           <div className="flex items-center gap-4">
             <Link to="/login">
               <Button variant="ghost" data-testid="login-link">Accedi</Button>
@@ -70,18 +68,16 @@ export const LandingPage = () => {
             <div className="space-y-6">
               <div className="inline-flex items-center gap-2 bg-primary/10 text-primary px-4 py-2 rounded-full text-sm font-medium">
                 <Wrench className="w-4 h-4" />
-                Per Installatori PPF & Wrap
+                Per web agency e professionisti digitali
               </div>
               
               <h1 className="text-heading-1 text-4xl md:text-5xl lg:text-6xl text-primary leading-tight">
-                GESTISCI IL TUO BUSINESS,<br />
-                <span className="text-secondary">NON SOLO I LAVORI</span>
+                GESTISCI LA TUA AGENCY,<br />
+                <span className="text-secondary">NON SOLO I PROGETTI</span>
               </h1>
               
               <p className="text-lg text-muted-foreground max-w-lg">
-                Sei un ottimo tecnico ma la gestione ti stressa? BESIDE è il dashboard che ti aiuta 
-                a capire quanto guadagni davvero, pianificare le tasse e gestire i clienti. 
-                Tutto in italiano, pensato per te.
+                Beside Agency ti aiuta a gestire clienti, preventivi, agenda, finanza e contenuti con Marketing AI, tutto in un unico spazio. Tutto in italiano, pensato per piccole web agency e freelance del digitale.
               </p>
               
               <div className="flex flex-col sm:flex-row gap-4">
@@ -132,7 +128,7 @@ export const LandingPage = () => {
                   </div>
                   <div className="bg-background rounded-lg p-4">
                     <p className="text-xs text-muted-foreground mb-1">Lavoro Più Profittevole</p>
-                    <p className="text-sm font-medium">PPF Full</p>
+                    <p className="text-sm font-medium">Sito web aziendale</p>
                   </div>
                   <div className="bg-background rounded-lg p-4">
                     <p className="text-xs text-muted-foreground mb-1">Top Lead Source</p>
@@ -164,8 +160,8 @@ export const LandingPage = () => {
               Tutto quello che ti serve, niente di più
             </h2>
             <p className="text-muted-foreground max-w-2xl mx-auto">
-              Strumenti semplici ma potenti, pensati per chi lavora con le mani 
-              e non ha tempo da perdere con software complicati.
+              Strumenti semplici ma potenti, pensati per web agency e professionisti digitali
+              che non hanno tempo da perdere con software complicati.
             </p>
           </div>
           
@@ -234,8 +230,8 @@ export const LandingPage = () => {
             Pronto a gestire il tuo business come un pro?
           </h2>
           <p className="text-white/80 mb-8 max-w-2xl mx-auto">
-            Unisciti a centinaia di installatori italiani che hanno già scoperto 
-            quanto guadagnano davvero.
+            Porta clienti, progetti e contenuti della tua agency in un unico spazio,
+            tutto in italiano.
           </p>
           <Link to="/register">
             <Button 
