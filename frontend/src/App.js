@@ -32,7 +32,6 @@ import { ClientOnboardingPage } from "@/pages/ClientOnboardingPage";
 import { QuotePage } from "@/pages/QuotePage";
 import { PostWorkSupportPage } from "@/pages/PostWorkSupportPage";
 import { AdminPage } from "@/pages/AdminPage";
-import { ConfiguratorPage } from "@/pages/ConfiguratorPage";
 import { LegalTermsPage } from "@/pages/LegalTermsPage";
 import { LegalPrivacyPage } from "@/pages/LegalPrivacyPage";
 
@@ -360,14 +359,10 @@ const AppRouter = () => {
       />
       <Route path="/subscription" element={<ProtectedRoute><Layout><SubscriptionPage /></Layout></ProtectedRoute>} />
       <Route path="/subscription/success" element={<ProtectedRoute><Layout><SubscriptionPage /></Layout></ProtectedRoute>} />
-      {/* Configurator - Protected route */}
+      {/* Agency replaces the wrapping configurator only on this branch. */}
       <Route
         path="/configurator"
-        element={
-          <ProtectedRoute>
-            <ConfiguratorPage />
-          </ProtectedRoute>
-        }
+        element={<ProtectedRoute><Navigate to="/marketing" replace /></ProtectedRoute>}
       />
       
       {/* Catch all - redirect to dashboard if logged in, otherwise landing */}
