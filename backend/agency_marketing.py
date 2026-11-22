@@ -5,7 +5,7 @@ import logging
 import os
 import uuid
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ def _check_schedule(data):
             raise HTTPException(422, "Le risposte del percorso guidato sono troppo lunghe")
 
 
-def register_agency_marketing_routes(router, db, company_scope, require_company_roles, external_services_enabled):
+def register_agency_marketing_routes(router, db, company_scope, require_company_roles, external_services_enabled, enforce_rate_limit):
     permitted = require_company_roles("owner", "admin", "member")
 
     @router.get("/agency/marketing/contents")
@@ -103,10 +103,11 @@ def register_agency_marketing_routes(router, db, company_scope, require_company_
         return {"deleted": True}
 
     @router.post("/agency/marketing/generate")
-    async def agency_generate(payload: AgencyGenerate, user: Dict = Depends(permitted)):
+    async def agency_generate(payload: AgencyGenerate, request: Request, user: Dict = Depends(permitted)):
         key = os.environ.get("GEMINI_API_KEY", "").strip()
         if not external_services_enabled or not key:
             raise HTTPException(503, "Assistente AI non configurato: chiave Gemini non disponibile nell'ambiente Agency")
+        await enforce_rate_limit(request, "agency_ai_generate", limit=20, window_seconds=86400, identifier=user["company_id"])
         if len(payload.answers) > 12 or any(len(str(k)) > 60 or len(str(v)) > 250 for k, v in payload.answers.items()):
             raise HTTPException(422, "Informazioni troppo lunghe")
         tasks = {
