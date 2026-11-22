@@ -3091,7 +3091,11 @@ async def register(user_data: UserCreate, background_tasks: BackgroundTasks, req
         raise HTTPException(status_code=400, detail="Regime fiscale non valido")
     if user_data.legal_form in {"societa_persone", "societa_capitali"} and user_data.tax_regime in {"forfettario_5", "forfettario_15"}:
         raise HTTPException(status_code=422, detail="Regime fiscale non compatibile con la forma giuridica")
-    if not set(user_data.services).issubset({"ppf", "wrap", "tint", "upholstery"}):
+    allowed_services = (
+        {"websites", "ecommerce", "seo", "maintenance", "digital_marketing"}
+        if APP_ENV == "agency" else {"ppf", "wrap", "tint", "upholstery"}
+    )
+    if not set(user_data.services).issubset(allowed_services):
         raise HTTPException(status_code=400, detail="Servizio non valido")
     existing = await db.users.find_one({"email": email}, {"_id": 0})
     if existing:
