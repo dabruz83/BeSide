@@ -144,7 +144,7 @@ export const OnboardingPage = () => {
               </div>
               
               <div className="space-y-2">
-                <Label htmlFor="vehicle_info">Info Veicolo (opzionale)</Label>
+                <Label htmlFor="vehicle_info">Dettagli progetto (opzionale)</Label>
                 <Input
                   id="vehicle_info"
                   value={formData.vehicle_info}
