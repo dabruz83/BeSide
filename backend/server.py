@@ -42,6 +42,7 @@ from photo_ai import (
 )
 
 from calendar_api import register_calendar_routes, run_calendar_reminder_worker
+from agency_marketing import register_agency_marketing_routes
 
 from multitenancy import (
     COMPANY_ROLES,
@@ -4980,6 +4981,7 @@ async def account_deletion_status(operation_id: str, current_user: Dict = Depend
 # ==================== JOBS AND PLANNING ENDPOINTS ====================
 
 register_calendar_routes(api_router, db, company_scope, require_company_roles)
+register_agency_marketing_routes(api_router, db, company_scope, require_company_roles, EXTERNAL_SERVICES_ENABLED)
 
 @api_router.get("/notifications/settings")
 async def get_notification_settings(current_user: Dict = Depends(get_current_user)):
