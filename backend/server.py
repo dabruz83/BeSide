@@ -126,13 +126,19 @@ CORS_ORIGINS = parse_cors_origins(get_required_environment_variable('CORS_ORIGIN
 if os.environ.get("APP_ENV", "production") != "agency":
     if "https://app.mybeside.pro" not in CORS_ORIGINS:
         CORS_ORIGINS.append("https://app.mybeside.pro")
-ADMIN_PUBLIC_URL = os.environ.get("ADMIN_PUBLIC_URL", "https://admin.mybeside.pro").strip().rstrip("/")
+ADMIN_PUBLIC_URL = os.environ.get(
+    "ADMIN_PUBLIC_URL",
+    "https://agency.mybeside.pro" if os.environ.get("APP_ENV") == "agency" else "https://admin.mybeside.pro",
+).strip().rstrip("/")
 if os.environ.get("APP_ENV", "production") != "agency" and ADMIN_PUBLIC_URL and ADMIN_PUBLIC_URL not in CORS_ORIGINS:
     CORS_ORIGINS.append(ADMIN_PUBLIC_URL)
 FRONTEND_PUBLIC_URL = (
     os.environ.get('FRONTEND_PUBLIC_URL', '').strip().rstrip('/') or CORS_ORIGINS[0]
 )
-PUBLIC_APP_URL = os.environ.get("PUBLIC_APP_URL", "https://app.mybeside.pro").strip().rstrip("/")
+PUBLIC_APP_URL = os.environ.get(
+    "PUBLIC_APP_URL",
+    "https://agency.mybeside.pro" if os.environ.get("APP_ENV") == "agency" else "https://app.mybeside.pro",
+).strip().rstrip("/")
 OAUTH_SESSION_URL = os.environ.get('OAUTH_SESSION_URL', '').strip()
 TOTP_ENCRYPTION_KEY = os.environ.get('TOTP_ENCRYPTION_KEY', '').strip()
 TOTP_ISSUER = "BeSide"
@@ -183,24 +189,18 @@ if WEBAUTHN_ENABLED:
         APP_ENV == "staging"
         and os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() == RAILWAY_STAGING_ENVIRONMENT_ID
     )
-    # Agency is a separate deployment. Do not relax the original staging trust rule;
-    # allow passkeys for an Agency Railway origin only when explicitly pinned to
-    # the new Railway environment ID and its exact HTTPS origin.
+    # Agency trusts only its custom origin and an explicitly pinned environment.
+    # Keep the original Wrapping staging approval unchanged.
     agency_environment_id = os.environ.get("AGENCY_RAILWAY_ENVIRONMENT_ID", "").strip()
-    agency_origin = os.environ.get("AGENCY_WEBAUTHN_ORIGIN", "").strip().rstrip("/")
-    agency_host = urlparse(agency_origin).hostname if agency_origin else None
+    agency_origin = "https://agency.mybeside.pro"
     agency_environment = (
         APP_ENV == "agency"
         and bool(agency_environment_id)
         and agency_environment_id != RAILWAY_STAGING_ENVIRONMENT_ID
         and os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() == agency_environment_id
-        and bool(agency_origin)
-        and urlparse(agency_origin).scheme == "https"
-        and urlparse(agency_origin).port is None
-        and agency_host == WEBAUTHN_RP_ID
-        and WEBAUTHN_ORIGINS == [agency_origin]
-        and bool(agency_host)
-        and agency_host.endswith(".up.railway.app")
+        and os.environ.get("AGENCY_WEBAUTHN_ORIGIN", "").strip() == agency_origin
+        and os.environ.get("WEBAUTHN_ORIGIN", "").strip() == agency_origin
+        and os.environ.get("WEBAUTHN_RP_ID", "").strip() == "agency.mybeside.pro"
     )
     if railway_origin_configured and not (
         (staging_environment and WEBAUTHN_RP_ID == STAGING_WEBAUTHN_RP_ID
@@ -232,6 +232,17 @@ if COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     raise RuntimeError("COOKIE_SAMESITE must be lax, strict, or none")
 if COOKIE_SAMESITE == "none" and not COOKIE_SECURE:
     raise RuntimeError("COOKIE_SECURE must be true when COOKIE_SAMESITE=none")
+if APP_ENV == "agency":
+    if DB_NAME != "beside_agency":
+        raise RuntimeError("Agency requires its dedicated beside_agency database")
+    if CORS_ORIGINS != ["https://agency.mybeside.pro"] or any(
+        origin != "https://agency.mybeside.pro"
+        for origin in (FRONTEND_PUBLIC_URL, PUBLIC_APP_URL, ADMIN_PUBLIC_URL)
+    ):
+        raise RuntimeError("Agency public URLs and CORS must use its exact HTTPS origin")
+    if not COOKIE_SECURE or COOKIE_SAMESITE != "lax":
+        raise RuntimeError("Agency requires Secure cookies with SameSite=lax")
+
 if EMAIL_VERIFICATION_REQUIRED and not (RESEND_ENABLED and RESEND_API_KEY and RESEND_FROM_EMAIL):
     raise RuntimeError(
         "RESEND_ENABLED, RESEND_API_KEY and RESEND_FROM_EMAIL are required when email verification is enforced"

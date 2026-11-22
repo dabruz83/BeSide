@@ -318,13 +318,14 @@ class InMemoryCollection:
             self.documents.append(matching)
             inserted = True
         if matching is None:
-            return SimpleNamespace(matched_count=0)
+            return SimpleNamespace(matched_count=0, modified_count=0)
+        before = copy.deepcopy(matching)
         if inserted:
             matching.update(copy.deepcopy(update.get("$setOnInsert", {})))
         matching.update(copy.deepcopy(update.get("$set", {})))
         for key in update.get("$unset", {}):
             matching.pop(key, None)
-        return SimpleNamespace(matched_count=1)
+        return SimpleNamespace(matched_count=1, modified_count=int(matching != before))
 
     async def update_many(self, query, update):
         matched_count = 0
@@ -800,6 +801,7 @@ def test_email_claim_blocks_concurrent_registration_without_custom_index(monkeyp
     monkeypatch.setattr(server, "db", fake_db)
     user_data = server.UserCreate(
         email="same@beside.it",
+        terms_accepted=True,
         password="StrongPass-123",
         first_name="First",
         business_name="First Company",

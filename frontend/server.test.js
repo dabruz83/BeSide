@@ -47,3 +47,33 @@ test("rejects malformed encoded paths without terminating the server", async (co
   const healthResponse = await fetch(`${baseUrl}/health`);
   assert.equal(healthResponse.status, 200);
 });
+
+test("same-origin API proxy preserves auth, origin, body and cookies", async (context) => {
+  const http = require("node:http");
+  const upstream = http.createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    response.writeHead(201, { "Content-Type": "application/json", "Set-Cookie": "session_token=test; HttpOnly; Secure; SameSite=Lax; Path=/" });
+    response.end(JSON.stringify({ url: request.url, method: request.method, body,
+      origin: request.headers.origin, cookie: request.headers.cookie }));
+  });
+  await new Promise((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const previous = process.env.REACT_APP_BACKEND_URL;
+  process.env.REACT_APP_BACKEND_URL = `http://127.0.0.1:${upstream.address().port}`;
+  context.after(() => {
+    upstream.close();
+    if (previous === undefined) delete process.env.REACT_APP_BACKEND_URL;
+    else process.env.REACT_APP_BACKEND_URL = previous;
+  });
+  const { server, baseUrl } = await startServer();
+  context.after(() => server.close());
+  const response = await fetch(`${baseUrl}/api/agency/marketing/contents?test=1`, {
+    method: "POST", headers: { Origin: "https://agency.mybeside.pro", Cookie: "session_token=test" }, body: "test-body",
+  });
+  assert.equal(response.status, 201);
+  assert.match(response.headers.get("set-cookie"), /HttpOnly; Secure; SameSite=Lax/);
+  assert.deepEqual(await response.json(), {
+    url: "/api/agency/marketing/contents?test=1", method: "POST", body: "test-body",
+    origin: "https://agency.mybeside.pro", cookie: "session_token=test",
+  });
+});
