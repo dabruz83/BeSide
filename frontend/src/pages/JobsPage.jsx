@@ -42,19 +42,20 @@ const formatCurrency = (amount) => {
 };
 
 const JOB_TYPES = [
-  { value: "ppf_full", label: "PPF Completo" },
-  { value: "ppf_partial", label: "PPF Parziale" },
-  { value: "wrap_full", label: "Wrapping Completo" },
-  { value: "wrap_partial", label: "Wrapping Parziale" },
-  { value: "tint", label: "Vetri Auto" },
-  { value: "interior_decor", label: "Interior Decor" },
-  { value: "exterior_decor", label: "Decorazioni Esterne" },
+  { value: "website", label: "Sito web" },
+  { value: "ecommerce", label: "E-commerce" },
+  { value: "maintenance", label: "Manutenzione sito" },
+  { value: "seo", label: "SEO e contenuti" },
+  { value: "marketing", label: "Marketing digitale" },
+  { value: "consulting", label: "Consulenza" },
   { value: "altro", label: "Altro" }
 ];
 const LEGACY_JOB_TYPE_LABELS = {
-  wrap_decorative: "Wrapping auto (storico)",
-  wrap_commercial: "Wrapping Commerciale",
-  upholstery: "Tappezzeria",
+  ppf_full: "PPF completo (storico)", ppf_partial: "PPF parziale (storico)",
+  wrap_full: "Wrapping completo (storico)", wrap_partial: "Wrapping parziale (storico)",
+  wrap_decorative: "Wrapping auto (storico)", wrap_commercial: "Wrapping commerciale (storico)",
+  tint: "Vetri auto (storico)", interior_decor: "Interior decor (storico)",
+  exterior_decor: "Decorazioni esterne (storico)", upholstery: "Tappezzeria (storico)",
 };
 const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_full", "wrap_partial", "wrap_decorative", "wrap_commercial", "tint"]);
 
@@ -71,7 +72,7 @@ const LEAD_SOURCES = [
   { value: "facebook", label: "Facebook" },
   { value: "google_search", label: "Google Search" },
   { value: "google_maps", label: "Google Maps" },
-  { value: "partnership_carrozzerie", label: "Partnership Carrozzerie" },
+  { value: "partnership_carrozzerie", label: "Partnership" },
   { value: "fiere", label: "Fiere" },
   { value: "website", label: "Sito Web" },
   { value: "altro", label: "Altro" }
@@ -393,7 +394,7 @@ export const JobsPage = () => {
                   id="vehicle_info"
                   value={formData.vehicle_info}
                   onChange={(e) => setFormData({ ...formData, vehicle_info: e.target.value })}
-                  placeholder={AUTOMOTIVE_TYPES.has(formData.job_type) ? "Es: BMW X5 2023 Nero" : "Es: vetrina, parete reception o facciata"}
+                  placeholder={AUTOMOTIVE_TYPES.has(formData.job_type) ? "Es: BMW X5 2023 Nero" : "Es: sito vetrina, e-commerce o attività SEO"}
                 />
               </div>
               
