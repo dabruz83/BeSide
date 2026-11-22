@@ -20,23 +20,35 @@ const INITIAL_WINDOW_DAYS = 42;
 const WINDOW_EXTENSION_DAYS = 14;
 const DEFAULT_WORK_AREA = { area_id: "area_default", name: "Area principale" };
 const WORK_TYPES = [
-  ["ppf_full", "PPF completo"], ["ppf_partial", "PPF parziale"],
-  ["wrap_full", "Wrapping completo"], ["wrap_partial", "Wrapping parziale"],
-  ["tint", "Vetri auto"],
-  ["interior_decor", "Interior decor"], ["exterior_decor", "Decorazioni esterne"],
+  ["website", "Sito web"],
+  ["ecommerce", "E-commerce"],
+  ["maintenance", "Manutenzione sito"],
+  ["seo", "SEO e contenuti"],
+  ["marketing", "Marketing digitale"],
+  ["meeting", "Riunione cliente"],
   ["altro", "Altro"]
 ];
+// Keep labels for legacy event types so previously created events remain readable.
 const WORK_TYPE_LABELS = Object.fromEntries([
   ...WORK_TYPES,
-  ["wrap_decorative", "Wrapping auto (storico)"],
-  ["wrap_commercial", "Wrapping commerciale"],
-  ["upholstery", "Tappezzeria"],
+  ["ppf_full", "PPF completo (storico)"], ["ppf_partial", "PPF parziale (storico)"],
+  ["wrap_full", "Wrapping completo (storico)"], ["wrap_partial", "Wrapping parziale (storico)"],
+  ["tint", "Vetri auto (storico)"], ["wrap_decorative", "Wrapping auto (storico)"],
+  ["wrap_commercial", "Wrapping commerciale (storico)"],
+  ["interior_decor", "Interior decor (storico)"], ["exterior_decor", "Decorazioni esterne (storico)"],
+  ["upholstery", "Tappezzeria (storico)"],
 ]);
 const AUTOMOTIVE_TYPES = new Set(["ppf_full", "ppf_partial", "wrap_full", "wrap_partial", "wrap_decorative", "wrap_commercial", "tint"]);
 const WORK_SUBJECT_FIELDS = {
+  website: ["Progetto / sito web", "Es. sito vetrina per studio professionale"],
+  ecommerce: ["Progetto e-commerce", "Es. negozio online per attività locale"],
+  maintenance: ["Sito da aggiornare", "Descrivi il sito o l'intervento"],
+  seo: ["Attività SEO", "Es. ottimizzazione pagine servizi"],
+  marketing: ["Attività marketing", "Es. piano contenuti social"],
+  meeting: ["Argomento riunione", "Es. raccolta requisiti"],
+  altro: ["Dettagli del lavoro", "Descrivi brevemente l'attività"],
   interior_decor: ["Ambiente / oggetto", "Es. parete reception, arredo o pannello"],
   exterior_decor: ["Lavorazione esterna", "Es. vetrina, facciata o insegna"],
-  altro: ["Dettagli del lavoro", "Descrivi brevemente cosa verrà lavorato"],
   upholstery: ["Oggetto da rivestire", "Descrivi l'elemento da lavorare"],
 };
 const REMINDERS = [[0, "All'orario dell'evento"], [5, "5 minuti prima"], [10, "10 minuti prima"],
@@ -74,7 +86,7 @@ const defaultForm = () => {
   const end = new Date(base); end.setHours(11);
   return { title: "", starts_at: localDateTime(base), ends_at: localDateTime(end),
     resource: DEFAULT_WORK_AREA.name, resource_id: DEFAULT_WORK_AREA.area_id,
-    job_id: "", job_type: "altro", client_name: "",
+    job_id: "", job_type: "website", client_name: "",
     client_email: "", client_phone: "", quote_amount: null, vehicle_info: "",
     vehicle_make: "", vehicle_model: "", vehicle_plate: "", work_subject: "",
     notes: "", reminder_minutes: [30] };
@@ -787,7 +799,7 @@ export const CalendarPage = () => {
                 placeholder={(WORK_SUBJECT_FIELDS[form.job_type] || WORK_SUBJECT_FIELDS.altro)[1]} />
             </div>}
             <div className="space-y-1.5"><Label>Note</Label><Textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} /></div>
-            <div className="space-y-1.5"><Label htmlFor="appointment-reminder" className="flex gap-2 items-center"><Clock className="w-4 h-4" />Promemoria email all'installatore</Label>
+            <div className="space-y-1.5"><Label htmlFor="appointment-reminder" className="flex gap-2 items-center"><Clock className="w-4 h-4" />Promemoria email al titolare</Label>
               <select
                 id="appointment-reminder"
                 className="mt-2 w-full rounded-md border bg-background p-2.5 shadow-sm"
