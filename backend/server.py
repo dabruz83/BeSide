@@ -123,10 +123,11 @@ ADMIN_NOTIFICATION_EMAIL = os.environ.get('ADMIN_NOTIFICATION_EMAIL', '').strip(
 
 # Browser origins allowed to call the API (comma-separated, without paths).
 CORS_ORIGINS = parse_cors_origins(get_required_environment_variable('CORS_ORIGINS'))
-if "https://app.mybeside.pro" not in CORS_ORIGINS:
-    CORS_ORIGINS.append("https://app.mybeside.pro")
+if os.environ.get("APP_ENV", "production") != "agency":
+    if "https://app.mybeside.pro" not in CORS_ORIGINS:
+        CORS_ORIGINS.append("https://app.mybeside.pro")
 ADMIN_PUBLIC_URL = os.environ.get("ADMIN_PUBLIC_URL", "https://admin.mybeside.pro").strip().rstrip("/")
-if ADMIN_PUBLIC_URL and ADMIN_PUBLIC_URL not in CORS_ORIGINS:
+if os.environ.get("APP_ENV", "production") != "agency" and ADMIN_PUBLIC_URL and ADMIN_PUBLIC_URL not in CORS_ORIGINS:
     CORS_ORIGINS.append(ADMIN_PUBLIC_URL)
 FRONTEND_PUBLIC_URL = (
     os.environ.get('FRONTEND_PUBLIC_URL', '').strip().rstrip('/') or CORS_ORIGINS[0]
@@ -5002,7 +5003,7 @@ async def account_deletion_status(operation_id: str, current_user: Dict = Depend
 # ==================== JOBS AND PLANNING ENDPOINTS ====================
 
 register_calendar_routes(api_router, db, company_scope, require_company_roles)
-register_agency_marketing_routes(api_router, db, company_scope, require_company_roles, EXTERNAL_SERVICES_ENABLED)
+register_agency_marketing_routes(api_router, db, company_scope, require_company_roles, EXTERNAL_SERVICES_ENABLED, enforce_rate_limit)
 
 @api_router.get("/notifications/settings")
 async def get_notification_settings(current_user: Dict = Depends(get_current_user)):
