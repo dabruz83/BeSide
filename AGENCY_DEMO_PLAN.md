@@ -1,3 +1,28 @@
+## Stato implementazione — 22 novembre 2026
+
+**Ramo canonico Agency**: `staging/agency` (creato dal ramo snapshot `staging/beside-agency-demo-2026-11-22`, derivato dallo staging funzionante). Il ramo wrapping `staging/2026-11-09-mfa-recovery` è invariato. Non fondere i due branch automaticamente.
+
+### Implementato solo su `staging/agency`
+- `frontend/src/components/Layout.jsx`: voce Configuratore sostituita da Marketing AI nella nav desktop/mobile, etichetta Agency.
+- `frontend/src/App.js`: la vecchia rotta `/configurator` reindirizza a `/marketing`.
+- `frontend/src/pages/MarketingPage.jsx`: cinque aree (Panoramica, Assistente AI, I miei contenuti, Calendario editoriale, Guida), domande guidate, quattro generazioni AI, editor, bozze, stati, programmazione manuale e copia testo.
+- `backend/agency_marketing.py`: REST API con CRUD persistente di contenuti per azienda e generazione Gemini per web agency, massimo 20 richieste/giorno/azienda (quando RATE_LIMITING_ENABLED=true).
+- `backend/server.py`: router registrato, CORS Agency separato dai domini produzione, origine passkey Agency esattamente configurabile con APP_ENV=agency e controlli Railway.
+- `backend/multitenancy.py`: collection di contenuti inclusa nell'indicizzazione per azienda. Anche la cancellazione account elimina i dati marketing.
+- `frontend/src/pages/CalendarPage.jsx`: UX agenda precedente conservata; opzioni lavorazioni aggiornate a sito web, e-commerce, SEO ecc.
+- `JobsPage.jsx`, `OnboardingPage.jsx`, `DashboardPage.jsx`, `QuotePage.jsx`: etichette/servizi per web agency, con compatibilità per voci legacy.
+
+### NON ancora verificato / NON ancora attivo
+- **Non è stato eseguito un build/test runtime** in questo aggiornamento: al momento solo verifica statica del codice e dei riferimenti GitHub.
+- **Non esiste ancora un ambiente Railway Agency** né un link demo testato. Non riconnettere gli attuali servizi staging/production a questo branch.
+- Prima del deploy, provisionare ambiente separato e database isolato, settare variabili senza copiare segreti o dati da produzione, impostare FRONTEND_PUBLIC_URL/PUBLIC_APP_URL/CORS_ORIGINS e login del test tenant.
+- Per attivare Gemini: EXTERNAL_SERVICES_ENABLED=true e GEMINI_API_KEY in ambiente Agency (GEMINI_MODEL facoltativo). Se assenti, l'interfaccia segnala errore esplicito.
+- Per attivare Face ID/passkey nel nuovo dominio Railway: APP_ENV=agency, WEBAUTHN_ENABLED=true, WEBAUTHN_RP_ID uguale al dominio frontend Agency, WEBAUTHN_ORIGIN uguale all'origin HTTPS, AGENCY_WEBAUTHN_ORIGIN uguale all'origin HTTPS e AGENCY_RAILWAY_ENVIRONMENT_ID uguale all'ID del **nuovo** ambiente Railway. Registrare una passkey nuova sul dominio della demo e testarla; non riusare passkey del dominio wrapping.
+- Calendario editoriale e agenda lavorativa sono raggiungibili dalla stessa app, ma **non condividono ancora eventi automatici nella griglia**; il calendario editoriale memorizza e mostra le date programmate e offre collegamento all'agenda. Pubblicazione social automatica non inclusa.
+- Prima di presentare la demo: lanciare `npm run build` e `npm test` in `frontend`; test Python esistenti backend con ambiente test isolato, prova autenticazione MFA/passkey, creazione preventivo, modifica appuntamento, salvataggio bozza, approvazione, programmazione, generazione AI, isolamento aziende.
+
+---
+
 # Beside Agency — piano demo essenziale (22 novembre 2026)
 
 ## Obiettivo
