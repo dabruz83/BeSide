@@ -29,6 +29,8 @@ const formatCurrency = (amount) => {
 };
 
 const JOB_TYPE_LABELS = {
+  website: "Sito web", ecommerce: "E-commerce", maintenance: "Manutenzione sito",
+  seo: "SEO e contenuti", marketing: "Marketing digitale", consulting: "Consulenza",
   ppf_full: "PPF Completo",
   ppf_partial: "PPF Parziale",
   wrap_decorative: "Wrapping Auto",
@@ -145,7 +147,7 @@ export const QuotePage = () => {
                   <CheckCircle2 className="w-16 h-16 text-success mx-auto mb-4" />
                   <h2 className="text-2xl font-bold text-success mb-2">Preventivo Accettato!</h2>
                   <p className="text-muted-foreground">
-                    Grazie! L'installatore è stato notificato e ti contatterà presto per concordare i dettagli.
+                    Grazie! Il professionista è stato avvisato e ti contatterà presto per concordare i dettagli.
                   </p>
                 </>
               ) : (
@@ -241,7 +243,7 @@ export const QuotePage = () => {
                     <Car className="w-5 h-5 text-primary" />
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">Veicolo</p>
+                    <p className="text-sm text-muted-foreground">Dettagli lavoro</p>
                     <p className="font-medium">
                       {VEHICLE_TYPE_LABELS[quote.vehicle_type] || quote.vehicle_type}
                       {quote.vehicle_info && ` - ${quote.vehicle_info}`}
@@ -328,7 +330,7 @@ export const QuotePage = () => {
 
         {/* Footer */}
         <p className="text-center text-xs text-muted-foreground">
-          Powered by BESIDE • Gestione Installatori
+          Powered by BESIDE • Gestione Web Agency
         </p>
       </div>
     </div>
