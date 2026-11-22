@@ -22,7 +22,7 @@ Una sola pagina `Marketing AI`, senza nuove dashboard avanzate. Conservare stile
 3. **Scrivi post**: scegliere tema e tono; AI produce un post pronto per LinkedIn/Instagram con CTA. Mostra copia negli appunti.
 4. **Script breve video**: AI produce hook + sequenza semplice per reel di 30–45 s + CTA. Mostra copia negli appunti.
 
-Riutilizzare l'endpoint Gemini e i prompt esistenti, adattandoli ad Agency, mantenendo le 4 operazioni indipendenti (nessun wizard a 6 step). Parametri essenziali, limiti di lunghezza e costi; errore chiaro per provider non configurato, zero output AI simulati spacciati per reali. I dati esempio sono esplicitamente `Dati dimostrativi`.
+Riutilizzare l'endpoint Gemini e i prompt esistenti, adattandoli ad Agency, mantenendo 4 strumenti AI utilizzabili autonomamente, più un mini-percorso guidato iniziale con poche domande e possibilità di saltare i passaggi. Parametri essenziali, limiti di lunghezza e costi; errore chiaro per provider non configurato, zero output AI simulati spacciati per reali. I dati esempio sono esplicitamente `Dati dimostrativi`.
 
 ## Modifiche UI indispensabili
 - Modifica esclusivamente su questo ramo Agency.
@@ -50,3 +50,42 @@ Riutilizzare l'endpoint Gemini e i prompt esistenti, adattandoli ad Agency, mant
 
 ## Principio risparmio token
 Leggi solo file interessati, modifica localmente, mostra un diff sintetico e riepilogo. Evita refactor, dipendenze nuove, redesign, scanner full repo ripetuti. Stop e chiedi autorizzazione solo per deploy o risorse esterne con costi; il commit sul ramo Agency è autorizzato.
+
+## Revisione 22/11 — Sezione Marketing AI completa ma minimale (prioritaria)
+Questa revisione sostituisce la struttura 'una sola pagina con quattro pulsanti' laddove confligge con essa. Il requisito ora è un'area Marketing AI con percorso guidato, raccolta persistente di contenuti, stati, agenda editoriale e piccole guide. Mantenerla leggera e implementarla prima degli extra.
+
+### Conferma agenda
+- Confrontato `frontend/src/pages/CalendarPage.jsx` sui rami `staging/2026-11-09-mfa-recovery` e `staging/beside-agency-demo-2026-11-22`: stesso blob SHA `42c7bcfb0293a4c170e5d0af25e629036d63d39c`.
+- Compare-commits: ramo Agency avanti di soli commit documentali, nessun commit mancante dal ramo staging originale al momento della verifica.
+- L'agenda esistente contiene ancora tipologie per wrapping/PPF: nella versione Agency adattare le etichette pertinenti per web agency, senza riscrivere la UX calendario e senza modificare l'originale.
+
+### Menù interno Marketing AI
+Mantenere la sezione singola in navigazione principale al posto di Configuratore. All'interno, tab leggere:
+1. **Panoramica** (landing): pulsante grande `Crea con AI`, contatori Bozze / Da approvare / Programmati / Pubblicati, prossimi post e suggerimento pratico.
+2. **Assistente AI**: mini wizard progressivo + quattro strumenti Cliente ideale, Idee contenuti, Crea post, Script reel. Consentire modifica manuale testo e `Salva bozza` in ogni momento.
+3. **Contenuti**: libreria ricercabile/filtrabile con card contenuto, titolo, canale, formato, status, data, modifica, duplica, copia; no contenuti fake mescolati a reali.
+4. **Calendario editoriale**: vista semplice per data, selezione giorno e contenuti previsti, con collegamento all'agenda lavorativa esistente.
+5. **Guida e consigli**: onboarding in 3–5 schede compatte, spiegazioni di post/reel/CTA/tono, buone pratiche di revisione e non pubblicazione automatica.
+
+### Domande guidate iniziali (solo pochi tap)
+- Cosa vuoi promuovere? (Sito vetrina / E-commerce / SEO / Manutenzione / Altro)
+- Qual è l'obiettivo? (Far conoscere / Ottenere contatti / Vendere / Fidelizzare)
+- A chi ti rivolgi? (Professionisti / Attività locali / Aziende / Altro; città facoltativa)
+- Dove pubblicherai? (Instagram / LinkedIn / Facebook / Altro)
+- Che formato e tono vuoi? (Post / Carosello / Reel; Professionale / Semplice / Creativo)
+Pulsante `Genera`; suggerire un template coerente e generare contenuto con API AI reale. Permettere di saltare, tornare indietro o cambiare risposte. Salvare preferenze minime per futuri contenuti se l'utente lo decide; niente generazioni automatiche costose all'apertura.
+
+### Stato e modello persistente contenuto
+Stati chiari: `draft` (bozza/incompleto), `pending_approval` (da approvare), `ready` (approvato/pronto), `scheduled` (programmato), `published` (pubblicato, marcato manualmente). Il menu home mostra 4 gruppi, `ready` confluisce nei `Pronti per pubblicazione` nella libreria. Nome social, content_type (post/carousel/reel_script), titolo, testo, prompt/context minimale, owner_company_id, owner_user_id, timestamp creazione/modifica, scheduled_at opzionale e published_at opzionale.
+- Tutte le scritture e letture devono rispettare il perimetro company/utente già definito da Beside. Validazioni e autorizzazioni server-side.
+- Riapri una bozza esattamente da dove era rimasta (domande e testo già presenti); il testo generato resta modificabile e salvabile. Stato cambia solo per azione esplicita.
+- Il processo `Da approvare` nella prima demo è un'etichetta di stato, non un sistema multi-utente di approvazione; nessun invio automatico a revisori.
+
+### Integrazione agenda
+- **Agenda operativa originale** resta per appuntamenti/scadenze; **calendario editoriale** per date di pubblicazione. Non trasformare i post in appuntamenti con postazioni o ore di lavorazione.
+- Se tecnicamente poco costoso, visualizzare nel calendario operativo gli eventi editoriali come categoria `Marketing` filtrabile, non sovrapposti alle ore e con stile distinto. Per la demo il collegamento dalla sezione Marketing a /calendar e la visualizzazione di una data pianificata in entrambe le aree sono sufficienti se gestiti senza duplicazione o conflitti.
+- Programmazione = pianificazione interna/reminder visivo, **non** auto-pubblicazione su Instagram/Facebook/LinkedIn. Marcatura pubblicato manuale; nessuna integrazione social esterna necessaria nella demo.
+
+### Ottimizzazione per la demo domenicale
+Ordine reale MVP: (1) navigazione e landing, (2) wizard e 4 generazioni Gemini, (3) salvataggio/modifica stati bozza/da approvare/pronto/programmato/pubblicato, (4) calendario editoriale con data, (5) guida corta.
+Usare dati test esplicitamente dimostrativi. Nessuna modifica alla produzione o allo staging originale, nessun nuovo costo senza consenso. Se l'integrazione visuale nel calendario operativo comporta rischio di regressioni, rimandare il doppio display: non rinviare il salvataggio delle date né rompere l'agenda esistente.
