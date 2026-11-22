@@ -182,12 +182,33 @@ if WEBAUTHN_ENABLED:
         APP_ENV == "staging"
         and os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() == RAILWAY_STAGING_ENVIRONMENT_ID
     )
+    # Agency is a separate deployment. Do not relax the original staging trust rule;
+    # allow passkeys for an Agency Railway origin only when explicitly pinned to
+    # the new Railway environment ID and its exact HTTPS origin.
+    agency_environment_id = os.environ.get("AGENCY_RAILWAY_ENVIRONMENT_ID", "").strip()
+    agency_origin = os.environ.get("AGENCY_WEBAUTHN_ORIGIN", "").strip().rstrip("/")
+    agency_host = urlparse(agency_origin).hostname if agency_origin else None
+    agency_environment = (
+        APP_ENV == "agency"
+        and bool(agency_environment_id)
+        and agency_environment_id != RAILWAY_STAGING_ENVIRONMENT_ID
+        and os.environ.get("RAILWAY_ENVIRONMENT_ID", "").strip() == agency_environment_id
+        and bool(agency_origin)
+        and urlparse(agency_origin).scheme == "https"
+        and urlparse(agency_origin).port is None
+        and agency_host == WEBAUTHN_RP_ID
+        and WEBAUTHN_ORIGINS == [agency_origin]
+        and bool(agency_host)
+        and agency_host.endswith(".up.railway.app")
+    )
     if railway_origin_configured and not (
-        staging_environment
-        and WEBAUTHN_RP_ID == STAGING_WEBAUTHN_RP_ID
-        and WEBAUTHN_ORIGINS == [STAGING_WEBAUTHN_ORIGIN]
+        (staging_environment and WEBAUTHN_RP_ID == STAGING_WEBAUTHN_RP_ID
+         and WEBAUTHN_ORIGINS == [STAGING_WEBAUTHN_ORIGIN])
+        or agency_environment
     ):
-        raise RuntimeError("Use only the explicitly approved staging Railway domain for WebAuthn")
+        raise RuntimeError("WebAuthn requires an explicitly approved Railway environment and origin")
+    if APP_ENV == "agency" and not agency_environment:
+        raise RuntimeError("Agency WebAuthn requires its exact HTTPS origin and environment ID")
 if APP_ENV == "local":
     from urllib.parse import urlparse
     if urlparse(MONGO_URL).hostname not in {"localhost", "127.0.0.1", "::1"} or not DB_NAME.startswith(("beside_demo", "beside_test_")):
