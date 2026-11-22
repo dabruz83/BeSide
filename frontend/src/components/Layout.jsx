@@ -10,7 +10,7 @@ import {
   ClipboardList,
   LogOut,
   ChevronRight,
-  Palette,
+  Sparkles,
   MessageSquare
 } from "lucide-react";
 import { useRef, useState } from "react";
@@ -21,7 +21,7 @@ import { useUiPreferences } from "@/lib/uiPreferences";
 const navItems = [
   { path: "/dashboard", label: "Bacheca", icon: LayoutDashboard },
   { path: "/jobs", label: "Lavori", icon: Wrench },
-  { path: "/configurator", label: "Configuratore", icon: Palette },
+  { path: "/marketing", label: "Marketing AI", icon: Sparkles },
   { path: "/finance", label: "Finanza", icon: Euro },
   { path: "/calendar", label: "Pianificazione", shortLabel: "Agenda", icon: CalendarDays },
   { path: "/onboarding", label: "Clienti", icon: ClipboardList },
@@ -95,7 +95,7 @@ export const Layout = ({ children }) => {
         {/* Logo */}
         <div className="p-6 border-b border-white/10">
           <img src="/beside-logo.svg" alt="Beside" className="h-9 w-auto max-w-full object-contain object-left" />
-          <p className="text-white/60 text-sm mt-1">Gestione Installatori</p>
+          <p className="text-white/60 text-sm mt-1">Gestione Web Agency</p>
         </div>
 
         {/* Navigation */}
