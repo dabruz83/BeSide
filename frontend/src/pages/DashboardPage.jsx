@@ -27,6 +27,8 @@ const formatCurrency = (amount) => {
 };
 
 const JOB_TYPE_LABELS = {
+  website: "Sito web", ecommerce: "E-commerce", maintenance: "Manutenzione sito",
+  seo: "SEO e contenuti", marketing: "Marketing digitale", consulting: "Consulenza",
   ppf_full: "PPF Completo",
   ppf_partial: "PPF Parziale",
   wrap_decorative: "Wrapping Auto",
@@ -44,7 +46,7 @@ const LEAD_SOURCE_LABELS = {
   facebook: "Facebook",
   google_search: "Google Search",
   google_maps: "Google Maps",
-  partnership_carrozzerie: "Partnership Carrozzerie",
+  partnership_carrozzerie: "Partnership",
   fiere: "Fiere",
   website: "Sito Web",
   altro: "Altro"
@@ -120,7 +122,7 @@ export const DashboardPage = () => {
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-heading-2 text-primary" data-testid="dashboard-title">
-            Ciao, {user?.first_name || user?.name || user?.business_name?.split(' ')[0] || "Installatore"}!
+            Ciao, {user?.first_name || user?.name || user?.business_name?.split(' ')[0] || "Benvenuto"}!
           </h1>
           <p className="text-muted-foreground">Ecco il riepilogo della tua attività</p>
         </div>
