@@ -1,566 +1,359 @@
-import { useState, useEffect } from "react";
-import { API } from "@/App";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import axios from "axios";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { API } from "@/App";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { toast } from "sonner";
-import { 
-  Megaphone, 
-  TrendingUp,
-  Users,
-  Clock,
-  Euro,
-  Plus,
-  Lightbulb,
-  Sparkles,
-  Target,
-  MessageSquare,
-  Video,
-  Send,
-  Loader2,
-  Copy,
-  ChevronRight
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Sparkles, Plus, CalendarDays, BookOpen, ClipboardCheck, Clock3,
+  CheckCircle2, PencilLine, Copy, Trash2, ArrowLeft, ArrowRight,
+  Lightbulb, FolderOpen, RefreshCcw, LayoutDashboard
 } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, Legend, BarChart, Bar, XAxis, YAxis, CartesianGrid } from "recharts";
 
-const formatCurrency = (amount) => {
-  return new Intl.NumberFormat('it-IT', {
-    style: 'currency',
-    currency: 'EUR',
-    minimumFractionDigits: 2
-  }).format(amount);
-};
-
-const LEAD_SOURCES = [
-  { value: "passaparola", label: "Passaparola" },
-  { value: "instagram", label: "Instagram" },
-  { value: "facebook", label: "Facebook" },
-  { value: "google_search", label: "Google Search" },
-  { value: "google_maps", label: "Google Maps" },
-  { value: "partnership_carrozzerie", label: "Partnership Carrozzerie" },
-  { value: "fiere", label: "Fiere" },
-  { value: "website", label: "Sito Web" },
-  { value: "altro", label: "Altro" }
+const TABS = [
+  { id: "overview", label: "Panoramica", Icon: LayoutDashboard },
+  { id: "assistant", label: "Assistente AI", Icon: Sparkles },
+  { id: "contents", label: "I miei contenuti", Icon: FolderOpen },
+  { id: "calendar", label: "Calendario editoriale", Icon: CalendarDays },
+  { id: "guide", label: "Guida e consigli", Icon: BookOpen },
 ];
-
-const CHART_COLORS = ["#1E3A5F", "#2E86AB", "#1A7A4A", "#F39C12", "#C0392B", "#8E44AD", "#27AE60", "#E74C3C", "#3498DB"];
-
-const AI_STEPS = [
-  { id: "bacino_utenza", label: "Analizza Bacino", icon: Target, description: "Analizza il tuo mercato locale" },
-  { id: "trova_argomenti", label: "Trova Argomenti", icon: Lightbulb, description: "Scopri temi per i contenuti" },
-  { id: "pain_points", label: "Pain Points", icon: Users, description: "Identifica i problemi dei clienti" },
-  { id: "genera_idea", label: "Genera Idea", icon: Sparkles, description: "Crea un'idea per il contenuto" },
-  { id: "sviluppo_testo", label: "Scrivi Testo", icon: MessageSquare, description: "Sviluppa il copy completo" },
-  { id: "sviluppo_video", label: "Script Video", icon: Video, description: "Crea lo script per video/reel" }
+const STATES = [
+  { id: "draft", label: "Bozze", Icon: PencilLine },
+  { id: "pending_approval", label: "Da approvare", Icon: ClipboardCheck },
+  { id: "ready", label: "Pronti", Icon: CheckCircle2 },
+  { id: "scheduled", label: "Programmati", Icon: Clock3 },
+  { id: "published", label: "Pubblicati", Icon: CheckCircle2 },
 ];
+const QUESTIONS = [
+  { key: "servizio", title: "Cosa vuoi promuovere?", options: ["Sito web", "E-commerce", "SEO", "Manutenzione"] },
+  { key: "obiettivo", title: "Qual è il tuo obiettivo?", options: ["Trovare clienti", "Farti conoscere", "Vendere", "Fidelizzare"] },
+  { key: "pubblico", title: "A chi ti rivolgi?", options: ["Professionisti", "Attività locali", "Aziende", "Privati"] },
+  { key: "canale", title: "Dove vuoi pubblicare?", options: ["Instagram", "LinkedIn", "Facebook", "Altro"] },
+  { key: "formato", title: "Quale contenuto vuoi creare?", options: ["Post", "Carosello", "Reel"] },
+  { key: "tono", title: "Con quale tono?", options: ["Professionale", "Semplice", "Creativo", "Informativo"] },
+];
+const ACTIONS = [
+  { id: "audience", title: "Cliente ideale", hint: "Definisci pubblico, bisogni e proposte di valore." },
+  { id: "ideas", title: "Idee contenuti", hint: "Cinque spunti concreti per iniziare." },
+  { id: "post", title: "Scrivi post", hint: "Un post con invito all'azione, pronto da rivedere." },
+  { id: "reel", title: "Script reel", hint: "Un video breve con hook, scene e CTA." },
+];
+const EMPTY = { title: "", body: "", channel: "Instagram", format: "post", status: "draft", scheduled_date: "", answers: {} };
+const prettyDate = (value) => value ? new Date(value.slice(0, 10) + "T12:00:00").toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" }) : "";
+const statusLabel = (status) => STATES.find((s) => s.id === status)?.label || status;
 
 export const MarketingPage = () => {
-  const [leadStats, setLeadStats] = useState([]);
-  const [insight, setInsight] = useState(null);
-  const [efforts, setEfforts] = useState([]);
+  const [tab, setTab] = useState("overview");
+  const [contents, setContents] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [formData, setFormData] = useState({
-    month: new Date().toISOString().slice(0, 7),
-    channel: "",
-    hours_invested: ""
-  });
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [form, setForm] = useState({ ...EMPTY });
+  const [step, setStep] = useState(0);
+  const [brief, setBrief] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [aiError, setAiError] = useState("");
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
 
-  // AI Content State
-  const [aiStep, setAiStep] = useState("bacino_utenza");
-  const [aiInput, setAiInput] = useState("");
-  const [aiContext, setAiContext] = useState({});
-  const [aiResponse, setAiResponse] = useState("");
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiHistory, setAiHistory] = useState([]);
-
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  const fetchData = async () => {
+  const reload = useCallback(async () => {
     try {
-      const [statsRes, effortsRes] = await Promise.all([
-        axios.get(`${API}/marketing/lead-sources`),
-        axios.get(`${API}/marketing/efforts`)
-      ]);
-      setLeadStats(statsRes.data.lead_sources);
-      setInsight(statsRes.data.insight);
-      setEfforts(effortsRes.data);
-    } catch (error) {
-      console.error("Error fetching data:", error);
+      const res = await axios.get(API + "/agency/marketing/contents");
+      setContents(Array.isArray(res.data) ? res.data : []);
+      setError("");
+    } catch (e) {
+      setError(e.response?.data?.detail || "Impossibile caricare i contenuti.");
     } finally {
       setLoading(false);
     }
+  }, []);
+  useEffect(() => { reload(); }, [reload]);
+
+  const counts = useMemo(() => Object.fromEntries(STATES.map((state) =>
+    [state.id, contents.filter((item) => item.status === state.id).length])), [contents]);
+  const scheduled = useMemo(() => contents.filter((x) => x.scheduled_date && x.status === "scheduled")
+    .sort((a, b) => a.scheduled_date.localeCompare(b.scheduled_date)), [contents]);
+  const visible = useMemo(() => contents.filter((x) => filter === "all" || x.status === filter), [contents, filter]);
+
+  const change = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
+  const selectAnswer = (key, value) => setForm((prev) => ({
+    ...prev, answers: { ...prev.answers, [key]: value },
+    ...(key === "canale" ? { channel: value } : {}),
+    ...(key === "formato" ? { format: value === "Reel" ? "reel_script" : value === "Carosello" ? "carousel" : "post" } : {}),
+  }));
+
+  const create = () => {
+    setForm({ ...EMPTY, answers: {} });
+    setStep(0);
+    setBrief("");
+    setAiError("");
+    setTab("assistant");
+  };
+  const edit = (item) => {
+    setForm({ ...EMPTY, ...item, answers: { ...(item.answers || {}) }, scheduled_date: item.scheduled_date || "" });
+    const firstUnanswered = QUESTIONS.findIndex((question) => !(item.answers || {})[question.key]);
+    setStep(firstUnanswered >= 0 ? firstUnanswered : QUESTIONS.length);
+    setAiError("");
+    setTab("assistant");
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      await axios.post(`${API}/marketing/efforts`, {
-        ...formData,
-        hours_invested: parseFloat(formData.hours_invested) || 0
-      });
-      toast.success("Ore marketing salvate!");
-      setDialogOpen(false);
-      setFormData({
-        month: new Date().toISOString().slice(0, 7),
-        channel: "",
-        hours_invested: ""
-      });
-      fetchData();
-    } catch (error) {
-      toast.error("Errore nel salvataggio");
-    }
-  };
-
-  const handleAIGenerate = async () => {
-    if (!aiInput.trim() && aiStep === "bacino_utenza") {
-      toast.error("Inserisci la tua zona/città");
+  const save = async (nextStatus = form.status) => {
+    if (nextStatus === "scheduled" && !form.scheduled_date) {
+      toast.error("Seleziona prima una data di pubblicazione.");
       return;
     }
-
-    setAiLoading(true);
+    setSaving(true);
     try {
-      const response = await axios.post(`${API}/marketing/ai/generate`, {
-        step: aiStep,
-        context: aiContext,
-        user_input: aiInput
-      });
-      
-      setAiResponse(response.data.content);
-      
-      // Update context with this step's info
-      setAiContext(prev => ({
-        ...prev,
-        [aiStep]: {
-          input: aiInput,
-          response: response.data.content
-        }
-      }));
-      
-      // Add to history
-      setAiHistory(prev => [...prev, {
-        step: aiStep,
-        input: aiInput,
-        response: response.data.content,
-        timestamp: new Date().toISOString()
-      }]);
-      
-      toast.success("Contenuto generato!");
-    } catch (error) {
-      toast.error(error.response?.data?.detail || "Errore nella generazione");
+      const payload = {
+        title: form.title.trim() || "Contenuto senza titolo",
+        body: form.body,
+        channel: form.channel,
+        format: form.format,
+        status: nextStatus,
+        scheduled_date: form.scheduled_date || null,
+        answers: form.answers,
+      };
+      const res = form.content_id
+        ? await axios.patch(API + "/agency/marketing/contents/" + form.content_id, payload)
+        : await axios.post(API + "/agency/marketing/contents", payload);
+      setForm((prev) => ({ ...prev, ...res.data, scheduled_date: res.data.scheduled_date || "" }));
+      await reload();
+      toast.success(nextStatus === "draft" ? "Bozza salvata" : "Contenuto aggiornato");
+      setTab("contents");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Non è stato possibile salvare.");
     } finally {
-      setAiLoading(false);
+      setSaving(false);
     }
   };
 
-  const copyToClipboard = (text) => {
-    navigator.clipboard.writeText(text);
-    toast.success("Copiato negli appunti!");
-  };
-
-  const goToNextStep = () => {
-    const currentIndex = AI_STEPS.findIndex(s => s.id === aiStep);
-    if (currentIndex < AI_STEPS.length - 1) {
-      setAiStep(AI_STEPS[currentIndex + 1].id);
-      setAiInput("");
-      setAiResponse("");
+  const remove = async (item) => {
+    if (!window.confirm("Eliminare definitivamente questo contenuto?")) return;
+    try {
+      await axios.delete(API + "/agency/marketing/contents/" + item.content_id);
+      await reload();
+      toast.success("Contenuto eliminato");
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Errore durante l'eliminazione");
     }
   };
 
-  const getSourceLabel = (source) => LEAD_SOURCES.find(s => s.value === source)?.label || source;
-
-  const pieChartData = leadStats.map((stat, index) => ({
-    name: getSourceLabel(stat.source),
-    value: stat.total_revenue,
-    percentage: stat.percentage,
-    fill: CHART_COLORS[index % CHART_COLORS.length]
-  }));
-
-  const roiChartData = leadStats.map((stat, index) => ({
-    name: getSourceLabel(stat.source),
-    roi: stat.roi,
-    fill: CHART_COLORS[index % CHART_COLORS.length]
-  }));
-
-  const getStepPlaceholder = (step) => {
-    switch (step) {
-      case "bacino_utenza": return "Es: Milano nord, zona Monza-Brianza";
-      case "trova_argomenti": return "Es: PPF per auto sportive, manutenzione wrap";
-      case "pain_points": return "Es: Preoccupazioni sui costi, durata del prodotto";
-      case "genera_idea": return "Es: Video comparativo PPF vs wrap";
-      case "sviluppo_testo": return "Descrivi l'idea da sviluppare...";
-      case "sviluppo_video": return "Descrivi il video che vuoi creare...";
-      default: return "";
+  const copy = async (value) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast.success("Copiato negli appunti");
+    } catch {
+      toast.error("Non è stato possibile copiare il testo");
     }
   };
+
+  const generate = async (action) => {
+    setAiBusy(true);
+    setAiError("");
+    try {
+      const res = await axios.post(API + "/agency/marketing/generate", {
+        action,
+        answers: form.answers,
+        brief,
+      });
+      const output = (res.data?.content || "").trim();
+      if (!output) throw new Error("empty");
+      setForm((prev) => ({
+        ...prev,
+        title: prev.title || (ACTIONS.find((a) => a.id === action)?.title + " — " + (prev.answers.servizio || "Web agency")),
+        body: prev.body ? prev.body + "\n\n" + output : output,
+        format: action === "reel" ? "reel_script" : prev.format,
+      }));
+      toast.success("Testo generato: puoi modificarlo e salvarlo.");
+    } catch (e) {
+      setAiError(e.response?.data?.detail || "L'assistente non è disponibile. Riprova più tardi.");
+    } finally {
+      setAiBusy(false);
+    }
+  };
+
+  const renderContent = (item) => (
+    <Card key={item.content_id}>
+      <CardContent className="p-4 space-y-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <span className="text-xs rounded-full bg-muted px-2 py-1">{statusLabel(item.status)}</span>
+          <span className="text-xs text-muted-foreground">{item.channel} · {item.format === "reel_script" ? "Reel" : item.format === "carousel" ? "Carosello" : "Post"}</span>
+        </div>
+        <p className="font-semibold line-clamp-2">{item.title || "Contenuto senza titolo"}</p>
+        <p className="text-sm text-muted-foreground line-clamp-2">{item.body || "Contenuto da completare"}</p>
+        {item.scheduled_date && <p className="text-xs text-muted-foreground"><CalendarDays className="inline h-3 w-3 mr-1" />{prettyDate(item.scheduled_date)}</p>}
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" onClick={() => edit(item)}><PencilLine className="h-4 w-4 mr-1" />Apri</Button>
+          <Button size="sm" variant="outline" disabled={!item.body} onClick={() => copy(item.body)} aria-label="Copia il testo"><Copy className="h-4 w-4" /></Button>
+          <Button size="sm" variant="ghost" onClick={() => remove(item)} aria-label="Elimina il contenuto"><Trash2 className="h-4 w-4" /></Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+    <div className="space-y-5 pb-8" data-testid="agency-marketing">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-heading-2 text-primary" data-testid="marketing-title">Marketing</h1>
-          <p className="text-muted-foreground">Analizza ROI e crea contenuti con l'AI</p>
+          <h1 className="text-2xl font-bold text-primary flex items-center gap-2"><Sparkles className="h-6 w-6" />Marketing AI</h1>
+          <p className="text-sm text-muted-foreground">Beside Agency · Dall'idea alla pubblicazione</p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button data-testid="add-effort-btn">
-              <Plus className="w-4 h-4 mr-2" />
-              Registra Ore
-            </Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Registra Ore Marketing</DialogTitle>
-            </DialogHeader>
-            <form onSubmit={handleSubmit} className="space-y-4">
-              <div className="space-y-2">
-                <Label>Mese</Label>
-                <Input
-                  type="month"
-                  value={formData.month}
-                  onChange={(e) => setFormData({ ...formData, month: e.target.value })}
-                  required
-                />
-              </div>
-              
-              <div className="space-y-2">
-                <Label>Canale</Label>
-                <Select
-                  value={formData.channel}
-                  onValueChange={(value) => setFormData({ ...formData, channel: value })}
-                  required
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Seleziona canale" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LEAD_SOURCES.map((source) => (
-                      <SelectItem key={source.value} value={source.value}>{source.label}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              
-              <div className="space-y-2">
-                <Label>Ore Investite</Label>
-                <Input
-                  type="number"
-                  step="0.5"
-                  value={formData.hours_invested}
-                  onChange={(e) => setFormData({ ...formData, hours_invested: e.target.value })}
-                  placeholder="4"
-                  required
-                />
-              </div>
-              
-              <Button type="submit" className="w-full">
-                Salva
-              </Button>
-            </form>
-          </DialogContent>
-        </Dialog>
+        <Button onClick={create} className="rounded-full"><Plus className="h-4 w-4 mr-1" />Crea</Button>
       </div>
 
-      <Tabs defaultValue="analytics" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="analytics">
-            <TrendingUp className="w-4 h-4 mr-2" />
-            Analytics & ROI
-          </TabsTrigger>
-          <TabsTrigger value="ai_content">
-            <Sparkles className="w-4 h-4 mr-2" />
-            Genera Contenuti AI
-          </TabsTrigger>
-        </TabsList>
+      <div className="flex gap-2 overflow-x-auto pb-2" role="tablist" aria-label="Sezioni Marketing AI">
+        {TABS.map(({ id, label, Icon }) =>
+          <Button key={id} role="tab" aria-selected={tab === id} size="sm"
+            variant={tab === id ? "default" : "outline"} className="shrink-0 rounded-full"
+            onClick={() => setTab(id)}><Icon className="mr-1 h-4 w-4" />{label}</Button>)}
+      </div>
+      {error && <p className="rounded-lg border border-red-200 p-3 text-sm text-red-700" role="alert">{error} <Button size="sm" variant="ghost" onClick={reload}><RefreshCcw className="h-4 w-4" /></Button></p>}
 
-        {/* Analytics Tab */}
-        <TabsContent value="analytics" className="space-y-6">
-          {/* Insight Card */}
-          {insight && (
-            <Card className="bg-secondary/10 border-secondary/30">
-              <CardContent className="py-4">
-                <div className="flex items-start gap-3">
-                  <Lightbulb className="w-5 h-5 text-secondary flex-shrink-0 mt-0.5" />
-                  <p className="text-sm font-medium">{insight}</p>
-                </div>
-              </CardContent>
-            </Card>
-          )}
+      {tab === "overview" && <div className="space-y-5">
+        <Card className="bg-secondary/10">
+          <CardContent className="p-5 space-y-3">
+            <p className="text-lg font-semibold">Cosa vuoi creare oggi?</p>
+            <p className="text-sm text-muted-foreground">Ti guidiamo con poche domande, senza bisogno di scrivere prompt.</p>
+            <Button onClick={create} className="w-full sm:w-auto"><Sparkles className="h-4 w-4 mr-2" />Crea con AI</Button>
+          </CardContent>
+        </Card>
+        <div className="grid grid-cols-2 gap-3">
+          {STATES.filter((s) => s.id !== "ready").map(({ id, label, Icon }) =>
+            <button key={id} onClick={() => { setFilter(id); setTab("contents"); }}
+              className="text-left rounded-xl border bg-card p-4 min-h-28 hover:border-primary/50">
+              <Icon className="h-5 w-5 text-secondary" /><p className="mt-2 font-semibold">{label}</p>
+              <p className="text-2xl font-bold">{counts[id] || 0}</p>
+            </button>)}
+        </div>
+        <Card><CardHeader><CardTitle className="text-base">Prossime pubblicazioni</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {scheduled.length ? scheduled.slice(0, 5).map((item) =>
+              <button key={item.content_id} onClick={() => edit(item)}
+                className="w-full text-left border-b py-2 last:border-0">
+                <span className="font-medium">{item.title}</span>
+                <span className="block text-xs text-muted-foreground">{prettyDate(item.scheduled_date)} · {item.channel}</span>
+              </button>) : <p className="text-sm text-muted-foreground">Nessun contenuto programmato.</p>}
+          </CardContent></Card>
+        <button className="text-sm text-primary underline underline-offset-4" onClick={() => setTab("guide")}>Consiglio: come si scrive una buona call to action?</button>
+      </div>}
 
-          {/* Charts */}
-          <div className="grid md:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <Euro className="w-5 h-5 text-secondary" />
-                  Fatturato per Fonte
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {pieChartData.length === 0 ? (
-                  <div className="h-64 flex items-center justify-center text-muted-foreground">
-                    <p>Nessun dato disponibile</p>
-                  </div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={280}>
-                    <PieChart>
-                      <Pie
-                        data={pieChartData}
-                        cx="50%"
-                        cy="50%"
-                        labelLine={false}
-                        label={({ percentage }) => `${percentage.toFixed(0)}%`}
-                        outerRadius={80}
-                        dataKey="value"
-                      >
-                        {pieChartData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.fill} />
-                        ))}
-                      </Pie>
-                      <Tooltip formatter={(value) => formatCurrency(value)} />
-                      <Legend />
-                    </PieChart>
-                  </ResponsiveContainer>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-secondary" />
-                  ROI per Canale (€/ora)
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {roiChartData.length === 0 ? (
-                  <div className="h-64 flex items-center justify-center text-muted-foreground">
-                    <p>Registra le ore marketing per vedere il ROI</p>
-                  </div>
-                ) : (
-                  <ResponsiveContainer width="100%" height={280}>
-                    <BarChart data={roiChartData} layout="vertical">
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis type="number" />
-                      <YAxis type="category" dataKey="name" width={100} tick={{ fontSize: 11 }} />
-                      <Tooltip 
-                        formatter={(value) => [`${formatCurrency(value)}/ora`, "ROI"]}
-                      />
-                      <Bar dataKey="roi" radius={[0, 4, 4, 0]}>
-                        {roiChartData.map((entry, index) => (
-                          <Cell key={`cell-${index}`} fill={entry.fill} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Lead Sources Table */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg">Dettaglio Fonti Lead</CardTitle>
-            </CardHeader>
-            <CardContent>
-              {leadStats.length === 0 ? (
-                <p className="text-center py-8 text-muted-foreground">
-                  Nessun dato. Aggiungi lavori con fonti lead per vedere le statistiche.
-                </p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full">
-                    <thead>
-                      <tr className="border-b border-border">
-                        <th className="text-left py-3 px-2 text-sm font-semibold">Fonte</th>
-                        <th className="text-center py-3 px-2 text-sm font-semibold">Clienti</th>
-                        <th className="text-right py-3 px-2 text-sm font-semibold">Fatturato</th>
-                        <th className="text-right py-3 px-2 text-sm font-semibold">Ore</th>
-                        <th className="text-right py-3 px-2 text-sm font-semibold">ROI</th>
-                        <th className="text-right py-3 px-2 text-sm font-semibold">%</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {leadStats.map((stat, index) => (
-                        <tr key={stat.source} className="border-b border-border/50">
-                          <td className="py-3 px-2">
-                            <div className="flex items-center gap-2">
-                              <div 
-                                className="w-3 h-3 rounded-full" 
-                                style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
-                              />
-                              {getSourceLabel(stat.source)}
-                            </div>
-                          </td>
-                          <td className="text-center py-3 px-2">{stat.client_count}</td>
-                          <td className="text-right py-3 px-2 font-medium">{formatCurrency(stat.total_revenue)}</td>
-                          <td className="text-right py-3 px-2">{stat.total_hours}h</td>
-                          <td className="text-right py-3 px-2 font-semibold text-success">{formatCurrency(stat.roi)}</td>
-                          <td className="text-right py-3 px-2">{stat.percentage.toFixed(1)}%</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        {/* AI Content Tab */}
-        <TabsContent value="ai_content" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-lg flex items-center gap-2">
-                <Sparkles className="w-5 h-5 text-secondary" />
-                Generatore Contenuti Marketing
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">
-                Segui il percorso guidato per creare contenuti efficaci per i social
-              </p>
-            </CardHeader>
-            <CardContent>
-              {/* Steps Navigation */}
-              <div className="flex flex-wrap gap-2 mb-6">
-                {AI_STEPS.map((step, index) => (
-                  <Button
-                    key={step.id}
-                    variant={aiStep === step.id ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => { setAiStep(step.id); setAiResponse(""); }}
-                    className="flex items-center gap-2"
-                  >
-                    <span className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center text-xs">
-                      {index + 1}
-                    </span>
-                    <step.icon className="w-4 h-4" />
-                    <span className="hidden sm:inline">{step.label}</span>
-                  </Button>
-                ))}
+      {tab === "assistant" && <div className="space-y-4">
+        <Card>
+          <CardHeader><CardTitle className="text-base">Percorso guidato · Passaggio {Math.min(step + 1, QUESTIONS.length)} di {QUESTIONS.length}</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            {step < QUESTIONS.length ? <>
+              <div className="flex gap-1">{QUESTIONS.map((q, index) =>
+                <div key={q.key} className={"h-1.5 flex-1 rounded-full " + (index <= step ? "bg-secondary" : "bg-muted")} />)}</div>
+              <p className="font-semibold text-lg">{QUESTIONS[step].title}</p>
+              <div className="grid grid-cols-2 gap-2">
+                {QUESTIONS[step].options.map((value) =>
+                  <button key={value} onClick={() => selectAnswer(QUESTIONS[step].key, value)}
+                    className={"min-h-14 rounded-xl border p-3 text-sm " +
+                      (form.answers[QUESTIONS[step].key] === value ? "border-secondary bg-secondary/10 font-semibold" : "bg-background")}>
+                    {value}
+                  </button>)}
               </div>
-
-              {/* Current Step Info */}
-              <div className="p-4 bg-muted/50 rounded-lg mb-4">
-                <h3 className="font-semibold flex items-center gap-2">
-                  {AI_STEPS.find(s => s.id === aiStep)?.icon && (
-                    <span className="text-secondary">
-                      {(() => { const Icon = AI_STEPS.find(s => s.id === aiStep)?.icon; return Icon ? <Icon className="w-5 h-5" /> : null; })()}
-                    </span>
-                  )}
-                  {AI_STEPS.find(s => s.id === aiStep)?.label}
-                </h3>
-                <p className="text-sm text-muted-foreground mt-1">
-                  {AI_STEPS.find(s => s.id === aiStep)?.description}
-                </p>
+              <div className="flex gap-2 justify-between">
+                <Button variant="outline" disabled={!step} onClick={() => setStep((s) => s - 1)}><ArrowLeft className="mr-1 h-4 w-4" />Indietro</Button>
+                <Button variant="ghost" onClick={() => setStep((s) => Math.min(QUESTIONS.length, s + 1))}>Salta</Button>
+                <Button onClick={() => setStep((s) => Math.min(QUESTIONS.length, s + 1))}
+                  disabled={!form.answers[QUESTIONS[step].key]}>Avanti<ArrowRight className="ml-1 h-4 w-4" /></Button>
               </div>
-
-              {/* Input Area */}
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label>Il tuo input</Label>
-                  <Textarea
-                    value={aiInput}
-                    onChange={(e) => setAiInput(e.target.value)}
-                    placeholder={getStepPlaceholder(aiStep)}
-                    rows={3}
-                  />
-                </div>
-
-                <Button 
-                  onClick={handleAIGenerate} 
-                  disabled={aiLoading}
-                  className="w-full"
-                >
-                  {aiLoading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                      Generazione in corso...
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="w-4 h-4 mr-2" />
-                      Genera con AI
-                    </>
-                  )}
-                </Button>
-
-                {/* Response Area */}
-                {aiResponse && (
-                  <div className="mt-6 p-4 bg-background border border-border rounded-lg">
-                    <div className="flex items-center justify-between mb-3">
-                      <h4 className="font-semibold">Risultato</h4>
-                      <div className="flex gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => copyToClipboard(aiResponse)}
-                        >
-                          <Copy className="w-4 h-4 mr-1" />
-                          Copia
-                        </Button>
-                        {AI_STEPS.findIndex(s => s.id === aiStep) < AI_STEPS.length - 1 && (
-                          <Button
-                            size="sm"
-                            onClick={goToNextStep}
-                          >
-                            Prossimo Step
-                            <ChevronRight className="w-4 h-4 ml-1" />
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                    <div className="prose prose-sm max-w-none whitespace-pre-wrap text-sm">
-                      {aiResponse}
-                    </div>
-                  </div>
-                )}
+            </> : <>
+              <p className="font-semibold">Scegli come usare l'assistente</p>
+              <div className="grid sm:grid-cols-2 gap-2">
+                {ACTIONS.map((item) =>
+                  <Button key={item.id} variant="outline" disabled={aiBusy} className="h-auto min-h-16 whitespace-normal text-left justify-start"
+                    onClick={() => generate(item.id)}>
+                    <Sparkles className="mr-2 h-4 w-4 shrink-0" /><span><strong className="block">{item.title}</strong><small className="font-normal">{item.hint}</small></span>
+                  </Button>)}
               </div>
-            </CardContent>
-          </Card>
+              <Button variant="ghost" onClick={() => setStep(0)}><ArrowLeft className="mr-1 h-4 w-4" />Modifica risposte</Button>
+            </>}
+            <p className="text-xs text-muted-foreground">Puoi salvare una bozza in qualsiasi momento e riprendere più tardi.</p>
+          </CardContent>
+        </Card>
+        <Card><CardHeader><CardTitle className="text-base">Il tuo contenuto</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <label className="block text-sm font-medium">Titolo<Input value={form.title} onChange={(e) => change("title", e.target.value)} placeholder="Es. Perché serve un sito aggiornato" maxLength={160} className="mt-1" /></label>
+            <label className="block text-sm font-medium">Indicazioni aggiuntive per l'AI
+              <Textarea value={brief} onChange={(e) => setBrief(e.target.value)} maxLength={3000}
+                placeholder="Es. Rivolgiti ai negozi locali di Bolzano" rows={2} className="mt-1" />
+            </label>
+            <label className="block text-sm font-medium">Testo (modificabile)
+              <Textarea value={form.body} onChange={(e) => change("body", e.target.value)} rows={8} maxLength={12000}
+                placeholder="Il testo generato apparirà qui. Puoi anche scriverlo direttamente." className="mt-1" />
+            </label>
+            {aiBusy && <p role="status" className="text-sm text-muted-foreground">Sto generando il contenuto con AI...</p>}
+            {aiError && <p role="alert" className="text-sm text-red-600">{aiError}</p>}
+            <div className="grid sm:grid-cols-2 gap-3">
+              <label className="text-sm">Canale<select className="mt-1 w-full rounded-md border bg-background p-2.5" value={form.channel} onChange={(e) => change("channel", e.target.value)}>
+                {["Instagram", "LinkedIn", "Facebook", "Altro"].map((c) => <option key={c}>{c}</option>)}
+              </select></label>
+              <label className="text-sm">Formato<select className="mt-1 w-full rounded-md border bg-background p-2.5" value={form.format} onChange={(e) => change("format", e.target.value)}>
+                <option value="post">Post</option><option value="carousel">Carosello</option><option value="reel_script">Reel</option>
+              </select></label>
+            </div>
+            <label className="block text-sm">Data prevista di pubblicazione (facoltativa)
+              <Input className="mt-1" type="date" value={form.scheduled_date || ""} onChange={(e) => change("scheduled_date", e.target.value)} />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" disabled={saving} onClick={() => save("draft")}>Salva bozza</Button>
+              <Button variant="outline" disabled={saving || !form.body.trim()} onClick={() => save("pending_approval")}>Da approvare</Button>
+              <Button variant="outline" disabled={saving || !form.body.trim()} onClick={() => save("ready")}>Approva</Button>
+              <Button disabled={saving || !form.body.trim() || !form.scheduled_date} onClick={() => save("scheduled")}>Programma</Button>
+              {form.content_id && <Button variant="outline" disabled={saving || !form.body.trim()} onClick={() => save("published")}>Segna pubblicato</Button>}
+              <Button variant="ghost" disabled={!form.body} onClick={() => copy(form.body)}><Copy className="mr-1 h-4 w-4" />Copia</Button>
+            </div>
+            <p className="text-xs text-muted-foreground">Programmare qui non pubblica automaticamente sui social. Dopo la pubblicazione usa “Segna pubblicato”.</p>
+          </CardContent></Card>
+      </div>}
 
-          {/* AI History */}
-          {aiHistory.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-lg">Storico Generazioni</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {aiHistory.slice(-5).reverse().map((item, index) => (
-                    <div
-                      key={index}
-                      className="p-3 bg-muted/50 rounded-lg cursor-pointer hover:bg-muted transition-colors"
-                      onClick={() => copyToClipboard(item.response)}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-sm font-medium">
-                          {AI_STEPS.find(s => s.id === item.step)?.label}
-                        </span>
-                        <span className="text-xs text-muted-foreground">
-                          {new Date(item.timestamp).toLocaleTimeString('it-IT')}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {item.response.substring(0, 100)}...
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-        </TabsContent>
-      </Tabs>
+      {tab === "contents" && <div className="space-y-3">
+        <div className="flex flex-wrap gap-2">
+          {[{ id: "all", label: "Tutti" }, ...STATES].map((item) =>
+            <Button key={item.id} size="sm" variant={filter === item.id ? "default" : "outline"} onClick={() => setFilter(item.id)}>{item.label}</Button>)}
+        </div>
+        {loading ? <p className="text-sm text-muted-foreground">Caricamento...</p> :
+          visible.length ? <div className="grid md:grid-cols-2 gap-3">{visible.map(renderContent)}</div> :
+          <Card><CardContent className="p-6 text-center space-y-2"><FolderOpen className="mx-auto h-8 w-8 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">Qui appariranno i tuoi contenuti. Nessun elemento in questa categoria.</p>
+            <Button onClick={create}><Plus className="mr-1 h-4 w-4" />Crea contenuto</Button></CardContent></Card>}
+      </div>}
+
+      {tab === "calendar" && <div className="space-y-3">
+        <Card><CardContent className="p-4 space-y-3">
+          <p className="font-semibold">Calendario editoriale</p>
+          <p className="text-sm text-muted-foreground">Le pubblicazioni programmate sono separate dagli appuntamenti lavorativi.</p>
+          <Input type="month" value={calendarMonth} onChange={(e) => setCalendarMonth(e.target.value)} className="max-w-56" />
+          {scheduled.filter((x) => x.scheduled_date.startsWith(calendarMonth)).length ?
+            scheduled.filter((x) => x.scheduled_date.startsWith(calendarMonth)).map((item) =>
+              <button key={item.content_id} onClick={() => edit(item)} className="block w-full rounded-lg border p-3 text-left hover:bg-muted/50">
+                <strong>{prettyDate(item.scheduled_date)}</strong>
+                <span className="block">{item.title}</span>
+                <span className="text-xs text-muted-foreground">{item.channel} · Programmato</span>
+              </button>) :
+            <p className="text-sm text-muted-foreground">Nessuna pubblicazione programmata nel mese selezionato.</p>}
+          <Link to="/calendar" className="inline-flex items-center text-sm text-primary underline underline-offset-4"><CalendarDays className="h-4 w-4 mr-1" />Apri l'agenda Beside</Link>
+        </CardContent></Card>
+      </div>}
+
+      {tab === "guide" && <div className="grid md:grid-cols-2 gap-3">
+        {[
+          ["Parti dall'obiettivo", "Decidi cosa vuoi ottenere: contatti, visibilità, vendite o fiducia."],
+          ["Post efficace", "Inizia da un problema reale, mostra il beneficio e concludi con una CTA chiara."],
+          ["Reel breve", "Apri con un hook nei primi secondi, mostra un esempio e termina con un invito all'azione."],
+          ["Lavora con l'AI", "Descrivi servizio, cliente, canale e tono. Poi correggi sempre il testo e verifica eventuali affermazioni."],
+          ["Dalla bozza alla pubblicazione", "Crea, salva, revisiona, programma e segna pubblicato. Nessun post viene pubblicato automaticamente."],
+        ].map(([title, description]) =>
+          <Card key={title}><CardContent className="p-4">
+            <p className="font-semibold flex items-center gap-2"><Lightbulb className="h-4 w-4 text-secondary" />{title}</p>
+            <p className="text-sm text-muted-foreground mt-2">{description}</p>
+          </CardContent></Card>)}
+      </div>}
     </div>
   );
 };
