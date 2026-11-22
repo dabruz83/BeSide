@@ -29,6 +29,7 @@ TENANT_COLLECTIONS = (
     "onboardings",
     "marketing_efforts",
     "ai_content_history",
+    "agency_marketing_contents",
     "admin_chat",
     "payment_transactions",
     "user_sessions",
