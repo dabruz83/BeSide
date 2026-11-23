@@ -3,6 +3,7 @@ import { Link, useLocation } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { MailCheck } from "lucide-react";
 import { ActivationProgress } from "@/components/ActivationProgress";
 
@@ -15,11 +16,14 @@ const maskEmail = (value) => {
 
 export const EmailVerificationPendingPage = () => {
   const location = useLocation();
-  const email = useMemo(() => {
+  const initialEmail = useMemo(() => {
     const fromState = location.state?.email || "";
     if (fromState) sessionStorage.setItem("beside_verification_email", fromState);
     return fromState || sessionStorage.getItem("beside_verification_email") || "";
   }, [location.state]);
+  const [email, setEmail] = useState(initialEmail);
+  useEffect(() => { if (initialEmail) setEmail(initialEmail); }, [initialEmail]);
+  const validEmail = /^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email.trim());
   const [status, setStatus] = useState("");
   const [busy, setBusy] = useState(false);
   const [retryAfter, setRetryAfter] = useState(0);
@@ -31,7 +35,7 @@ export const EmailVerificationPendingPage = () => {
   }, [retryAfter]);
 
   const resend = async () => {
-    if (!email || retryAfter || busy) return;
+    if (!validEmail || retryAfter || busy) return;
     setBusy(true); setStatus("");
     try {
       const response = await axios.post(`${API}/auth/email-verification/request`, { email });
@@ -52,8 +56,15 @@ export const EmailVerificationPendingPage = () => {
         <div className="flex justify-center"><MailCheck aria-hidden="true" className="h-11 w-11 text-secondary" /></div>
         <h1 className="text-2xl font-semibold">Controlla la tua email</h1>
         <p className="text-sm text-muted-foreground">Ti abbiamo inviato un link per verificare il tuo indirizzo. Apri Mail, Gmail o la tua casella di posta e completa la verifica per proseguire.</p>
-        <p className="break-all font-medium">{maskEmail(email)}</p>
-        <Button className="w-full" onClick={resend} disabled={!email || busy || retryAfter > 0}>
+        {initialEmail ? <p className="break-all font-medium">{maskEmail(email)}</p> : (
+          <div className="space-y-2 text-left">
+            <label htmlFor="verification-resend-email" className="text-sm font-medium">Email da verificare</label>
+            <Input id="verification-resend-email" type="email" autoComplete="email" value={email}
+              onChange={(event) => setEmail(event.target.value)} placeholder="tuaemail@esempio.it" />
+            <p className="text-xs text-muted-foreground">Indica l'indirizzo usato durante la registrazione per ricevere un nuovo link.</p>
+          </div>
+        )}
+        <Button className="w-full" onClick={resend} disabled={!validEmail || busy || retryAfter > 0}>
           {busy ? "Invio in corso..." : retryAfter ? `Puoi reinviare tra ${retryAfter}s` : "Reinvia link di verifica"}
         </Button>
         {status && <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{status}</p>}
