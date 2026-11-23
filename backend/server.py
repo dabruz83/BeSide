@@ -242,6 +242,9 @@ async def lifespan(_app: FastAPI):
         reminder_task = asyncio.create_task(run_calendar_reminder_worker(db, send_email, send_configured_notification))
         post_work_task = asyncio.create_task(run_post_work_notification_worker())
         deletion_tasks = await _resume_account_deletions()
+        reconciled = await _reconcile_completed_account_deletions()
+        if reconciled:
+            logger.info("Cleaned residual security records from %s completed account deletions", reconciled)
         yield
     finally:
         if reminder_task is not None:
@@ -4942,6 +4945,34 @@ async def _resume_account_deletions() -> List[asyncio.Task]:
         {"status": {"$in": ["billing_cancelled", "deleting"]}}, {"_id": 0, "operation_id": 1}
     ).to_list(100)
     return [asyncio.create_task(_run_account_deletion(operation["operation_id"])) for operation in operations]
+
+
+async def _reconcile_completed_account_deletions() -> int:
+    """Idempotently remove leftover claims from older, already completed deletions.
+
+    A company and all of its users must be absent before cleanup is permitted.
+    This also frees emails that were deleted before the email-claim fix shipped.
+    """
+    operations = await db.account_deletion_operations.find(
+        {"status": "completed"}, {"_id": 0, "company_id": 1},
+    ).to_list(2000)
+    reconciled = 0
+    for operation in operations:
+        company_id = operation.get("company_id")
+        if not company_id:
+            continue
+        if await db.users.find_one({"company_id": company_id}, {"_id": 1}):
+            continue
+        if await db.companies.find_one({"company_id": company_id}, {"_id": 1}):
+            continue
+        for collection_name in (
+            "email_claims", "passkeys", "mfa_recovery_requests",
+            "email_notification_jobs", "post_work_notification_jobs",
+            "post_work_support_links", "post_work_support_requests",
+        ):
+            await getattr(db, collection_name).delete_many({"company_id": company_id})
+        reconciled += 1
+    return reconciled
 
 
 @api_router.post("/auth/company/delete")
