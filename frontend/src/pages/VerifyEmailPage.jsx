@@ -62,7 +62,7 @@ export const VerifyEmailPage = () => {
         </h1>
         <p role={status === "error" ? "alert" : "status"} aria-live="polite" aria-busy={status === "loading"}
           className={status === "error" ? "text-sm text-destructive" : "text-sm text-muted-foreground"}>{message}</p>
-        {status === "success" && <Button className="w-full" asChild><Link to="/login">Continua con l'accesso</Link></Button>}
+        {status === "success" && <Button className="w-full" asChild><Link to="/login">Continua con l’attivazione a 2 fattori</Link></Button>}
         {status === "error" && (
           <div className="space-y-3">
             <Button className="w-full" asChild><Link to="/login">Prova ad accedere</Link></Button>
