@@ -1418,10 +1418,10 @@ async def require_recent_mfa_user(
         {"_id": 0, "mfa_verified": 1, "created_at": 1},
     )
     if not session or not session.get("mfa_verified"):
-        raise HTTPException(status_code=403, detail="Verifica MFA recente richiesta")
+        raise HTTPException(status_code=403, detail="Per gestire le passkey serve una verifica recente con Authenticator. Esci e accedi di nuovo con email, password e codice Authenticator, poi riprova entro 10 minuti.")
     created_at = parse_datetime(session.get("created_at"))
     if created_at + timedelta(minutes=PASSKEY_RECENT_MFA_MINUTES) <= datetime.now(timezone.utc):
-        raise HTTPException(status_code=403, detail="Verifica MFA recente richiesta")
+        raise HTTPException(status_code=403, detail="Per gestire le passkey serve una verifica recente con Authenticator. Esci e accedi di nuovo con email, password e codice Authenticator, poi riprova entro 10 minuti.")
     return current_user
 
 async def get_admin_user(request: Request) -> Dict[str, Any]:
