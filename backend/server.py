@@ -1031,7 +1031,7 @@ async def reserve_email_claim(email: str, user_id: str, company_id: str) -> None
     old_company_id = old_claim["company_id"]
     old_user_id = old_claim["user_id"]
     completed = await db.account_deletion_operations.find_one(
-        {"company_id": old_company_id, "status": "completed"}, {"_id": 1},
+        {"company_id": old_company_id, "status": "completed"}, {"operation_id": 1},
     )
     if not completed or await db.users.find_one({"user_id": old_user_id}, {"_id": 1}) or await db.companies.find_one({"company_id": old_company_id}, {"_id": 1}):
         raise HTTPException(status_code=400, detail="Email già registrata")
