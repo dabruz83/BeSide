@@ -3,6 +3,8 @@ import { Link, useLocation } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
 import { Button } from "@/components/ui/button";
+import { MailCheck } from "lucide-react";
+import { ActivationProgress } from "@/components/ActivationProgress";
 
 const maskEmail = (value) => {
   const [local, domain] = value.split("@");
@@ -42,5 +44,22 @@ export const EmailVerificationPendingPage = () => {
     } finally { setBusy(false); }
   };
 
-  return <main className="min-h-screen bg-background flex items-center justify-center p-6"><section className="w-full max-w-md space-y-5 text-center"><Link to="/" className="text-3xl font-bold text-primary">BESIDE</Link><h1 className="text-2xl font-semibold">Controlla la tua email</h1><p className="text-muted-foreground">Ti abbiamo inviato un messaggio con il link per verificare il tuo indirizzo. Apri la tua casella di posta e segui le istruzioni per completare la registrazione.</p><p className="font-medium">{maskEmail(email)}</p><Button className="w-full" onClick={resend} disabled={!email || busy || retryAfter}>{busy ? "Invio..." : retryAfter ? `Riprova tra ${retryAfter}s` : "Invia nuovamente l'email"}</Button><Link to="/login" className="block text-sm text-primary underline">Hai già verificato l'email? Accedi</Link>{status && <p className="text-sm text-muted-foreground">{status}</p>}{retryAfter > 0 && <p className="text-sm"><Link to="/support" className="text-primary underline">Hai bisogno di assistenza? Apri una richiesta</Link></p>}<Link to="/login" className="text-primary underline">Vai al login</Link></section></main>;
+  return (
+    <main className="min-h-screen bg-background flex items-center justify-center p-6">
+      <section className="w-full max-w-md space-y-5 rounded-xl border bg-card p-6 text-center shadow-sm">
+        <Link to="/" className="text-3xl font-bold text-primary">BESIDE</Link>
+        <ActivationProgress current={1} />
+        <div className="flex justify-center"><MailCheck aria-hidden="true" className="h-11 w-11 text-secondary" /></div>
+        <h1 className="text-2xl font-semibold">Controlla la tua email</h1>
+        <p className="text-sm text-muted-foreground">Ti abbiamo inviato un link per verificare il tuo indirizzo. Apri Mail, Gmail o la tua casella di posta e completa la verifica per proseguire.</p>
+        <p className="break-all font-medium">{maskEmail(email)}</p>
+        <Button className="w-full" onClick={resend} disabled={!email || busy || retryAfter > 0}>
+          {busy ? "Invio in corso..." : retryAfter ? `Puoi reinviare tra ${retryAfter}s` : "Reinvia link di verifica"}
+        </Button>
+        {status && <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{status}</p>}
+        <Link to="/login" className="block text-sm font-medium text-primary underline">Hai già verificato l'email? Accedi</Link>
+        <Link to="/support" className="block text-xs text-muted-foreground underline">Hai bisogno di assistenza?</Link>
+      </section>
+    </main>
+  );
 };
