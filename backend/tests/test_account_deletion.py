@@ -154,3 +154,26 @@ def test_reregistration_cannot_reclaim_pending_or_active_account_claim(monkeypat
         else:
             raise AssertionError("The claim must remain held while deletion is pending or the user exists")
         assert fake_db.email_claims.documents[0]["user_id"] == "original_owner"
+
+
+def test_startup_reconciles_old_completed_claims_but_preserves_existing_accounts(monkeypatch):
+    fake_db = InMemoryDatabase()
+    fake_db.account_deletion_operations.documents.extend([
+        {"operation_id": "completed_old", "company_id": "company_deleted", "status": "completed"},
+        {"operation_id": "completed_but_still_active", "company_id": "company_live", "status": "completed"},
+    ])
+    fake_db.email_claims.documents.extend([
+        {"_id": server.email_claim_id("deleted@example.test"), "company_id": "company_deleted", "user_id": "deleted_user"},
+        {"_id": server.email_claim_id("live@example.test"), "company_id": "company_live", "user_id": "live_user"},
+    ])
+    fake_db.users.documents.append({"user_id": "live_user", "company_id": "company_live", "email": "live@example.test"})
+    fake_db.companies.documents.append({"company_id": "company_live"})
+    monkeypatch.setattr(server, "db", fake_db)
+
+    cleaned = asyncio.run(server._reconcile_completed_account_deletions())
+    assert cleaned == 1
+    assert [claim["user_id"] for claim in fake_db.email_claims.documents] == ["live_user"]
+    # Repeated restarts are safe and cannot remove active-company claims.
+    cleaned_again = asyncio.run(server._reconcile_completed_account_deletions())
+    assert cleaned_again == 1
+    assert [claim["user_id"] for claim in fake_db.email_claims.documents] == ["live_user"]
