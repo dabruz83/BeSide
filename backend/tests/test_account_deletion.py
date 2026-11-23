@@ -63,3 +63,94 @@ def test_stripe_immediate_cancel_is_verified(monkeypatch):
     monkeypatch.setattr(billing.stripe, "StripeClient", lambda _key: FakeApi())
     result = asyncio.run(billing.cancel_subscription_immediately("sub_test"))
     assert result["status"] == "canceled"
+
+
+def test_deletion_releases_email_claims_and_security_artifacts_without_touching_other_tenants(monkeypatch):
+    fake_db = InMemoryDatabase()
+    deleted_email = "deleted@example.test"
+    other_email = "active@example.test"
+    fake_db.companies.documents.extend([
+        {"company_id": "company_delete"},
+        {"company_id": "company_keep"},
+    ])
+    fake_db.users.documents.extend([
+        {"user_id": "owner_delete", "company_id": "company_delete", "email": deleted_email},
+        {"user_id": "owner_keep", "company_id": "company_keep", "email": other_email},
+    ])
+    fake_db.email_claims.documents.extend([
+        {"_id": server.email_claim_id(deleted_email), "company_id": "company_delete", "user_id": "owner_delete"},
+        {"_id": server.email_claim_id(other_email), "company_id": "company_keep", "user_id": "owner_keep"},
+    ])
+    fake_db.passkeys.documents.extend([
+        {"credential_id": "pk_delete", "user_id": "owner_delete", "company_id": "company_delete"},
+        {"credential_id": "pk_keep", "user_id": "owner_keep", "company_id": "company_keep"},
+    ])
+    fake_db.webauthn_challenges.documents.extend([
+        {"challenge_id": "challenge_delete", "user_id": "owner_delete"},
+        {"challenge_id": "challenge_keep", "user_id": "owner_keep"},
+    ])
+    fake_db.mfa_recovery_requests.documents.extend([
+        {"request_id": "recovery_delete", "user_id": "owner_delete", "company_id": "company_delete"},
+        {"request_id": "recovery_keep", "user_id": "owner_keep", "company_id": "company_keep"},
+    ])
+    fake_db.account_deletion_operations.documents.append({
+        "operation_id": "op_delete", "company_id": "company_delete", "status": "billing_cancelled",
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+
+    asyncio.run(server._run_account_deletion("op_delete"))
+
+    assert fake_db.account_deletion_operations.documents[0]["status"] == "completed"
+    assert fake_db.email_claims.documents == [
+        {"_id": server.email_claim_id(other_email), "company_id": "company_keep", "user_id": "owner_keep"},
+    ]
+    assert [row["credential_id"] for row in fake_db.passkeys.documents] == ["pk_keep"]
+    assert [row["challenge_id"] for row in fake_db.webauthn_challenges.documents] == ["challenge_keep"]
+    assert [row["request_id"] for row in fake_db.mfa_recovery_requests.documents] == ["recovery_keep"]
+
+
+def test_reregistration_repairs_only_claim_from_a_completed_and_removed_account(monkeypatch):
+    fake_db = InMemoryDatabase()
+    email = "deleted@example.test"
+    claim_id = server.email_claim_id(email)
+    fake_db.email_claims.documents.append({
+        "_id": claim_id, "company_id": "old_company", "user_id": "old_owner",
+    })
+    fake_db.account_deletion_operations.documents.append({
+        "operation_id": "completed_op", "company_id": "old_company", "status": "completed",
+    })
+    monkeypatch.setattr(server, "db", fake_db)
+
+    asyncio.run(server.reserve_email_claim(email, "new_owner", "new_company"))
+    assert fake_db.email_claims.documents == [
+        {
+            "_id": claim_id, "user_id": "new_owner", "company_id": "new_company",
+            "created_at": fake_db.email_claims.documents[0]["created_at"],
+        },
+    ]
+
+
+def test_reregistration_cannot_reclaim_pending_or_active_account_claim(monkeypatch):
+    from fastapi import HTTPException
+
+    for status in ("deleting", "completed"):
+        fake_db = InMemoryDatabase()
+        email = "protected@example.test"
+        fake_db.email_claims.documents.append({
+            "_id": server.email_claim_id(email), "user_id": "original_owner", "company_id": "original_company",
+        })
+        fake_db.account_deletion_operations.documents.append({
+            "operation_id": "op_existing", "company_id": "original_company", "status": status,
+        })
+        if status == "completed":
+            fake_db.users.documents.append({
+                "user_id": "original_owner", "company_id": "original_company", "email": email,
+            })
+        monkeypatch.setattr(server, "db", fake_db)
+        try:
+            asyncio.run(server.reserve_email_claim(email, "new_owner", "new_company"))
+        except HTTPException as exc:
+            assert exc.status_code == 400
+        else:
+            raise AssertionError("The claim must remain held while deletion is pending or the user exists")
+        assert fake_db.email_claims.documents[0]["user_id"] == "original_owner"
