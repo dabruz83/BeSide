@@ -976,17 +976,39 @@ async def enforce_email_verification_resend_limits(request: Request, email: str)
 
 
 async def reserve_email_claim(email: str, user_id: str, company_id: str) -> None:
-    """Serialize new accounts without relying on a custom MongoDB index."""
+    """Reserve unique emails; safely recover claims left by completed account deletions."""
+    claim_id = email_claim_id(email)
+    new_claim = {
+        "_id": claim_id, "user_id": user_id, "company_id": company_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
     try:
-        await db.email_claims.insert_one({
-            "_id": email_claim_id(email),
-            "user_id": user_id,
-            "company_id": company_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        })
+        await db.email_claims.insert_one(new_claim)
+        return
     except DuplicateKeyError:
+        pass
+
+    # Earlier deletion versions removed the user but left its unique email claim.
+    # Never release a claim unless the *same company* completed deletion and
+    # neither the former user nor its company still exists.
+    old_claim = await db.email_claims.find_one({"_id": claim_id}, {"_id": 0, "user_id": 1, "company_id": 1})
+    if not old_claim or not old_claim.get("user_id") or not old_claim.get("company_id"):
+        raise HTTPException(status_code=400, detail="Email già registrata")
+    old_company_id = old_claim["company_id"]
+    old_user_id = old_claim["user_id"]
+    completed = await db.account_deletion_operations.find_one(
+        {"company_id": old_company_id, "status": "completed"}, {"_id": 1},
+    )
+    if not completed or await db.users.find_one({"user_id": old_user_id}, {"_id": 1}) or await db.companies.find_one({"company_id": old_company_id}, {"_id": 1}):
         raise HTTPException(status_code=400, detail="Email già registrata")
 
+    # Conditional delete is crucial: do not release a claim replaced by a
+    # concurrent registration or email change.
+    await db.email_claims.delete_one({"_id": claim_id, "user_id": old_user_id, "company_id": old_company_id})
+    try:
+        await db.email_claims.insert_one(new_claim)
+    except DuplicateKeyError:
+        raise HTTPException(status_code=400, detail="Email già registrata")
 
 async def release_email_claim(email: str, user_id: str) -> None:
     """Release only a claim owned by a registration that did not complete."""
@@ -4876,6 +4898,13 @@ async def _run_account_deletion(operation_id: str) -> None:
     await db.account_deletion_operations.update_one(
         {"operation_id": operation_id}, {"$set": {"phase": "operational_data", "updated_at": now}}
     )
+    # Save user IDs before removing users so user-scoped challenge records
+    # and old passkeys can be cleared even if those records lack company_id.
+    company_users = await db.users.find(
+        {"company_id": company_id}, {"_id": 0, "user_id": 1},
+    ).to_list(2000)
+    user_ids = [record["user_id"] for record in company_users if record.get("user_id")]
+
     # Delete only documents explicitly scoped to this company. Recovery-contact
     # accounts with company_id=None remain untouched.
     for collection_name in ACCOUNT_DELETION_OPERATIONAL_COLLECTIONS:
@@ -4888,6 +4917,19 @@ async def _run_account_deletion(operation_id: str) -> None:
             await collection.delete_many({"company_id": company_id})
         else:
             await collection.delete_many({"company_id": company_id})
+
+    # A deleted account must release all unique email claims. Also remove
+    # company-owned security artifacts and notifications (never other tenants').
+    for collection_name in (
+        "email_claims", "passkeys", "mfa_recovery_requests",
+        "email_notification_jobs", "post_work_notification_jobs",
+        "post_work_support_links", "post_work_support_requests",
+    ):
+        await getattr(db, collection_name).delete_many({"company_id": company_id})
+    if user_ids:
+        for collection_name in ("passkeys", "webauthn_challenges", "mfa_recovery_requests"):
+            await getattr(db, collection_name).delete_many({"user_id": {"$in": user_ids}})
+
     await db.account_deletion_operations.update_one(
         {"operation_id": operation_id},
         {"$set": {"status": "completed", "phase": "completed", "completed_at": datetime.now(timezone.utc).isoformat(),
