@@ -266,10 +266,11 @@ export const MarketingPage = () => {
                   </button>;
                 })}
               </div>
-              <div className="flex gap-2 justify-between">
+              <div className={"flex gap-2 " + (step === QUESTIONS.length - 1 ? "flex-wrap" : "justify-between")}>
                 <Button variant="outline" disabled={!step || aiBusy} onClick={() => setStep((s) => s - 1)}><ArrowLeft className="mr-1 h-4 w-4" />Indietro</Button>
                 <Button variant="ghost" disabled={aiBusy} onClick={step === QUESTIONS.length - 1 ? generate : () => setStep((s) => s + 1)}>Salta</Button>
-                <Button disabled={aiBusy || !selectedValues(form.answers[QUESTIONS[step].key]).length}
+                <Button className={step === QUESTIONS.length - 1 ? "w-full sm:w-auto sm:ml-auto" : ""}
+                  disabled={aiBusy || !selectedValues(form.answers[QUESTIONS[step].key]).length}
                   onClick={step === QUESTIONS.length - 1 ? generate : () => setStep((s) => s + 1)}>
                   {step === QUESTIONS.length - 1 ? <><Sparkles className="mr-1 h-4 w-4" />Genera contenuto con AI</> : <>Avanti<ArrowRight className="ml-1 h-4 w-4" /></>}
                 </Button>
