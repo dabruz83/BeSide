@@ -32,13 +32,21 @@ def test_approved_style_is_isolated_by_company_and_brand():
     assert [item["content_id"] for item in summary["examples"]] == ["approved"]
 
 
-def test_style_requires_five_approved_samples_and_limits_examples_to_six():
+def test_style_requires_five_approved_samples_and_reads_at_most_six():
     example = {"body": "Testo approvato", "channel": "Instagram", "format": "post",
                "answers": {"tono": "Semplice"}}
     assert not style_summary([example] * 4)["style_ready"]
-    ready = style_summary([example] * 7)
+    db = InMemoryDatabase()
+    db.agency_marketing_contents.documents.extend([
+        {**example, "company_id": "a", "brand_id": "brand_a", "status": "published",
+         "content_id": str(i), "updated_at": str(i)}
+        for i in range(7)
+    ])
+    user = {"user_id": "owner_a", "company_id": "a"}
+    ready = asyncio.run(approved_style(db, company_scope, user, "brand_a"))
     assert ready["style_ready"]
-    assert ready["sample_count"] == 7  # db caller enforces most recent six
+    assert ready["sample_count"] == 6
+    assert len(ready["examples"]) == 6
     assert ready["frequent_tones"] == ["Semplice"]
 
 
@@ -48,6 +56,10 @@ def test_brand_validates_https_logo_and_hex_colors():
         MarketingBrandInput(name="Studio web", logo_url="javascript:alert(1)")
     with pytest.raises(ValidationError):
         MarketingBrandInput(name="Studio web", primary_color="blue")
+    with pytest.raises(ValidationError):
+        MarketingBrandInput(name="Studio web", reference_video_urls=["https://example.com/" + str(i) for i in range(7)])
+    with pytest.raises(ValidationError):
+        MarketingBrandInput(name="Studio web", reference_video_urls=["http://example.com/reel.mp4"])
 
 
 def test_partial_update_does_not_replace_unspecified_brand_fields():
