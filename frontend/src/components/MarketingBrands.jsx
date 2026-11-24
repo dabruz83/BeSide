@@ -61,9 +61,6 @@ export const MarketingBrands = ({ brands, onRefresh, selectedBrandId, onSelect }
 
   const save = async (event) => {
     event.preventDefault();
-    if (form.kind === "client" && !form.usage_authorized) {
-      toast.error("Prima conferma di avere l'autorizzazione del cliente."); return;
-    }
     setBusy(true);
     try {
       const payload = { ...BLANK, ...form };
@@ -133,7 +130,7 @@ export const MarketingBrands = ({ brands, onRefresh, selectedBrandId, onSelect }
           {form.kind === "client" && <label className="flex gap-2 items-start rounded-lg bg-muted/40 p-3 text-sm">
             <input type="checkbox" className="mt-1" checked={Boolean(form.usage_authorized)}
               onChange={(e) => setForm((v) => ({ ...v, usage_authorized: e.target.checked }))}/>
-            <span>Confermo di essere autorizzato a usare il nome, il logo e le informazioni di questo cliente per preparare contenuti marketing. L'approvazione prima della pubblicazione resta separata.</span>
+            <span>Confermo di essere autorizzato a usare il nome, il logo e i materiali di questo cliente per preparare contenuti marketing. Puoi anche salvare il brand senza confermare: la generazione resterà bloccata fino all'autorizzazione. L'approvazione prima della pubblicazione resta separata.</span>
           </label>}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={Boolean(form.learning_enabled)}
