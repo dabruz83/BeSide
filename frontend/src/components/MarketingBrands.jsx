@@ -12,7 +12,7 @@ const BLANK = {
   name: "", kind: "own", sector: "", logo_url: "", primary_color: "",
   secondary_color: "", audience: "", tone: "", visual_style: "",
   website_url: "", social_profiles: "", usual_goal: "", description: "",
-  style_notes: "", avoid_claims: "", learning_enabled: true, usage_authorized: false,
+  style_notes: "", avoid_claims: "", learning_enabled: true, usage_authorized: false, reference_video_urls: [],
 };
 const FIELDS = [
   ["name", "Nome attività o brand", "Es. Studio Rossi", true],
@@ -127,6 +127,12 @@ export const MarketingBrands = ({ brands, onRefresh, selectedBrandId, onSelect }
                       onChange={(e) => setForm((v) => ({ ...v, [key]: e.target.value }))}/>}
               </label>)}
           </div>
+          <label className="block text-sm font-medium">Video di riferimento (facoltativi, fino a 6)
+            <Textarea className="mt-1" rows={3} placeholder={"https://link-del-tuo-reel-1\\nhttps://link-del-tuo-reel-2"}
+              value={(form.reference_video_urls || []).join("\\n")}
+              onChange={(event) => setForm((v) => ({ ...v, reference_video_urls: event.target.value.split(/\\r?\\n/).map((line) => line.trim()).filter(Boolean) }))}/>
+            <span className="mt-1 block text-xs font-normal text-muted-foreground">Salviamo i link a lavori che hai il diritto di usare. La lettura automatica dei video non è ancora attiva: al momento Beside ricorda lo stile dei contenuti approvati e le preferenze che inserisci.</span>
+          </label>
           {form.kind === "client" && <label className="flex gap-2 items-start rounded-lg bg-muted/40 p-3 text-sm">
             <input type="checkbox" className="mt-1" checked={Boolean(form.usage_authorized)}
               onChange={(e) => setForm((v) => ({ ...v, usage_authorized: e.target.checked }))}/>
