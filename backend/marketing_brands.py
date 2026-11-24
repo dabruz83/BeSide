@@ -87,15 +87,15 @@ def style_summary(contents):
     }
 
 
-async def approved_style(db, company_scope, user, brand_id):
-    samples = await db.agency_marketing_contents.find(
+async def approved_style(db, company_scope, user, brand_id, content_collection="agency_marketing_contents"):
+    samples = await getattr(db, content_collection).find(
         company_scope(user, brand_id=brand_id, status={"$in": list(APPROVED_STATES)}),
         {"_id": 0, "content_id": 1, "body": 1, "channel": 1, "format": 1, "answers": 1},
     ).sort("updated_at", -1).limit(6).to_list(6)
     return style_summary(samples)
 
 
-def register_marketing_brand_routes(router, db, company_scope, require_company_roles):
+def register_marketing_brand_routes(router, db, company_scope, require_company_roles, content_collection="agency_marketing_contents"):
     reader = require_company_roles("owner", "admin", "member")
     writer = require_company_roles("owner", "admin")
 
@@ -107,8 +107,6 @@ def register_marketing_brand_routes(router, db, company_scope, require_company_r
 
     @router.post("/marketing/brands")
     async def create_marketing_brand(payload: MarketingBrandInput, user: Dict = Depends(writer)):
-        if payload.kind == "client" and not payload.usage_authorized:
-            raise HTTPException(422, "Conferma prima l'autorizzazione a usare il brand del cliente")
         count = await db.marketing_brands.count_documents(company_scope(user))
         if count >= 30:
             raise HTTPException(409, "Hai raggiunto il limite di 30 profili brand")
@@ -159,4 +157,4 @@ def register_marketing_brand_routes(router, db, company_scope, require_company_r
             return {"sample_count": 0, "target_samples": 6, "style_ready": False,
                     "frequent_tones": [], "frequent_channels": [], "frequent_formats": [],
                     "examples": [], "learning_disabled": True}
-        return await approved_style(db, company_scope, user, brand_id)
+        return await approved_style(db, company_scope, user, brand_id, content_collection)
