@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
+import { MarketingBrands } from "@/components/MarketingBrands";
 import { selectedValues, toggleAnswer, generatedAction } from "@/lib/agencyMarketingAnswers.mjs";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,6 +17,7 @@ import {
 
 const TABS = [
   { id: "overview", label: "Panoramica", Icon: LayoutDashboard },
+  { id: "brands", label: "Profili Brand", Icon: Sparkles },
   { id: "assistant", label: "Assistente AI", Icon: Sparkles },
   { id: "contents", label: "I miei contenuti", Icon: FolderOpen },
   { id: "calendar", label: "Calendario editoriale", Icon: CalendarDays },
@@ -36,12 +38,16 @@ const QUESTIONS = [
   { key: "formato", title: "Quale contenuto vuoi creare?", multi: false, options: ["Post", "Carosello", "Reel"] },
   { key: "tono", title: "Con quale tono?", multi: true, options: ["Professionale", "Semplice", "Creativo", "Informativo"] },
 ];
-const EMPTY = { title: "", body: "", channel: "Instagram", format: "post", status: "draft", scheduled_date: "", answers: {} };
+const EMPTY = { title: "", body: "", channel: "Instagram", format: "post", status: "draft", scheduled_date: "", answers: {}, brand_id: null, source_job_id: null, source_rights_confirmed: false };
 const prettyDate = (value) => value ? new Date(value.slice(0, 10) + "T12:00:00").toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" }) : "";
 const statusLabel = (status) => STATES.find((s) => s.id === status)?.label || status;
 
 export const MarketingPage = () => {
-  const [tab, setTab] = useState("overview");
+  const [searchParams] = useSearchParams();
+  const requestedJobId = searchParams.get("job");
+  const [tab, setTab] = useState(requestedJobId ? "assistant" : "overview");
+  const [brands, setBrands] = useState([]);
+  const [sourceJob, setSourceJob] = useState(null);
   const [contents, setContents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -67,6 +73,30 @@ export const MarketingPage = () => {
     }
   }, []);
   useEffect(() => { reload(); }, [reload]);
+  const reloadBrands = useCallback(async () => {
+    try {
+      const { data } = await axios.get(API + "/marketing/brands");
+      setBrands(Array.isArray(data) ? data : []);
+    } catch {
+      toast.error("Impossibile caricare i profili brand.");
+    }
+  }, []);
+  useEffect(() => { reloadBrands(); }, [reloadBrands]);
+
+  useEffect(() => {
+    if (!requestedJobId) return;
+    let active = true;
+    axios.get(API + "/jobs/" + encodeURIComponent(requestedJobId)).then(({ data }) => {
+      if (!active) return;
+      if (!data.delivered) { toast.error("Segna prima il lavoro come consegnato."); return; }
+      setSourceJob(data);
+      const service = { website: "Sito web", ecommerce: "E-commerce", seo: "SEO", maintenance: "Manutenzione" }[data.job_type] || "Altro";
+      setForm((prev) => ({ ...prev, source_job_id: data.job_id, answers: { ...prev.answers, servizio: service } }));
+      setStep(1);
+      setTab("assistant");
+    }).catch(() => { if (active) toast.error("Il lavoro selezionato non è disponibile."); });
+    return () => { active = false; };
+  }, [requestedJobId]);
 
   const counts = useMemo(() => Object.fromEntries(STATES.map((state) =>
     [state.id, contents.filter((item) => item.status === state.id).length])), [contents]);
@@ -90,6 +120,7 @@ export const MarketingPage = () => {
 
   const create = () => {
     setForm({ ...EMPTY, answers: {} });
+    setSourceJob(null);
     setStep(0);
     setBrief("");
     setAiError("");
@@ -118,6 +149,9 @@ export const MarketingPage = () => {
         status: nextStatus,
         scheduled_date: form.scheduled_date || null,
         answers: form.answers,
+        brand_id: form.brand_id || null,
+        source_job_id: form.source_job_id || null,
+        source_rights_confirmed: Boolean(form.source_rights_confirmed),
       };
       const res = form.content_id
         ? await axios.patch(API + "/agency/marketing/contents/" + form.content_id, payload)
@@ -155,6 +189,10 @@ export const MarketingPage = () => {
 
   const generate = async () => {
     if (aiBusy) return;
+    if (form.source_job_id && !form.source_rights_confirmed) {
+      setAiError("Prima conferma di essere autorizzato a promuovere questo lavoro.");
+      return;
+    }
     const action = generatedAction(form.answers.formato);
     setStep(QUESTIONS.length);
     setAiBusy(true);
@@ -164,6 +202,9 @@ export const MarketingPage = () => {
         action,
         answers: form.answers,
         brief,
+        brand_id: form.brand_id || null,
+        source_job_id: form.source_job_id || null,
+        source_rights_confirmed: Boolean(form.source_rights_confirmed),
       });
       const output = (res.data?.content || "").trim();
       if (!output) throw new Error("empty");
@@ -247,7 +288,28 @@ export const MarketingPage = () => {
         <button className="text-sm text-primary underline underline-offset-4" onClick={() => setTab("guide")}>Consiglio: come si scrive una buona call to action?</button>
       </div>}
 
+      {tab === "brands" && <MarketingBrands brands={brands} onRefresh={reloadBrands}
+        selectedBrandId={form.brand_id} onSelect={(value) => change("brand_id", value || null)}/>}
       {tab === "assistant" && <div className="space-y-4">
+        <Card><CardContent className="p-4 space-y-3">
+          <label className="block text-sm font-medium">Per quale attività stai creando il contenuto?
+            <select className="mt-1 w-full rounded-xl border bg-background p-3"
+              value={form.brand_id || ""} onChange={(event) => change("brand_id", event.target.value || null)}>
+              <option value="">Nessun profilo selezionato</option>
+              {brands.map((brand) => <option value={brand.brand_id} key={brand.brand_id}>{brand.name} {brand.kind === "client" ? "(cliente)" : "(mia attività)"}</option>)}
+            </select>
+          </label>
+          <Button variant="outline" size="sm" onClick={() => setTab("brands")}>Crea o modifica profilo Brand</Button>
+          {form.brand_id && <p className="text-xs text-muted-foreground">Beside userà il tono e le preferenze di questo brand, compresi gli esempi di contenuti già approvati se consentito.</p>}
+          {form.source_job_id && <div className="rounded-xl bg-muted/50 p-3 space-y-2">
+            <p className="font-medium text-sm">Lavoro collegato: {sourceJob?.client_name || "Commessa selezionata"}</p>
+            <p className="text-xs text-muted-foreground">Beside recupera soltanto la tipologia del lavoro consegnato; non invia importi, margini o informazioni riservate all'AI.</p>
+            <label className="flex items-start gap-2 text-sm"><input type="checkbox" className="mt-1" checked={Boolean(form.source_rights_confirmed)}
+              onChange={(e) => change("source_rights_confirmed", e.target.checked)}/>
+              <span>Confermo di avere il permesso di usare questo lavoro e gli eventuali materiali per contenuti promozionali.</span>
+            </label>
+          </div>}
+        </CardContent></Card>
         <Card>
           <CardHeader><CardTitle className="text-base">Percorso guidato · Passaggio {Math.min(step + 1, QUESTIONS.length)} di {QUESTIONS.length}</CardTitle></CardHeader>
           <CardContent className="space-y-4">
