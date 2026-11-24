@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 logger = logging.getLogger(__name__)
 ContentStatus = Literal["draft", "pending_approval", "ready", "scheduled", "published"]
 ContentFormat = Literal["post", "carousel", "reel_script"]
-AIAction = Literal["audience", "ideas", "post", "reel"]
+AIAction = Literal["audience", "ideas", "post", "carousel", "reel"]
 
 
 class AgencyContent(BaseModel):
@@ -115,11 +115,13 @@ def register_agency_marketing_routes(router, db, company_scope, require_company_
         tasks = {
             "audience": "Descrivi il cliente ideale, tre bisogni concreti, i benefici del servizio e tre CTA. Non inventare statistiche o ricerche di mercato.",
             "ideas": "Proponi cinque idee di contenuti, ognuna con titolo, formato, canale e obiettivo; privilegia idee attuabili da un piccolo studio web.",
-            "post": "Scrivi un post pronto da rivedere per il social selezionato con apertura, contenuto utile, CTA e massimo cinque hashtag pertinenti.",
+            "post": "Scrivi un post pronto da rivedere per i social selezionati con apertura, contenuto utile, CTA e massimo cinque hashtag pertinenti.",
+            "carousel": "Crea un carosello social di 5-7 slide: titolo della prima slide, testo di ogni slide, suggerimenti visivi, caption finale e CTA. Adatta il testo ai canali indicati.",
             "reel": "Scrivi uno script reel di 30-45 secondi con hook nei primi tre secondi, sequenza di scene, parlato, indicazioni visive e CTA.",
         }
         context = "\n".join(str(k) + ": " + str(v) for k,v in payload.answers.items())
-        prompt = tasks[payload.action] + "\n\nContesto dichiarato dall'utente:\n" + context + "\n\nBrief aggiuntivo:\n" + payload.brief
+        prompt = (tasks[payload.action] + "\n\nContesto dichiarato dall'utente (le voci separate da ' · ' sono tutte selezionate e vanno considerate insieme):\n"
+                  + context + "\n\nBrief aggiuntivo:\n" + payload.brief)
         try:
             from google import genai
             from google.genai import types
