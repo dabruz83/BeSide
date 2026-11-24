@@ -43,6 +43,7 @@ from photo_ai import (
 
 from calendar_api import register_calendar_routes, run_calendar_reminder_worker
 from agency_marketing import register_agency_marketing_routes
+from marketing_brands import register_marketing_brand_routes
 
 from multitenancy import (
     COMPANY_ROLES,
@@ -4899,7 +4900,7 @@ async def accept_company_invitation(
 ACCOUNT_DELETION_REASONS = {"", "pausa", "utilizzo", "costo", "funzioni", "alternativa", "altro"}
 ACCOUNT_DELETION_OPERATIONAL_COLLECTIONS = (
     "users", "companies", "jobs", "lead_sources", "finance_settings", "cash_plan_entries",
-    "cash_plan_settings", "tax_accruals", "onboardings", "marketing_efforts", "ai_content_history", "agency_marketing_contents",
+    "cash_plan_settings", "tax_accruals", "onboardings", "marketing_efforts", "ai_content_history", "agency_marketing_contents", "marketing_brands",
     "admin_chat", "payment_transactions", "user_sessions", "recovery_contacts", "company_invitations",
     "quote_tokens", "calendar_events", "calendar_locks", "calendar_reminder_claims", "support_tickets",
     "email_verification_tokens", "password_reset_tokens", "email_recovery_tokens",
@@ -5092,6 +5093,8 @@ async def account_deletion_status(operation_id: str, current_user: Dict = Depend
 
 register_calendar_routes(api_router, db, company_scope, require_company_roles)
 register_agency_marketing_routes(api_router, db, company_scope, require_company_roles, EXTERNAL_SERVICES_ENABLED, enforce_rate_limit)
+if APP_ENV == "agency":
+    register_marketing_brand_routes(api_router, db, company_scope, require_company_roles)
 
 @api_router.get("/notifications/settings")
 async def get_notification_settings(current_user: Dict = Depends(get_current_user)):
