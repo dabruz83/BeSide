@@ -29,7 +29,8 @@ import {
   XCircle,
   Mail,
   MessageCircle,
-  Phone
+  Phone,
+  Sparkles
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 
@@ -206,7 +207,8 @@ export const JobsPage = () => {
     if (!window.confirm(message)) return;
     try {
       await axios.post(`${API}/jobs/${job.job_id}/delivery`, { delivered });
-      toast.success(delivered ? "Lavoro segnato come consegnato." : "Consegna annullata.");
+      toast.success(delivered ? "Lavoro consegnato: ora puoi creare un contenuto marketing." : "Consegna annullata.",
+        delivered ? { action: { label: "Crea contenuto", onClick: () => navigate("/marketing?job=" + encodeURIComponent(job.job_id)) } } : undefined);
       fetchJobs();
     } catch (error) {
       toast.error(error.response?.data?.detail || "Impossibile aggiornare la consegna.");
@@ -600,6 +602,9 @@ export const JobsPage = () => {
                         >
                           {job.delivered ? "Annulla consegna" : "Segna consegnato"}
                         </Button>
+                        {job.delivered && <Button size="sm" onClick={() => navigate("/marketing?job=" + encodeURIComponent(job.job_id))}>
+                          <Sparkles className="mr-1 h-4 w-4"/>Crea contenuto AI
+                        </Button>}
                         <Button variant="outline" size="sm" onClick={() => copyPostWorkSupportLink(job)}>
                           <Copy className="mr-1 h-4 w-4" /> Link assistenza
                         </Button>
