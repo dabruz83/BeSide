@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
+import { selectedValues, toggleAnswer, generatedAction } from "@/lib/agencyMarketingAnswers.mjs";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,9 +36,6 @@ const QUESTIONS = [
   { key: "formato", title: "Quale contenuto vuoi creare?", multi: false, options: ["Post", "Carosello", "Reel"] },
   { key: "tono", title: "Con quale tono?", multi: true, options: ["Professionale", "Semplice", "Creativo", "Informativo"] },
 ];
-const ANSWER_SEPARATOR = " · ";
-const selectedValues = (value) => (value || "").split(ANSWER_SEPARATOR).filter(Boolean);
-const generatedAction = (format) => format === "Reel" ? "reel" : format === "Carosello" ? "carousel" : "post";
 const EMPTY = { title: "", body: "", channel: "Instagram", format: "post", status: "draft", scheduled_date: "", answers: {} };
 const prettyDate = (value) => value ? new Date(value.slice(0, 10) + "T12:00:00").toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" }) : "";
 const statusLabel = (status) => STATES.find((s) => s.id === status)?.label || status;
@@ -79,11 +77,8 @@ export const MarketingPage = () => {
   const change = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
   const selectAnswer = (key, value) => setForm((prev) => {
     const question = QUESTIONS.find((item) => item.key === key);
-    const previous = selectedValues(prev.answers[key]);
-    const next = question?.multi
-      ? (previous.includes(value) ? previous.filter((entry) => entry !== value) : [...previous, value])
-      : [value];
-    const answer = next.join(ANSWER_SEPARATOR);
+    const answer = toggleAnswer(prev.answers[key], value, Boolean(question?.multi));
+    const next = selectedValues(answer);
     return {
       ...prev,
       answers: { ...prev.answers, [key]: answer },
@@ -273,7 +268,7 @@ export const MarketingPage = () => {
               </div>
               <div className="flex gap-2 justify-between">
                 <Button variant="outline" disabled={!step || aiBusy} onClick={() => setStep((s) => s - 1)}><ArrowLeft className="mr-1 h-4 w-4" />Indietro</Button>
-                <Button variant="ghost" disabled={aiBusy} onClick={() => setStep((s) => Math.min(QUESTIONS.length, s + 1))}>Salta</Button>
+                <Button variant="ghost" disabled={aiBusy} onClick={step === QUESTIONS.length - 1 ? generate : () => setStep((s) => s + 1)}>Salta</Button>
                 <Button disabled={aiBusy || !selectedValues(form.answers[QUESTIONS[step].key]).length}
                   onClick={step === QUESTIONS.length - 1 ? generate : () => setStep((s) => s + 1)}>
                   {step === QUESTIONS.length - 1 ? <><Sparkles className="mr-1 h-4 w-4" />Genera contenuto con AI</> : <>Avanti<ArrowRight className="ml-1 h-4 w-4" /></>}
