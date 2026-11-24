@@ -117,7 +117,7 @@ def register_agency_marketing_routes(router, db, company_scope, require_company_
         if not current:
             raise HTTPException(404, "Contenuto non trovato")
         changes = payload.model_dump(exclude_unset=True)
-        if any(value is None for key, value in changes.items() if key != "scheduled_date"):
+        if any(value is None for key, value in changes.items() if key not in {"scheduled_date", "brand_id", "source_job_id"}):
             raise HTTPException(422, "I campi del contenuto non possono essere null")
         if not changes:
             return current
