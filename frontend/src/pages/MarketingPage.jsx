@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import axios from "axios";
 import { API } from "@/App";
@@ -28,19 +28,16 @@ const STATES = [
   { id: "published", label: "Pubblicati", Icon: CheckCircle2 },
 ];
 const QUESTIONS = [
-  { key: "servizio", title: "Cosa vuoi promuovere?", options: ["Sito web", "E-commerce", "SEO", "Manutenzione"] },
-  { key: "obiettivo", title: "Qual è il tuo obiettivo?", options: ["Trovare clienti", "Farti conoscere", "Vendere", "Fidelizzare"] },
-  { key: "pubblico", title: "A chi ti rivolgi?", options: ["Professionisti", "Attività locali", "Aziende", "Privati"] },
-  { key: "canale", title: "Dove vuoi pubblicare?", options: ["Instagram", "LinkedIn", "Facebook", "Altro"] },
-  { key: "formato", title: "Quale contenuto vuoi creare?", options: ["Post", "Carosello", "Reel"] },
-  { key: "tono", title: "Con quale tono?", options: ["Professionale", "Semplice", "Creativo", "Informativo"] },
+  { key: "servizio", title: "Cosa vuoi promuovere?", multi: true, options: ["Sito web", "E-commerce", "SEO", "Manutenzione"] },
+  { key: "obiettivo", title: "Qual è il tuo obiettivo?", multi: true, options: ["Trovare clienti", "Farti conoscere", "Vendere", "Fidelizzare"] },
+  { key: "pubblico", title: "A chi ti rivolgi?", multi: true, options: ["Professionisti", "Attività locali", "Aziende", "Privati"] },
+  { key: "canale", title: "Dove vuoi pubblicare?", multi: true, options: ["Instagram", "LinkedIn", "Facebook", "Altro"] },
+  { key: "formato", title: "Quale contenuto vuoi creare?", multi: false, options: ["Post", "Carosello", "Reel"] },
+  { key: "tono", title: "Con quale tono?", multi: true, options: ["Professionale", "Semplice", "Creativo", "Informativo"] },
 ];
-const ACTIONS = [
-  { id: "audience", title: "Cliente ideale", hint: "Definisci pubblico, bisogni e proposte di valore." },
-  { id: "ideas", title: "Idee contenuti", hint: "Cinque spunti concreti per iniziare." },
-  { id: "post", title: "Scrivi post", hint: "Un post con invito all'azione, pronto da rivedere." },
-  { id: "reel", title: "Script reel", hint: "Un video breve con hook, scene e CTA." },
-];
+const ANSWER_SEPARATOR = " · ";
+const selectedValues = (value) => (value || "").split(ANSWER_SEPARATOR).filter(Boolean);
+const generatedAction = (format) => format === "Reel" ? "reel" : format === "Carosello" ? "carousel" : "post";
 const EMPTY = { title: "", body: "", channel: "Instagram", format: "post", status: "draft", scheduled_date: "", answers: {} };
 const prettyDate = (value) => value ? new Date(value.slice(0, 10) + "T12:00:00").toLocaleDateString("it-IT", { day: "numeric", month: "short", year: "numeric" }) : "";
 const statusLabel = (status) => STATES.find((s) => s.id === status)?.label || status;
@@ -58,6 +55,7 @@ export const MarketingPage = () => {
   const [saving, setSaving] = useState(false);
   const [aiError, setAiError] = useState("");
   const [calendarMonth, setCalendarMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const generatedContentRef = useRef(null);
 
   const reload = useCallback(async () => {
     try {
@@ -79,11 +77,21 @@ export const MarketingPage = () => {
   const visible = useMemo(() => contents.filter((x) => filter === "all" || x.status === filter), [contents, filter]);
 
   const change = (key, value) => setForm((prev) => ({ ...prev, [key]: value }));
-  const selectAnswer = (key, value) => setForm((prev) => ({
-    ...prev, answers: { ...prev.answers, [key]: value },
-    ...(key === "canale" ? { channel: value } : {}),
-    ...(key === "formato" ? { format: value === "Reel" ? "reel_script" : value === "Carosello" ? "carousel" : "post" } : {}),
-  }));
+  const selectAnswer = (key, value) => setForm((prev) => {
+    const question = QUESTIONS.find((item) => item.key === key);
+    const previous = selectedValues(prev.answers[key]);
+    const next = question?.multi
+      ? (previous.includes(value) ? previous.filter((entry) => entry !== value) : [...previous, value])
+      : [value];
+    const answer = next.join(ANSWER_SEPARATOR);
+    return {
+      ...prev,
+      answers: { ...prev.answers, [key]: answer },
+      // A saved content has one primary channel; all chosen channels reach the AI.
+      ...(key === "canale" ? { channel: next[0] || "Instagram" } : {}),
+      ...(key === "formato" ? { format: value === "Reel" ? "reel_script" : value === "Carosello" ? "carousel" : "post" } : {}),
+    };
+  });
 
   const create = () => {
     setForm({ ...EMPTY, answers: {} });
@@ -150,7 +158,10 @@ export const MarketingPage = () => {
     }
   };
 
-  const generate = async (action) => {
+  const generate = async () => {
+    if (aiBusy) return;
+    const action = generatedAction(form.answers.formato);
+    setStep(QUESTIONS.length);
     setAiBusy(true);
     setAiError("");
     try {
@@ -163,13 +174,14 @@ export const MarketingPage = () => {
       if (!output) throw new Error("empty");
       setForm((prev) => ({
         ...prev,
-        title: prev.title || (ACTIONS.find((a) => a.id === action)?.title + " — " + (prev.answers.servizio || "Web agency")),
-        body: prev.body ? prev.body + "\n\n" + output : output,
-        format: action === "reel" ? "reel_script" : prev.format,
+        title: prev.title || ("Contenuto " + (action === "reel" ? "Reel" : action === "carousel" ? "Carosello" : "Post") + " — " + (selectedValues(prev.answers.servizio)[0] || "Web agency")),
+        body: output,
+        format: action === "reel" ? "reel_script" : action === "carousel" ? "carousel" : "post",
       }));
-      toast.success("Testo generato: puoi modificarlo e salvarlo.");
+      toast.success("Contenuto generato! Puoi modificarlo o salvarlo.");
+      window.requestAnimationFrame(() => generatedContentRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
     } catch (e) {
-      setAiError(e.response?.data?.detail || "L'assistente non è disponibile. Riprova più tardi.");
+      setAiError(e.response?.data?.detail || "Non è stato possibile generare il contenuto. Riprova.");
     } finally {
       setAiBusy(false);
     }
@@ -248,35 +260,37 @@ export const MarketingPage = () => {
               <div className="flex gap-1">{QUESTIONS.map((q, index) =>
                 <div key={q.key} className={"h-1.5 flex-1 rounded-full " + (index <= step ? "bg-secondary" : "bg-muted")} />)}</div>
               <p className="font-semibold text-lg">{QUESTIONS[step].title}</p>
+              <p className="text-sm text-muted-foreground">{QUESTIONS[step].multi ? "Puoi selezionare più risposte." : "Scegli una sola risposta."}</p>
               <div className="grid grid-cols-2 gap-2">
-                {QUESTIONS[step].options.map((value) =>
-                  <button key={value} onClick={() => selectAnswer(QUESTIONS[step].key, value)}
+                {QUESTIONS[step].options.map((value) => {
+                  const selected = selectedValues(form.answers[QUESTIONS[step].key]).includes(value);
+                  return <button type="button" key={value} aria-pressed={selected} onClick={() => selectAnswer(QUESTIONS[step].key, value)}
                     className={"min-h-14 rounded-xl border p-3 text-sm " +
-                      (form.answers[QUESTIONS[step].key] === value ? "border-secondary bg-secondary/10 font-semibold" : "bg-background")}>
-                    {value}
-                  </button>)}
+                      (selected ? "border-secondary bg-secondary/10 font-semibold" : "bg-background")}>
+                    {QUESTIONS[step].multi ? (selected ? "✓ " : "○ ") : ""}{value}
+                  </button>;
+                })}
               </div>
               <div className="flex gap-2 justify-between">
-                <Button variant="outline" disabled={!step} onClick={() => setStep((s) => s - 1)}><ArrowLeft className="mr-1 h-4 w-4" />Indietro</Button>
-                <Button variant="ghost" onClick={() => setStep((s) => Math.min(QUESTIONS.length, s + 1))}>Salta</Button>
-                <Button onClick={() => setStep((s) => Math.min(QUESTIONS.length, s + 1))}
-                  disabled={!form.answers[QUESTIONS[step].key]}>Avanti<ArrowRight className="ml-1 h-4 w-4" /></Button>
+                <Button variant="outline" disabled={!step || aiBusy} onClick={() => setStep((s) => s - 1)}><ArrowLeft className="mr-1 h-4 w-4" />Indietro</Button>
+                <Button variant="ghost" disabled={aiBusy} onClick={() => setStep((s) => Math.min(QUESTIONS.length, s + 1))}>Salta</Button>
+                <Button disabled={aiBusy || !selectedValues(form.answers[QUESTIONS[step].key]).length}
+                  onClick={step === QUESTIONS.length - 1 ? generate : () => setStep((s) => s + 1)}>
+                  {step === QUESTIONS.length - 1 ? <><Sparkles className="mr-1 h-4 w-4" />Genera contenuto con AI</> : <>Avanti<ArrowRight className="ml-1 h-4 w-4" /></>}
+                </Button>
               </div>
             </> : <>
-              <p className="font-semibold">Scegli come usare l'assistente</p>
-              <div className="grid sm:grid-cols-2 gap-2">
-                {ACTIONS.map((item) =>
-                  <Button key={item.id} variant="outline" disabled={aiBusy} className="h-auto min-h-16 whitespace-normal text-left justify-start"
-                    onClick={() => generate(item.id)}>
-                    <Sparkles className="mr-2 h-4 w-4 shrink-0" /><span><strong className="block">{item.title}</strong><small className="font-normal">{item.hint}</small></span>
-                  </Button>)}
-              </div>
-              <Button variant="ghost" onClick={() => setStep(0)}><ArrowLeft className="mr-1 h-4 w-4" />Modifica risposte</Button>
+              {aiBusy ? <p className="font-semibold" role="status">Sto creando il contenuto {form.format === "reel_script" ? "Reel" : form.format === "carousel" ? "Carosello" : "Post"} con AI...</p>
+                : form.body.trim() ? <p className="font-semibold text-secondary"><CheckCircle2 className="mr-1 inline h-5 w-5" />Il tuo contenuto è pronto: lo trovi qui sotto.</p>
+                : <p className="font-semibold">La generazione non è stata completata.</p>}
+              {aiError && <p role="alert" className="text-sm text-red-600">{aiError}</p>}
+              {!aiBusy && <Button onClick={generate}><RefreshCcw className="mr-1 h-4 w-4" />{form.body.trim() ? "Rigenera contenuto" : "Riprova generazione"}</Button>}
+              <Button variant="ghost" disabled={aiBusy} onClick={() => setStep(0)}><ArrowLeft className="mr-1 h-4 w-4" />Modifica risposte</Button>
             </>}
             <p className="text-xs text-muted-foreground">Puoi salvare una bozza in qualsiasi momento e riprendere più tardi.</p>
           </CardContent>
         </Card>
-        <Card><CardHeader><CardTitle className="text-base">Il tuo contenuto</CardTitle></CardHeader>
+        <Card ref={generatedContentRef}><CardHeader><CardTitle className="text-base">Il tuo contenuto</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             <label className="block text-sm font-medium">Titolo<Input value={form.title} onChange={(e) => change("title", e.target.value)} placeholder="Es. Perché serve un sito aggiornato" maxLength={160} className="mt-1" /></label>
             <label className="block text-sm font-medium">Indicazioni aggiuntive per l'AI
