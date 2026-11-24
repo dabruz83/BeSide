@@ -5,7 +5,7 @@ No model fine-tuning, external calls, media ingestion or automatic publishing.
 """
 from collections import Counter
 from datetime import datetime, timezone
-from typing import Dict, Literal, Optional
+from typing import Dict, Literal, Optional, List
 import uuid
 
 from fastapi import Depends, HTTPException
@@ -17,7 +17,7 @@ BRAND_FIELDS = (
     "name", "kind", "sector", "logo_url", "primary_color", "secondary_color",
     "audience", "tone", "visual_style", "website_url", "social_profiles",
     "usual_goal", "description", "style_notes", "avoid_claims",
-    "learning_enabled", "usage_authorized",
+    "learning_enabled", "usage_authorized", "reference_video_urls",
 )
 
 
@@ -39,6 +39,7 @@ class MarketingBrandInput(BaseModel):
     avoid_claims: str = Field(default="", max_length=500)
     learning_enabled: bool = True
     usage_authorized: bool = False
+    reference_video_urls: List[str] = Field(default_factory=list, max_length=6)
 
     @field_validator("logo_url", "website_url")
     @classmethod
@@ -46,6 +47,13 @@ class MarketingBrandInput(BaseModel):
         if value and not value.startswith("https://"):
             raise ValueError("Inserisci un indirizzo HTTPS valido")
         return value
+
+    @field_validator("reference_video_urls")
+    @classmethod
+    def check_reference_videos(cls, values):
+        if any(not url.startswith("https://") or len(url) > 500 for url in values):
+            raise ValueError("Inserisci fino a sei link video HTTPS, senza codici di accesso")
+        return values
 
     @field_validator("primary_color", "secondary_color")
     @classmethod
