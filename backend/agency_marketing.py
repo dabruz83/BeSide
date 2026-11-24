@@ -99,7 +99,7 @@ def register_agency_marketing_routes(router, db, company_scope, require_company_
     async def agency_create_content(payload: AgencyContent, user: Dict = Depends(permitted)):
         data = payload.model_dump()
         _check_schedule(data)
-        await verify_links(data, user)
+        await verify_links(data, user, for_generation=data["status"] in {"ready", "scheduled", "published"})
         now = datetime.now(timezone.utc).isoformat()
         item = dict(data, content_id="agency_" + uuid.uuid4().hex,
                     company_id=user["company_id"], user_id=user["user_id"],
@@ -123,7 +123,7 @@ def register_agency_marketing_routes(router, db, company_scope, require_company_
             return current
         next_data = {**current, **changes}
         _check_schedule(next_data)
-        await verify_links(next_data, user)
+        await verify_links(next_data, user, for_generation=next_data["status"] in {"ready", "scheduled", "published"})
         changes["updated_at"] = datetime.now(timezone.utc).isoformat()
         if "status" in changes:
             changes["published_at"] = changes["updated_at"] if changes["status"] == "published" else None
