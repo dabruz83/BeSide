@@ -39,6 +39,7 @@ import { LegalPrivacyPage } from "@/pages/LegalPrivacyPage";
 import { SubscriptionPage } from "@/pages/SubscriptionPage";
 
 // Components
+import { WorkTimeProvider } from "@/components/work-time/WorkTimeProvider";
 import { Layout } from "@/components/Layout";
 import { UiPreferencesProvider } from "@/lib/uiPreferences";
 
@@ -381,7 +382,7 @@ function App() {
     <BrowserRouter>
       <AuthProvider>
         <UiPreferencesProvider>
-          <AppRouter />
+          <WorkTimeProvider><AppRouter /></WorkTimeProvider>
           <Toaster position="top-right" richColors />
         </UiPreferencesProvider>
       </AuthProvider>

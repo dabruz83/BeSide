@@ -1,3 +1,5 @@
+import { ActiveWorkTimer } from "@/components/work-time/WorkTime";
+import { useWorkTime } from "@/components/work-time/WorkTimeProvider";
 import { NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "@/App";
 import { 
@@ -38,6 +40,7 @@ const renderNavIcon = (item, className = "w-5 h-5") => (
 
 export const Layout = ({ children }) => {
   const { user, logout } = useAuth();
+  const { active: activeWork } = useWorkTime();
   const { preferences } = useUiPreferences();
   const location = useLocation();
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -85,7 +88,7 @@ export const Layout = ({ children }) => {
 
   return (
     <div
-      className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background"}
+      className={(isCalendarPage ? "h-[100dvh] overflow-hidden " : "min-h-screen ") + "bg-background" + (activeWork ? " has-work-timer" : "")}
       style={{ "--mobile-nav-height": showMobileNavLabels ? "76px" : "58px" }}
       onTouchStart={handleTouchStart}
       onTouchEnd={handleTouchEnd}
@@ -233,6 +236,8 @@ export const Layout = ({ children }) => {
           </div>
         </nav>
       </aside>
+
+      <ActiveWorkTimer />
 
       {/* Mobile Bottom Navigation */}
       <nav className={`mobile-bottom-nav md:hidden fixed z-40 ${showMobileNavLabels ? "with-labels" : "icon-only"}`} aria-label="Navigazione principale">

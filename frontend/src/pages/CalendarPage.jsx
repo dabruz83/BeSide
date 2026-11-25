@@ -1,3 +1,4 @@
+import { StartWorkButton } from "@/components/work-time/WorkTime";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import axios from "axios";
 import { useSearchParams } from "react-router-dom";
@@ -803,6 +804,7 @@ export const CalendarPage = () => {
             <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-t bg-background px-5 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
               {editing ? <div className="flex flex-wrap gap-2">
                 <Button type="button" variant="outline" onClick={() => downloadCalendar(editing)}><Download className="w-4 h-4 mr-1" />Esporta .ics</Button>
+                {editing.job_id && <StartWorkButton jobId={editing.job_id} />}
                 {editing.job_id && <Button type="button" variant="outline" onClick={markLinkedJobDelivered}>Segna consegnato</Button>}
                 <Button type="button" variant="destructive" onClick={cancelEvent} disabled={saving}><Trash2 className="w-4 h-4" /></Button>
               </div> : <span />}

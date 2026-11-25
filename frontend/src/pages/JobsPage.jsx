@@ -1,3 +1,5 @@
+import { WorkTimeCard } from "@/components/work-time/WorkTime";
+import { useWorkTime } from "@/components/work-time/WorkTimeProvider";
 import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { API } from "@/App";
@@ -80,7 +82,9 @@ const LEAD_SOURCES = [
 const CHART_COLORS = ["#1E3A5F", "#2E86AB", "#1A7A4A", "#F39C12", "#C0392B", "#8E44AD"];
 
 export const JobsPage = () => {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { enabled: workTimeEnabled } = useWorkTime();
+  const timeJobId = searchParams.get("timeJob");
   const navigate = useNavigate();
   const [jobs, setJobs] = useState([]);
   const [analytics, setAnalytics] = useState(null);
@@ -513,6 +517,9 @@ export const JobsPage = () => {
       </div>
 
       {/* Tabs */}
+      <Dialog open={Boolean(timeJobId)} onOpenChange={open => { if (!open) { const params = new URLSearchParams(searchParams); params.delete("timeJob"); setSearchParams(params); } }}>
+        <DialogContent className="max-w-2xl max-h-[90dvh] overflow-y-auto"><DialogHeader><DialogTitle>Scheda lavoro · {jobs.find(j => j.job_id === timeJobId)?.client_name || "Commessa"}</DialogTitle></DialogHeader>{timeJobId && <WorkTimeCard key={timeJobId} jobId={timeJobId} />}</DialogContent>
+      </Dialog>
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="lavori" data-testid="tab-lavori">
@@ -560,8 +567,9 @@ export const JobsPage = () => {
                       data-testid={`job-item-${job.job_id}`}
                     >
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
                           <h3 className="font-semibold">{job.client_name}</h3>
+                          {workTimeEnabled && <Button variant="outline" className="min-h-11" onClick={() => setSearchParams({ timeJob: job.job_id })}>Tempo di lavorazione</Button>}
                           <span className="text-xs bg-primary/10 text-primary px-2 py-0.5 rounded">
                             {getJobTypeLabel(job.job_type)}
                           </span>
@@ -644,8 +652,9 @@ export const JobsPage = () => {
                       className="flex flex-col md:flex-row md:items-center justify-between p-4 bg-background rounded-lg border border-border gap-4"
                     >
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-1">
+                        <div className="flex flex-wrap items-center gap-2 mb-1">
                           <h3 className="font-semibold">{quote.client_name}</h3>
+                          {workTimeEnabled && <Button variant="outline" className="min-h-11" onClick={() => setSearchParams({ timeJob: quote.job_id })}>Tempo di lavorazione</Button>}
                           {getQuoteStatusBadge(quote.quote_status)}
                         </div>
                         <p className="text-sm text-muted-foreground">

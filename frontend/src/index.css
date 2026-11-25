@@ -412,3 +412,19 @@
 ::selection {
     @apply bg-primary/20 text-primary;
 }
+
+/* Work timer reserves space above the existing navigation, including iOS inset. */
+.active-work-timer {
+  position: fixed;
+  z-index: 39;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 22px);
+  min-height: 68px;
+}
+.has-work-timer .mobile-main { padding-bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 110px); }
+.has-work-timer .calendar-main { padding-bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 90px); }
+@media (min-width: 768px) {
+  .active-work-timer { left: auto; right: 24px; bottom: 24px; width: 420px; }
+  .has-work-timer .mobile-main, .has-work-timer .calendar-main { padding-bottom: 110px; }
+}
