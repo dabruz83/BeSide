@@ -95,7 +95,7 @@ def register_work_time_routes(router, db, company_scope, require_company_roles, 
             return None
         row = {k: v for k, v in row.items() if k != '_id'}
         row['effective_seconds'] = seconds(row, now)
-        return jsonable_encoder(row)
+        return jsonable_encoder(row, custom_encoder={datetime: lambda value: aware(value).astimezone(timezone.utc).isoformat()})
 
     async def transact(user, payload, kind, subject, callback):
         check_enabled()

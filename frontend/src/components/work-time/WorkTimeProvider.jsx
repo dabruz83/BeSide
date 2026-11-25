@@ -83,13 +83,13 @@ export const WorkTimeProvider = ({ children }) => {
     {children}
     {key && (pending || error) && <div role="alert" className="fixed top-16 left-4 right-4 md:left-auto md:max-w-sm z-[60] rounded-xl border bg-card p-3 shadow-lg text-sm">
       {error || 'Operazione in attesa di conferma.'}
-      {pending ? <Button className="mt-2 min-h-11 w-full" disabled={busy} onClick={() => send(pending)}>Riprova operazione</Button> : <Button variant="ghost" onClick={() => setError('')}>Chiudi</Button>}
+      {pending ? <Button className="work-time-primary mt-2 min-h-11 w-full" disabled={busy} onClick={() => send(pending)}>Riprova operazione</Button> : <Button variant="ghost" onClick={() => setError('')}>Chiudi</Button>}
     </div>}
     <Dialog open={Boolean(startJob)} onOpenChange={open => { if (!open && !busy) { setStartJob(null); setConflict(null); } }}>
       <DialogContent className="max-w-md"><DialogHeader><DialogTitle>{conflict ? 'Hai già una sessione di lavoro aperta.' : 'Avvia lavorazione'}</DialogTitle></DialogHeader>
-        <label className="text-sm">Attività (facoltativa)<select className="mt-2 min-h-11 w-full rounded-md border bg-background p-2" value={activityId} onChange={e => setActivityId(e.target.value)}><option value="">Nessuna categoria</option>{activities.filter(a => a.active).map(a => <option key={a.activity_id} value={a.activity_id}>{a.name}</option>)}</select></label>
-        {conflict ? <><Button variant="outline" className="min-h-11" onClick={() => { navigate(`/jobs?timeJob=${encodeURIComponent(conflict.job_id)}`); setStartJob(null); setConflict(null); }}>Torna al lavoro in corso</Button><Button disabled={busy || Boolean(pending)} className="min-h-11 whitespace-normal h-auto" onClick={switchJob}>Termina sessione e avvia nuovo lavoro</Button></> : <Button disabled={busy || Boolean(pending)} className="min-h-11" onClick={begin}>Avvia</Button>}
-        <Button variant="ghost" disabled={busy} onClick={() => { setStartJob(null); setConflict(null); }}>Annulla</Button>
+        <label className="text-sm">Tipo di lavorazione (facoltativo)<select className="mt-2 min-h-11 w-full rounded-md border bg-background p-2" value={activityId} onChange={e => setActivityId(e.target.value)}><option value="">Nessuna categoria</option>{activities.filter(a => a.active).map(a => <option key={a.activity_id} value={a.activity_id}>{a.name}</option>)}</select></label>
+        {conflict ? <><Button variant="outline" className="work-time-secondary min-h-11" onClick={() => { navigate(`/jobs?timeJob=${encodeURIComponent(conflict.job_id)}`); setStartJob(null); setConflict(null); }}>Torna al lavoro in corso</Button><Button disabled={busy || Boolean(pending)} className="work-time-primary min-h-11 whitespace-normal h-auto" onClick={switchJob}>Termina sessione e avvia nuovo lavoro</Button></> : <Button disabled={busy || Boolean(pending)} className="work-time-primary min-h-11" onClick={begin}>Avvia</Button>}
+        <Button variant="ghost" className="work-time-cancel" disabled={busy} onClick={() => { setStartJob(null); setConflict(null); }}>Annulla</Button>
       </DialogContent>
     </Dialog>
   </Context.Provider>;

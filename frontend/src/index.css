@@ -428,3 +428,20 @@
   .active-work-timer { left: auto; right: 24px; bottom: 24px; width: 420px; }
   .has-work-timer .mobile-main, .has-work-timer .calendar-main { padding-bottom: 110px; }
 }
+
+/* Native iOS date/time controls must not impose their intrinsic width on the card. */
+.work-time-input { display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.work-time-input::-webkit-date-and-time-value { min-width: 0; text-align: left; }
+.work-time-input::-webkit-datetime-edit { padding: 0; min-width: 0; }
+
+/* Time tracking actions: permanent brand color without hover-dependent controls. */
+.work-time-primary, .work-time-primary:hover {
+  background-color: hsl(var(--secondary)); color: hsl(var(--secondary-foreground));
+  border-color: hsl(var(--secondary));
+}
+.work-time-secondary, .work-time-secondary:hover {
+  border-color: hsl(var(--secondary)); color: hsl(var(--secondary)); background-color: transparent;
+}
+.work-time-cancel, .work-time-cancel:hover { background-color: transparent; }
+.work-time-primary, .work-time-secondary, .work-time-cancel { min-height: 44px; touch-action: manipulation; }
+.work-time-primary:active:not(:disabled), .work-time-secondary:active:not(:disabled) { filter: brightness(.92); }
