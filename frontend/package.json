@@ -58,7 +58,7 @@
     "start": "vite --host 127.0.0.1 --port 3100",
     "start:railway": "node server.js",
     "build": "vite build",
-    "test": "node --test onboarding.test.cjs server.test.js registration.test.cjs marketing.test.cjs",
+    "test": "node --test work-time-manual.test.cjs work-time.test.cjs onboarding.test.cjs registration.test.cjs marketing.test.cjs server.test.js",
     "test:railway": "node --test server.test.js"
   },
   "browserslist": {

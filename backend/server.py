@@ -41,6 +41,7 @@ from photo_ai import (
     read_upload_limited,
 )
 
+from work_time import register_work_time_routes, ensure_work_time_indexes
 from calendar_api import register_calendar_routes, run_calendar_reminder_worker
 from agency_marketing import register_agency_marketing_routes
 from marketing_brands import register_marketing_brand_routes
@@ -168,6 +169,7 @@ def get_boolean_environment_variable(name: str, default: bool) -> bool:
 
 
 APP_ENV = os.environ.get("APP_ENV", "production")
+WORK_TIME_ENABLED = get_boolean_environment_variable("WORK_TIME_ENABLED", True)
 EXTERNAL_SERVICES_ENABLED = get_boolean_environment_variable("EXTERNAL_SERVICES_ENABLED", False)
 RESEND_ENABLED = get_boolean_environment_variable("RESEND_ENABLED", False)
 WEBAUTHN_ENABLED = get_boolean_environment_variable("WEBAUTHN_ENABLED", False)
@@ -257,6 +259,8 @@ async def lifespan(_app: FastAPI):
     deletion_tasks = []
     try:
         stats = await migrate_to_company_tenancy(db, ADMIN_EMAIL)
+        if WORK_TIME_ENABLED:
+            await ensure_work_time_indexes(db)
         await synchronize_platform_admin_password()
         if APP_ENV == "staging":
             cleanup = await db.users.update_many(
@@ -4899,6 +4903,7 @@ async def accept_company_invitation(
 
 ACCOUNT_DELETION_REASONS = {"", "pausa", "utilizzo", "costo", "funzioni", "alternativa", "altro"}
 ACCOUNT_DELETION_OPERATIONAL_COLLECTIONS = (
+    "work_time_sessions", "work_time_events", "work_time_operations", "work_time_locks", "work_time_activities",
     "users", "companies", "jobs", "lead_sources", "finance_settings", "cash_plan_entries",
     "cash_plan_settings", "tax_accruals", "onboardings", "marketing_efforts", "ai_content_history", "agency_marketing_contents", "marketing_brands",
     "admin_chat", "payment_transactions", "user_sessions", "recovery_contacts", "company_invitations",
@@ -5092,6 +5097,7 @@ async def account_deletion_status(operation_id: str, current_user: Dict = Depend
 # ==================== JOBS AND PLANNING ENDPOINTS ====================
 
 register_calendar_routes(api_router, db, company_scope, require_company_roles)
+register_work_time_routes(api_router, db, company_scope, require_company_roles, WORK_TIME_ENABLED)
 register_agency_marketing_routes(api_router, db, company_scope, require_company_roles, EXTERNAL_SERVICES_ENABLED, enforce_rate_limit)
 if APP_ENV == "agency":
     register_marketing_brand_routes(api_router, db, company_scope, require_company_roles)
@@ -5424,8 +5430,12 @@ async def delete_job(
     current_user: Dict = Depends(require_company_roles("owner", "admin")),
 ):
     """Delete a job"""
-    result = await db.jobs.delete_one(company_scope(current_user, job_id=job_id))
+    # Keep time-session history attached to its job; this predicate also races
+    # safely with the transactional marker written by the first session.
+    result = await db.jobs.delete_one(company_scope(current_user, job_id=job_id, work_time_has_sessions={"$ne": True}))
     if result.deleted_count == 0:
+        if await db.jobs.find_one(company_scope(current_user, job_id=job_id, work_time_has_sessions=True)):
+            raise HTTPException(status_code=409, detail="La commessa contiene sessioni di lavoro e non può essere eliminata")
         raise HTTPException(status_code=404, detail="Lavoro non trovato")
     
     await db.lead_sources.delete_many(company_scope(current_user, job_id=job_id))

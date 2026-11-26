@@ -412,3 +412,48 @@
 ::selection {
     @apply bg-primary/20 text-primary;
 }
+
+/* Work timer reserves space above the existing navigation, including iOS inset. */
+.active-work-timer {
+  position: fixed;
+  z-index: 39;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 22px);
+  min-height: 68px;
+}
+.has-work-timer .mobile-main { padding-bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 110px); }
+.has-work-timer .calendar-main { padding-bottom: calc(var(--mobile-nav-height, 76px) + env(safe-area-inset-bottom, 0px) + 90px); }
+@media (min-width: 768px) {
+  .active-work-timer { left: auto; right: 24px; bottom: 24px; width: 420px; }
+  .has-work-timer .mobile-main, .has-work-timer .calendar-main { padding-bottom: 110px; }
+}
+
+/* Native iOS date/time controls must not impose their intrinsic width on the card. */
+.work-time-input { display: block; width: 100%; min-width: 0; max-width: 100%; box-sizing: border-box; }
+.work-time-input::-webkit-date-and-time-value { min-width: 0; text-align: left; }
+.work-time-input::-webkit-datetime-edit { padding: 0; min-width: 0; }
+
+/* Time tracking actions: permanent brand color without hover-dependent controls. */
+.work-time-primary, .work-time-primary:hover {
+  background-color: hsl(var(--secondary)); color: hsl(var(--secondary-foreground));
+  border-color: hsl(var(--secondary));
+}
+.work-time-secondary, .work-time-secondary:hover {
+  border-color: hsl(var(--secondary)); color: hsl(var(--secondary)); background-color: transparent;
+}
+.work-time-cancel, .work-time-cancel:hover { background-color: transparent; }
+.work-time-primary, .work-time-secondary, .work-time-cancel { min-height: 44px; touch-action: manipulation; }
+.work-time-primary:active:not(:disabled), .work-time-secondary:active:not(:disabled) { filter: brightness(.92); }
+
+/* Job card alignment only; global timer controls keep their compact layout. */
+.work-time-job-card button {
+  display: flex; width: 15rem; max-width: 100%; margin-inline: auto;
+  white-space: normal; height: auto;
+}
+.work-time-job-card .work-time-session-actions > div {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: 100%; max-width: 30.5rem; margin-inline: auto;
+}
+.work-time-job-card .work-time-session-actions button { width: 100%; min-width: 0; }
+.work-time-job-card .work-time-manual-actions button { width: 7rem; margin-inline: 0; }

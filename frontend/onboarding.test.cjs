@@ -59,7 +59,7 @@ test('verification effect replay sends a single request and shows success', asyn
   assert.equal(p.state[0], 'loading'); cleanup(); p.run();
   assert.equal(p.calls.length, 1); assert.equal(p.calls[0].args[2].timeout, 15000);
   p.calls[0].resolve({ data: { message: 'Email verificata.', mfa_setup_required: true } }); await flush();
-  assert.equal(p.state[0], 'success'); assert.match(p.state[1], /Dopo il login/);
+  assert.equal(p.state[0], 'success'); assert.match(p.state[1], /Dopo l'accesso configurerai l'autenticazione a due fattori/);
   assert.ok(nodes(p.render()).some(n => n.props?.to === '/login'));
 });
 
@@ -68,9 +68,9 @@ test('old verification responses cannot override a new token', async () => {
   p.render('new-token'); p.run();
   p.calls[1].resolve({ data: { message: 'New success' } }); await flush();
   p.calls[0].reject({ response: { data: { detail: 'Old error' } } }); await flush();
-  assert.equal(p.state[0], 'success'); assert.equal(p.state[1], 'New success');
+  assert.equal(p.state[0], 'success'); assert.equal(p.state[1], 'Indirizzo email verificato. Ora puoi accedere al tuo account.');
 });
-for (const [name, error, pattern] of [['expired', { response: { data: { detail: 'Link scaduto' } } }, /Link scaduto/], ['network timeout', { code: 'ECONNABORTED' }, /prova ad accedere/]]) {
+for (const [name, error, pattern] of [['expired', { response: { data: { detail: 'Link scaduto' } } }, /Link scaduto/], ['network timeout', { code: 'ECONNABORTED' }, /Prova ad accedere/]]) {
   test(`verification ${name} shows error without retry`, async () => {
     const p = page('VerifyEmailPage'); p.render(); p.run(); p.calls[0].reject(error); await flush();
     assert.equal(p.state[0], 'error'); assert.match(p.state[1], pattern);
