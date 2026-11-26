@@ -17,6 +17,7 @@ export const WorkTimeProvider = ({ children }) => {
   const [pending, setPending] = useState(null), [startJob, setStartJob] = useState(null), [conflict, setConflict] = useState(null);
   const [activities, setActivities] = useState([]), [activityId, setActivityId] = useState('');
   const inFlight = useRef(false), identity = useRef(null), sequence = useRef(0);
+  const startTitle = useRef(null);
   const key = user ? `beside:work-time:${user.company_id}:${user.user_id}` : null;
   identity.current = key;
   const refresh = useCallback(async () => {
@@ -86,7 +87,7 @@ export const WorkTimeProvider = ({ children }) => {
       {pending ? <Button className="work-time-primary mt-2 min-h-11 w-full" disabled={busy} onClick={() => send(pending)}>Riprova operazione</Button> : <Button variant="ghost" onClick={() => setError('')}>Chiudi</Button>}
     </div>}
     <Dialog open={Boolean(startJob)} onOpenChange={open => { if (!open && !busy) { setStartJob(null); setConflict(null); } }}>
-      <DialogContent className="max-w-md"><DialogHeader><DialogTitle>{conflict ? 'Hai già una sessione di lavoro aperta.' : 'Avvia lavorazione'}</DialogTitle></DialogHeader>
+      <DialogContent className="max-w-md" onOpenAutoFocus={event => { event.preventDefault(); startTitle.current?.focus({ preventScroll: true }); }}><DialogHeader className="text-left"><DialogTitle ref={startTitle} tabIndex={-1}>{conflict ? 'Hai già una sessione di lavoro aperta.' : 'Avvia lavorazione'}</DialogTitle></DialogHeader>
         <label className="text-sm">Tipo di lavorazione (facoltativo)<select className="mt-2 min-h-11 w-full rounded-md border bg-background p-2" value={activityId} onChange={e => setActivityId(e.target.value)}><option value="">Nessuna categoria</option>{activities.filter(a => a.active).map(a => <option key={a.activity_id} value={a.activity_id}>{a.name}</option>)}</select></label>
         {conflict ? <><Button variant="outline" className="work-time-secondary min-h-11" onClick={() => { navigate(`/jobs?timeJob=${encodeURIComponent(conflict.job_id)}`); setStartJob(null); setConflict(null); }}>Torna al lavoro in corso</Button><Button disabled={busy || Boolean(pending)} className="work-time-primary min-h-11 whitespace-normal h-auto" onClick={switchJob}>Termina sessione e avvia nuovo lavoro</Button></> : <Button disabled={busy || Boolean(pending)} className="work-time-primary min-h-11" onClick={begin}>Avvia</Button>}
         <Button variant="ghost" className="work-time-cancel" disabled={busy} onClick={() => { setStartJob(null); setConflict(null); }}>Annulla</Button>

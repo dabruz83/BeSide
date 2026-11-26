@@ -81,3 +81,19 @@ test('rapid double action sends one write and waits for server acknowledgement',
   assert.equal(p.requests.filter(r=>r.method==='post').length,1); assert.equal(p.render().props.value.active,null);
   finish({data:{session_id:'s'}}); assert.equal(await request,true); p.unmount();
 });
+
+test('start dialog focuses its title without opening or submitting the optional category', async () => {
+  const p = provider(new Map(), async ({url}) => ({data: url.endsWith('/activities') ? [] : {enabled:true,session:null}}));
+  p.mount(); await flush();
+  await p.render().props.value.requestStart('j');
+  const tree = p.render();
+  const dialog = find(tree, n => n.type === 'DialogContent');
+  const title = find(tree, n => n.type === 'DialogTitle');
+  let prevented = false, focused = false;
+  title.props.ref.current = {focus(options) { focused = options.preventScroll; }};
+  dialog.props.onOpenAutoFocus({preventDefault() { prevented = true; }});
+  assert.equal(prevented, true); assert.equal(focused, true);
+  assert.equal(title.props.tabIndex, -1);
+  assert.equal(p.requests.some(r => r.method !== 'get'), false);
+  assert.equal(find(tree, n => n.type === 'select').props.value, '');
+});
